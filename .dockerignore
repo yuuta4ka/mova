@@ -1,0 +1,9 @@
+.git
+.mova-data
+.storybook
+coverage
+dist
+node_modules
+storybook-static
+*.tsbuildinfo
+.DS_Store
