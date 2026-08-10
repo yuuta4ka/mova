@@ -296,17 +296,15 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       const sourceStream = await navigator.mediaDevices.getUserMedia({ audio: { ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}), echoCancellation: settings.echoCancellation, noiseSuppression: settings.noiseSuppression, autoGainControl: settings.autoGainControl }, video: false });
       const context = localAudioContext.current?.state === 'closed' ? new AudioContext() : localAudioContext.current || new AudioContext();
       const source = context.createMediaStreamSource(sourceStream);
-      const gain = context.createGain();
-      const destination = context.createMediaStreamDestination();
       const analyser = context.createAnalyser();
-      gain.gain.value = settings.inputVolume / 100;
-      source.connect(gain);
-      gain.connect(destination);
-      gain.connect(analyser);
+      source.connect(analyser);
       localSourceStream.current = sourceStream;
-      localStream.current = destination.stream;
+      // Send the browser's microphone track directly. MediaStreamDestination can
+      // produce a permanently silent sender when Web Audio is suspended even
+      // though screen-share tracks in the same peer connection keep working.
+      localStream.current = sourceStream;
       localAudioContext.current = context;
-      localGain.current = gain;
+      localGain.current = null;
       localVoiceMonitor.current?.();
       localVoiceMonitor.current = startVoiceActivityMonitor(analyser, setLocalSpeaking);
       await context.resume().catch(() => undefined);

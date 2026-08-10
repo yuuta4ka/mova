@@ -39,6 +39,19 @@ describe('call layout', () => {
     expect(container.querySelector('.mova-call-tile.is-speaking')).toHaveAttribute('data-speaking', 'true');
   });
 
+  it('does not highlight a screen share when its owner speaks', async () => {
+    callMedia.localSpeaking = true;
+    callMedia.screenStream = {
+      id: 'screen-stream',
+      getTracks: () => [],
+      getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080, aspectRatio: 16 / 9 }) }],
+    } as unknown as MediaStream;
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    await screen.findByText('Ваш экран');
+    expect(container.querySelector('.mova-call-tile.is-screen')).not.toHaveClass('is-speaking');
+  });
+
   it('lets the call chat width be changed from its left edge', async () => {
     const user = userEvent.setup();
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
