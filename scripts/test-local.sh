@@ -10,13 +10,17 @@ echo "=========================================="
 echo "  Mova — автоматическая проверка"
 echo "=========================================="
 echo ""
-echo "1/3 Unit и UI-тесты"
+echo "1/4 Unit и UI-тесты"
 run_pnpm test
 echo ""
-echo "2/3 Production-сборка"
+echo "2/4 Production-сборка"
 run_pnpm build
 echo ""
-echo "3/3 Интеграционный тест API/WebSocket"
+echo "3/4 Интеграционный тест API/WebSocket"
 run_pnpm test:integration
+echo ""
+echo ""
+echo "4/4 Браузерный тест голосового звонка"
+run_pnpm test:call
 echo ""
 echo "✅ Все проверки Mova прошли."

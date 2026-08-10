@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:integration": "node server/integration.mjs",
+    "test:call": "node server/call-e2e.mjs",
     "test:watch": "vitest",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"

@@ -239,10 +239,14 @@ function handleSocket(socket, request) {
   const firstConnection = !clients.get(user.id)?.size;
   socket.userId = user.id; if (!clients.has(user.id)) clients.set(user.id, new Set()); clients.get(user.id).add(socket);
   socket.send(JSON.stringify({ type: 'ready', user: publicUser(user) }));
+  socket.isAlive = true;
+  socket.on('pong', () => { socket.isAlive = true; });
   if (firstConnection) broadcastAll({ type: 'presence:update', user: publicUser(user) }, user.id);
   for (const conversationId of activeCalls.keys()) if (isMember(user.id, conversationId)) socket.send(JSON.stringify(callStateFor(conversationId, socket)));
   socket.on('message', (raw) => { try {
-    const event = JSON.parse(raw.toString()); const conversationId = event.conversationId; if (!conversationId || !isMember(user.id, conversationId)) return;
+    const event = JSON.parse(raw.toString());
+    if (event.type === 'heartbeat') return socket.send(JSON.stringify({ type: 'heartbeat:ack', sentAt: Number(event.sentAt) || Date.now() }));
+    const conversationId = event.conversationId; if (!conversationId || !isMember(user.id, conversationId)) return;
     if (event.type === 'typing') return broadcastToConversation(conversationId, { type: 'typing', conversationId, userId: user.id, active: Boolean(event.active) }, user.id);
     if (event.type === 'call:sync') return socket.send(JSON.stringify(callStateFor(conversationId, socket)));
     if (event.type === 'call:invite') {
@@ -287,5 +291,13 @@ function handleSocket(socket, request) {
 await loadDatabase();
 const server = createServer(handleRequest);
 const sockets = new WebSocketServer({ noServer: true }); sockets.on('connection', handleSocket);
+const socketHeartbeat = setInterval(() => {
+  for (const socket of sockets.clients) {
+    if (socket.isAlive === false) { socket.terminate(); continue; }
+    socket.isAlive = false;
+    socket.ping();
+  }
+}, 30_000);
+sockets.on('close', () => clearInterval(socketHeartbeat));
 server.on('upgrade', (request, socket, head) => { if (!request.url?.startsWith('/ws')) return socket.destroy(); sockets.handleUpgrade(request, socket, head, (webSocket) => sockets.emit('connection', webSocket, request)); });
 server.listen(port, host, () => console.log(`Mova ready at http://${host}:${port}; data: ${databasePath}`));

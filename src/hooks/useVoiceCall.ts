@@ -4,6 +4,16 @@ import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
 
 export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'active' | 'error';
 export interface ScreenShareQuality { width: number; height: number; frameRate: number }
+export interface PeerCallDiagnostics {
+  connectionState: RTCPeerConnectionState;
+  iceConnectionState: RTCIceConnectionState;
+  outboundAudioBytes: number;
+  inboundAudioBytes: number;
+  candidateType?: string;
+  protocol?: string;
+  recovering: boolean;
+  updatedAt: number;
+}
 
 type RemoteMediaKind = 'voice' | 'screen';
 interface RemoteAudioEntry {
@@ -115,6 +125,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>(() => loadVolumes(participantVolumeKey));
   const [screenVolumes, setScreenVolumes] = useState<Record<string, number>>(() => loadVolumes(screenVolumeKey));
+  const [diagnostics, setDiagnostics] = useState<Record<string, PeerCallDiagnostics>>({});
 
   const stateRef = useRef<CallState>('idle');
   const mutedRef = useRef(false);
@@ -124,6 +135,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const localAudioContext = useRef<AudioContext | null>(null);
   const localGain = useRef<GainNode | null>(null);
   const localVoiceMonitor = useRef<(() => void) | null>(null);
+  const localSpeakingRef = useRef(false);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const peers = useRef(new Map<string, RTCPeerConnection>());
@@ -140,6 +152,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const negotiateRef = useRef<(userId: string, restartIce?: boolean) => Promise<void>>(async () => undefined);
   const stopTone = useRef<() => void>(() => undefined);
   const ringTimeout = useRef<number | null>(null);
+  const previousPeerStats = useRef(new Map<string, { outbound: number; stalledChecks: number; lastRecoveryAt: number }>());
 
   const updateState = useCallback((next: CallState) => { stateRef.current = next; setState(next); }, []);
   const updateRemoteMedia = useCallback((updater: (items: Record<string, { camera?: string; screen?: string }>) => Record<string, { camera?: string; screen?: string }>) => {
@@ -271,6 +284,48 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   }, [addMissingLocalTracks, conversationId]);
   negotiateRef.current = negotiatePeer;
 
+  const inspectPeerConnections = useCallback(async () => {
+    const next: Record<string, PeerCallDiagnostics> = {};
+    await Promise.all([...peers.current.entries()].map(async ([userId, peer]) => {
+      if (peer.signalingState === 'closed') return;
+      const reports = await peer.getStats();
+      let outboundAudioBytes = 0;
+      let inboundAudioBytes = 0;
+      let hasOutboundAudio = false;
+      let selectedPair: (RTCStats & { localCandidateId?: string; remoteCandidateId?: string }) | undefined;
+      reports.forEach((report) => {
+        const mediaKind = report.kind || report.mediaType;
+        if (report.type === 'outbound-rtp' && mediaKind === 'audio' && !report.isRemote) { hasOutboundAudio = true; outboundAudioBytes += Number(report.bytesSent || 0); }
+        if (report.type === 'inbound-rtp' && mediaKind === 'audio' && !report.isRemote) inboundAudioBytes += Number(report.bytesReceived || 0);
+        if (report.type === 'transport' && report.selectedCandidatePairId) selectedPair = reports.get(report.selectedCandidatePairId) as typeof selectedPair;
+      });
+      if (!selectedPair) reports.forEach((report) => { if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) selectedPair = report as typeof selectedPair; });
+      const localCandidate = selectedPair?.localCandidateId ? reports.get(selectedPair.localCandidateId) : undefined;
+      const remoteCandidate = selectedPair?.remoteCandidateId ? reports.get(selectedPair.remoteCandidateId) : undefined;
+      const previous = previousPeerStats.current.get(userId) || { outbound: -1, stalledChecks: 0, lastRecoveryAt: 0 };
+      const microphoneEnabled = Boolean(localStream.current?.getAudioTracks().some((track) => track.enabled && track.readyState === 'live'));
+      const stalled = peer.connectionState === 'connected' && microphoneEnabled && localSpeakingRef.current && hasOutboundAudio && previous.outbound >= 0 && outboundAudioBytes <= previous.outbound;
+      const stalledChecks = stalled ? previous.stalledChecks + 1 : 0;
+      const shouldRecover = stalledChecks >= 3 && Date.now() - previous.lastRecoveryAt > 20_000;
+      previousPeerStats.current.set(userId, { outbound: outboundAudioBytes, stalledChecks: shouldRecover ? 0 : stalledChecks, lastRecoveryAt: shouldRecover ? Date.now() : previous.lastRecoveryAt });
+      if (shouldRecover) {
+        setError('Восстанавливаем передачу звука…');
+        void negotiateRef.current(userId, true).catch(() => setError('Не удалось восстановить передачу звука. Переподключитесь к звонку.'));
+      } else if (!stalled) setError((value) => value === 'Восстанавливаем передачу звука…' ? '' : value);
+      next[userId] = {
+        connectionState: peer.connectionState,
+        iceConnectionState: peer.iceConnectionState,
+        outboundAudioBytes,
+        inboundAudioBytes,
+        candidateType: [localCandidate?.candidateType, remoteCandidate?.candidateType].filter(Boolean).join(' → ') || undefined,
+        protocol: localCandidate?.protocol || remoteCandidate?.protocol,
+        recovering: shouldRecover,
+        updatedAt: Date.now(),
+      };
+    }));
+    setDiagnostics(next);
+  }, []);
+
   const announceLocalState = useCallback(() => {
     if (!conversationId) return;
     realtime.send({ type: 'voice:state', conversationId, muted: mutedRef.current, deafened: deafenedRef.current });
@@ -308,7 +363,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       localAudioContext.current = context;
       localGain.current = null;
       localVoiceMonitor.current?.();
-      localVoiceMonitor.current = startVoiceActivityMonitor(analyser, setLocalSpeaking);
+      localVoiceMonitor.current = startVoiceActivityMonitor(analyser, (speaking) => { localSpeakingRef.current = speaking; setLocalSpeaking(speaking); });
       await context.resume().catch(() => undefined);
       const existingPeers = [...peers.current.keys()];
       peers.current.forEach(addMissingLocalTracks);
@@ -327,6 +382,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (notify && conversationId && previousState !== 'idle') realtime.send({ type: 'call:end', conversationId });
     if (conversationId) realtime.send({ type: 'voice:leave', conversationId });
     peers.current.forEach((peer) => peer.close()); peers.current.clear();
+    previousPeerStats.current.clear(); setDiagnostics({});
     pendingCandidates.current.clear(); makingOffer.current.clear(); ignoredOffers.current.clear(); negotiationQueues.current.clear();
     [...remoteAudio.current.keys()].forEach(removeRemoteAudio);
     localVoiceMonitor.current?.(); localVoiceMonitor.current = null;
@@ -338,7 +394,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     screenStreamRef.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
     localStream.current = null; localSourceStream.current = null; cameraStreamRef.current = null; screenStreamRef.current = null;
     setCameraStream(null); setScreenStream(null); setRemoteVideoStreams([]); updateRemoteMedia(() => ({})); setRemoteVoiceStates({});
-    setLocalSpeaking(false); setSpeakingUsers({});
+    localSpeakingRef.current = false; setLocalSpeaking(false); setSpeakingUsers({});
     if (localAudioContext.current?.state !== 'closed') void localAudioContext.current?.close().catch(() => undefined);
     localAudioContext.current = null; localGain.current = null;
     setParticipants([]); mutedRef.current = false; deafenedRef.current = false; setMuted(false); setDeafened(false); setIncomingFrom(null);
@@ -427,6 +483,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         if (event.type === 'voice:joined') announceLocalState();
         if (event.type === 'voice:left') {
           peers.current.get(event.userId)?.close(); peers.current.delete(event.userId);
+          previousPeerStats.current.delete(event.userId);
+          setDiagnostics((items) => { const next = { ...items }; delete next[event.userId]; return next; });
           [...remoteAudio.current.entries()].filter(([, entry]) => entry.userId === event.userId).forEach(([key]) => removeRemoteAudio(key));
           setRemoteVideoStreams((items) => items.filter((item) => item.userId !== event.userId));
           setSpeakingUsers((items) => Object.fromEntries(Object.entries(items).filter(([id]) => id !== event.userId)));
@@ -441,6 +499,13 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (conversationId) realtime.send({ type: 'call:sync', conversationId });
     return () => leave(false, true);
   }, [conversationId, leave]);
+
+  useEffect(() => {
+    if (state !== 'active') return;
+    void inspectPeerConnections();
+    const timer = window.setInterval(() => void inspectPeerConnections(), 3_000);
+    return () => window.clearInterval(timer);
+  }, [inspectPeerConnections, state]);
 
   useEffect(() => {
     const apply = (event: Event) => {
@@ -544,7 +609,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   return {
     state, muted, deafened, participants, error, incomingFrom, cameraStream, screenStream, remoteVideoStreams, remoteMedia, remoteVoiceStates,
-    localSpeaking, speakingUsers, participantVolumes, screenVolumes, call, accept, decline, leave: () => leave(true), toggleMute, toggleDeafen,
+    localSpeaking, speakingUsers, participantVolumes, screenVolumes, diagnostics, call, accept, decline, leave: () => leave(true), toggleMute, toggleDeafen,
     toggleCamera, toggleScreen: screenStreamRef.current ? stopScreen : shareScreen, shareScreen, stopScreen, updateScreenQuality, setParticipantVolume, setScreenVolume,
   };
 }

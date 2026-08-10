@@ -37,6 +37,7 @@ export const api = {
 
 export type RealtimeEvent =
   | { type: 'ready'; user: AppUser }
+  | { type: 'heartbeat:ack'; sentAt: number }
   | { type: 'message:new'; message: AppMessage }
   | { type: 'message:read'; conversationId: string; userId: string; messageIds: string[]; readAt: string }
   | { type: 'conversation:new'; conversationId: string }
@@ -61,9 +62,35 @@ export class RealtimeClient {
   private reconnectAttempts = 0;
   private closedByUser = false;
   private pending: string[] = [];
+  private heartbeatTimer: number | null = null;
+  private lastHeartbeatAck = 0;
+  private wakeListenersAttached = false;
+  private readonly wake = () => {
+    if (this.closedByUser || !session.get()) return;
+    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: 'heartbeat', sentAt: Date.now() }));
+    else this.connect();
+  };
+  private stopHeartbeat() {
+    if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+  private startHeartbeat(socket: WebSocket) {
+    this.stopHeartbeat();
+    this.lastHeartbeatAck = Date.now();
+    this.heartbeatTimer = window.setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastHeartbeatAck > 45_000) return socket.close(4000, 'Heartbeat timeout');
+      socket.send(JSON.stringify({ type: 'heartbeat', sentAt: Date.now() }));
+    }, 15_000);
+  }
   connect() {
     const token = session.get(); if (!token || this.socket?.readyState === WebSocket.OPEN || this.socket?.readyState === WebSocket.CONNECTING) return;
     this.closedByUser = false;
+    if (!this.wakeListenersAttached) {
+      window.addEventListener('online', this.wake);
+      document.addEventListener('visibilitychange', this.wake);
+      this.wakeListenersAttached = true;
+    }
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -71,12 +98,14 @@ export class RealtimeClient {
     socket.onopen = () => {
       if (this.socket !== socket) return;
       this.reconnectAttempts = 0;
+      this.startHeartbeat(socket);
       const pending = this.pending.splice(0);
       pending.forEach((message) => socket.send(message));
     };
-    socket.onmessage = (message) => { try { const event = JSON.parse(message.data) as RealtimeEvent; this.listeners.forEach((listener) => listener(event)); } catch {} };
+    socket.onmessage = (message) => { try { const event = JSON.parse(message.data) as RealtimeEvent; if (event.type === 'heartbeat:ack') { this.lastHeartbeatAck = Date.now(); return; } this.listeners.forEach((listener) => listener(event)); } catch {} };
     socket.onclose = () => {
       if (this.socket !== socket) return;
+      this.stopHeartbeat();
       this.socket = null;
       if (this.closedByUser || !session.get()) return;
       const delay = Math.min(8_000, 500 * 2 ** this.reconnectAttempts++);
@@ -96,6 +125,12 @@ export class RealtimeClient {
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.pending = [];
+    this.stopHeartbeat();
+    if (this.wakeListenersAttached) {
+      window.removeEventListener('online', this.wake);
+      document.removeEventListener('visibilitychange', this.wake);
+      this.wakeListenersAttached = false;
+    }
     const socket = this.socket; this.socket = null; socket?.close();
   }
 }
