@@ -208,10 +208,20 @@ try {
     }),
   );
   const recoveredPeers = await waitFor(recovered.socket, 'voice:peers');
-  const endPromise = waitFor(secondSocket, 'call:end');
+  const leftPromise = waitFor(secondSocket, 'voice:left');
+  const returnStatePromise = waitFor(recovered.socket, 'call:state');
   recovered.socket.send(
     JSON.stringify({
-      type: 'call:end',
+      type: 'voice:leave',
+      conversationId: conversation.conversation.id,
+    }),
+  );
+  await leftPromise;
+  const returnState = await returnStatePromise;
+  const endPromise = waitFor(secondSocket, 'call:end');
+  secondSocket.send(
+    JSON.stringify({
+      type: 'voice:leave',
       conversationId: conversation.conversation.id,
     }),
   );
@@ -237,6 +247,7 @@ try {
       media: `${media.mediaKind}:${media.enabled}`,
       voiceState: `${voiceState.muted}:${voiceState.deafened}`,
       recoveredCall: `${recovered.event.status}:${recoveredPeers.peers.length}`,
+      availableAfterLeave: returnState.status === 'active' && returnState.joined === false,
       endedBy: ended.fromUserId,
     }),
   );

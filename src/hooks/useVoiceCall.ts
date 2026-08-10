@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, realtime, type AppUser, type RealtimeEvent } from '../lib/api';
 import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
 
-export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'active' | 'error';
+export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'active' | 'available' | 'error';
 export interface ScreenShareQuality {
   width: number;
   height: number;
@@ -84,13 +84,13 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
   }
 }
 
-function playControlTone(kind: 'mute' | 'unmute' | 'deafen' | 'undeafen') {
+function playControlTone(kind: 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'end') {
   try {
     const context = new AudioContext();
     const settings = loadAudioSettings();
     const setSinkId = (context as AudioContext & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
     if (settings.outputDeviceId !== 'default' && setSinkId) void setSinkId.call(context, settings.outputDeviceId).catch(() => undefined);
-    const frequencies = kind === 'mute' ? [520, 350] : kind === 'unmute' ? [350, 560] : kind === 'deafen' ? [570, 420, 300] : [300, 430, 590];
+    const frequencies = kind === 'mute' ? [520, 350] : kind === 'unmute' ? [350, 560] : kind === 'deafen' ? [570, 420, 300] : kind === 'undeafen' ? [300, 430, 590] : [560, 420, 280];
     const master = context.createGain();
     const level = Math.min(2, settings.outputVolume / 100) * 0.075;
     master.gain.setValueAtTime(level, context.currentTime);
@@ -562,8 +562,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const leave = useCallback(
     (notify = true, preserveStoredCall = false) => {
       const previousState = stateRef.current;
-      if (notify && conversationId && previousState !== 'idle') realtime.send({ type: 'call:end', conversationId });
       if (conversationId) realtime.send({ type: 'voice:leave', conversationId });
+      if (!preserveStoredCall && previousState !== 'idle' && previousState !== 'error') playControlTone('end');
       peers.current.forEach((peer) => peer.close());
       peers.current.clear();
       previousPeerStats.current.clear();
@@ -615,6 +615,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         if (storedCall(activeCallKey) === conversationId) setStoredCall(activeCallKey, null);
         if (storedCall(pendingCallKey) === conversationId) setStoredCall(pendingCallKey, null);
       }
+      if (notify && conversationId) window.setTimeout(() => realtime.send({ type: 'call:sync', conversationId }), 120);
     },
     [conversationId, removeRemoteAudio, updateRemoteMedia, updateState],
   );
@@ -651,7 +652,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
               }
               if (event.status === 'active' && !localStream.current) {
                 if (storedCall(activeCallKey) === conversationId || storedCall(pendingCallKey) === conversationId || event.joined) await connectAudio();
-                else if (stateRef.current === 'idle' || stateRef.current === 'ringing') updateState('incoming');
+                else {
+                  stopTone.current();
+                  if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
+                  ringTimeout.current = null;
+                  updateState('available');
+                }
               }
               return;
             }
@@ -661,10 +667,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
               stopTone.current();
               stopTone.current = startRingtone('incoming');
             }
-            if (event.type === 'call:accept' && stateRef.current === 'ringing') {
+            if (event.type === 'call:accept') {
               stopTone.current();
               if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
-              await connectAudio();
+              ringTimeout.current = null;
+              if (stateRef.current === 'ringing') await connectAudio();
+              else if (stateRef.current === 'incoming') updateState('available');
             }
             if (event.type === 'call:decline' && ['ringing', 'incoming'].includes(stateRef.current)) leave(false);
             if (event.type === 'call:end') {
@@ -821,11 +829,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     }, 30_000);
   };
   const accept = async () => {
-    if (!conversationId || stateRef.current !== 'incoming') return;
+    if (!conversationId || !['incoming', 'available'].includes(stateRef.current)) return;
+    const joiningExistingCall = stateRef.current === 'available';
     unlockAudio();
     stopTone.current();
     setStoredCall(pendingCallKey, conversationId);
-    realtime.send({ type: 'call:accept', conversationId });
+    if (!joiningExistingCall) realtime.send({ type: 'call:accept', conversationId });
     setIncomingFrom(null);
     await connectAudio();
   };

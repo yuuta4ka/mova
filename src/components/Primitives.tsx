@@ -121,10 +121,10 @@ export interface AvatarProps {
 }
 
 export function Avatar({ name, src, color = '#9D7BFF', size = 'md', initialsLength = 2, status, speaking }: AvatarProps) {
-  const initials = name.trim().split(/\s+/).map((part) => part[0]).join('').slice(0, initialsLength).toUpperCase();
+  const initials = name.trim().split(/\s+/).map((part) => Array.from(part)[0] || '').slice(0, initialsLength).join('').toUpperCase();
   return (
     <span className={`mova-avatar mova-avatar--${size} ${src ? 'has-image' : ''} ${speaking ? 'is-speaking' : ''}`} style={{ backgroundColor: color }} aria-label={name}>
-      {src ? <img src={src} alt="" /> : initials}
+      {src ? <img src={src} alt="" loading="lazy" decoding="async" /> : initials}
       {status && <span className={`mova-status mova-status--${status}`} aria-label={status} />}
     </span>
   );

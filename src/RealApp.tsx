@@ -4,6 +4,7 @@ import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, 
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { Avatar, Button, IconButton } from './components/Primitives';
+import { AppleEmoji } from './components/AppleEmoji';
 import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioSettings } from './lib/audioSettings';
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 
@@ -43,6 +44,56 @@ export const formatPresenceStatus = (user?: AppUser, now = Date.now()) => {
   return `был(а) ${days} ${russianCount(days, 'день', 'дня', 'дней')} назад`;
 };
 const messageSoundUrl = new URL('../sound-message.mp3', import.meta.url).href;
+const loadedImageSources = new Set<string>();
+
+function CachedImage({ src, alt, className = '' }: { src: string; alt: string; className?: string }) {
+  const [loaded, setLoaded] = useState(() => loadedImageSources.has(src));
+  useEffect(() => setLoaded(loadedImageSources.has(src)), [src]);
+  return (
+    <span className={`mova-cached-image ${loaded ? 'is-loaded' : 'is-loading'} ${className}`.trim()}>
+      {!loaded && <i className="mova-image-skeleton" aria-hidden="true" />}
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => {
+          loadedImageSources.add(src);
+          setLoaded(true);
+        }}
+      />
+    </span>
+  );
+}
+
+function ConversationListSkeleton() {
+  return <div className="mova-conversation-skeleton" aria-label="Загружаем чаты">{Array.from({ length: 7 }, (_, index) => <i key={index}><b /><span><b /><b /></span></i>)}</div>;
+}
+
+function MessageListSkeleton() {
+  return <div className="mova-message-skeleton" aria-label="Загружаем сообщения">{Array.from({ length: 6 }, (_, index) => <i className={index % 3 === 1 ? 'is-own' : ''} key={index}><b /><span /></i>)}</div>;
+}
+
+interface ClientCache<T> {
+  value: T;
+  updatedAt: number;
+}
+const CLIENT_CACHE_TTL = 60_000;
+const conversationCache = new Map<string, ClientCache<AppConversation[]>>();
+const userCache = new Map<string, ClientCache<AppUser[]>>();
+const messageCache = new Map<string, ClientCache<AppMessage[]>>();
+const isFresh = <T,>(entry?: ClientCache<T>) => Boolean(entry && Date.now() - entry.updatedAt < CLIENT_CACHE_TTL);
+const messageCacheKey = (userId: string, conversationId: string) => `${userId}:${conversationId}`;
+const preferredConversation = (items: AppConversation[]) => {
+  const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
+  return (preferred && items.some((item) => item.id === preferred) ? preferred : items[0]?.id) || null;
+};
+const clearClientCache = () => {
+  conversationCache.clear();
+  userCache.clear();
+  messageCache.clear();
+  loadedImageSources.clear();
+};
 
 function MessageStatus({ message, conversation }: { message: AppMessage; conversation: AppConversation }) {
   if (!message.sentAt) return null;
@@ -327,7 +378,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
             <div className="mova-settings-profile">
               <div className="mova-settings-profile__banner" style={user.bannerDataUrl ? { backgroundImage: `url(${user.bannerDataUrl})` } : undefined} />
               <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="xl" status={avatarStatus(user.presence)} />
-              <h3>{user.name}</h3>
+              <h3><AppleEmoji text={user.name} /></h3>
               <span>{user.handle}</span>
               {user.bio && <p>{user.bio}</p>}
               <Button
@@ -531,7 +582,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
         {user.bannerDataUrl && <div style={{ backgroundImage: `url(${user.bannerDataUrl})` }} />}
         <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="lg" status={avatarStatus(user.presence)} />
         <span>
-          <strong>{user.name}</strong>
+          <strong><AppleEmoji text={user.name} /></strong>
           <small>{user.handle}</small>
         </span>
       </div>
@@ -706,7 +757,7 @@ function ConversationAvatar({ conversation, currentUser }: { conversation: AppCo
 }
 
 function CreateConversation({ open, users, onClose, onCreated }: { open: boolean; users: AppUser[]; onClose: () => void; onCreated: (conversation: AppConversation) => void }) {
-  const [kind, setKind] = useState<'direct' | 'group'>('group');
+  const [kind, setKind] = useState<'direct' | 'group'>('direct');
   const [title, setTitle] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [memberQuery, setMemberQuery] = useState('');
@@ -714,12 +765,19 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     if (open) {
+      setKind('direct');
       setTitle('');
       setSelected([]);
       setMemberQuery('');
       setError('');
     }
   }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [open, onClose]);
   if (!open) return null;
   const create = async () => {
     setLoading(true);
@@ -739,19 +797,20 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
     }
   };
   const visibleUsers = users.filter((user) => `${user.name} ${user.handle}`.toLocaleLowerCase().includes(memberQuery.toLocaleLowerCase()));
+  const selectedUsers = selected.map((id) => users.find((user) => user.id === id)).filter((user): user is AppUser => Boolean(user));
   return (
     <div className="mova-real-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="mova-glass-card mova-create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
         <header>
           <div>
-            <h2 id="create-title">Новый разговор</h2>
-            <p>Соберите своих людей в одном месте</p>
+            <h2 id="create-title">Новый чат</h2>
+            <p>{kind === 'direct' ? 'Выберите человека — и можно начинать' : 'Название и участники в одном окне'}</p>
           </div>
           <IconButton label="Закрыть" onClick={onClose}>
             <X size={19} />
           </IconButton>
         </header>
-        <div className="mova-create-tabs">
+        <div className="mova-create-tabs" role="tablist" aria-label="Тип нового чата">
           <button
             type="button"
             className={kind === 'direct' ? 'is-active' : ''}
@@ -760,26 +819,41 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
               setSelected((items) => items.slice(0, 1));
             }}
           >
-            <MessageCircle size={16} />
-            Личный чат
+            <MessageCircle size={17} />
+            <span><strong>Личный</strong><small>Один на один</small></span>
           </button>
           <button type="button" className={kind === 'group' ? 'is-active' : ''} onClick={() => setKind('group')}>
-            <Users size={16} />
-            Группа
+            <Users size={17} />
+            <span><strong>Группа</strong><small>Для нескольких людей</small></span>
           </button>
         </div>
-        {kind === 'group' && (
-          <label className="mova-create-name">
-            <span>Название</span>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Например, Поездка на Урал" />
+        <div className="mova-create-fields">
+          {kind === 'group' && (
+            <label className="mova-create-name">
+              <Users size={17} />
+              <input autoFocus value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="Название группы" />
+              <small>{title.trim().length}/80</small>
+            </label>
+          )}
+          <label className="mova-create-search">
+            <Search size={17} />
+            <input autoFocus={kind === 'direct'} value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Имя или @username" />
+            {memberQuery && <button type="button" aria-label="Очистить поиск" onClick={() => setMemberQuery('')}><X size={14} /></button>}
           </label>
+        </div>
+        {kind === 'group' && selectedUsers.length > 0 && (
+          <div className="mova-create-selected" aria-label="Выбранные участники">
+            {selectedUsers.map((user) => (
+              <button key={user.id} type="button" onClick={() => setSelected((items) => items.filter((id) => id !== user.id))}>
+                <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="xs" />
+                <span><AppleEmoji text={user.name} /></span>
+                <X size={12} />
+              </button>
+            ))}
+          </div>
         )}
-        <label className="mova-create-search">
-          <Search size={15} />
-          <input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Найти по имени или @username" />
-        </label>
         <div className="mova-create-members">
-          <span>{kind === 'group' ? 'Участники' : 'Собеседник'}</span>
+          <span>{kind === 'group' ? `Участники${selected.length ? ` · ${selected.length}` : ''}` : 'Люди'}</span>
           {users.length === 0 ? (
             <div className="mova-no-users">Других пользователей пока нет. Зарегистрируйте второй аккаунт в новой вкладке.</div>
           ) : visibleUsers.length === 0 ? (
@@ -791,7 +865,7 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
                 <button type="button" key={user.id} className={active ? 'is-active' : ''} onClick={() => setSelected((items) => (kind === 'direct' ? [user.id] : active ? items.filter((id) => id !== user.id) : [...items, user.id]))}>
                   <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} status={avatarStatus(user.presence)} size="sm" />
                   <span>
-                    <strong>{user.name}</strong>
+                    <strong><AppleEmoji text={user.name} /></strong>
                     <small>{user.handle}</small>
                   </span>
                   <i>{active && <Check size={14} />}</i>
@@ -802,11 +876,10 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
         </div>
         {error && <div className="mova-auth-error">{error}</div>}
         <footer>
-          <Button variant="ghost" onClick={onClose}>
-            Отмена
-          </Button>
+          <span>{kind === 'group' && selected.length ? `${selected.length} ${russianCount(selected.length, 'участник', 'участника', 'участников')}` : ''}</span>
+          <Button variant="ghost" onClick={onClose}>Отмена</Button>
           <Button loading={loading} disabled={!selected.length || (kind === 'group' && title.trim().length < 2)} onClick={create}>
-            {kind === 'group' ? 'Создать группу' : 'Начать чат'}
+            {kind === 'group' ? 'Создать' : 'Открыть чат'}
           </Button>
         </footer>
       </section>
@@ -863,7 +936,7 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
       <section className="mova-call-stage">
         <header>
           <span>
-            <strong>{conversation.title}</strong>
+            <strong><AppleEmoji text={conversation.title} /></strong>
             <small>Голосовой разговор</small>
           </span>
         </header>
@@ -987,7 +1060,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     if (!call.screenStream) setScreenMenuOpen(false);
   }, [call.screenStream]);
   useEffect(() => {
-    onCallStateChange(call.state !== 'idle');
+    onCallStateChange(call.state !== 'idle' && call.state !== 'available');
   }, [call.state, onCallStateChange]);
   useEffect(() => {
     const start = (event: Event) => {
@@ -1010,6 +1083,12 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     return (
       <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={call.call}>
         Позвонить
+      </Button>
+    );
+  if (call.state === 'available')
+    return (
+      <Button className="mova-return-call" variant="secondary" size="sm" aria-label="Вернуться в звонок" leadingIcon={<Phone size={16} />} onClick={call.accept}>
+        Вернуться
       </Button>
     );
   if (call.state !== 'active') return stageHost ? createPortal(<PendingCallStage state={call.state} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={call.state === 'ringing' || call.state === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
@@ -1288,7 +1367,7 @@ export function PendingCallStage({ state, conversation, currentUser, caller, err
           <i aria-hidden="true" />
           {eyebrow}
         </span>
-        <h1>{title}</h1>
+        <h1><AppleEmoji text={title} /></h1>
         {meta && <small>{meta}</small>}
         <p>{description}</p>
       </div>
@@ -1457,7 +1536,7 @@ function CallTileLabel({ label, muted, deafened, screen }: { label: string; mute
   );
 }
 
-export function RealMessages({ conversation, currentUser, messages, typingUserIds = [], onSend, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
+export function RealMessages({ conversation, currentUser, messages, loading = false, typingUserIds = [], onSend, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; loading?: boolean; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1759,7 +1838,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
           <ConversationAvatar conversation={conversation} currentUser={currentUser} />
           <span>
             <span className="mova-chat-identity__name">
-              <strong>{conversation.title}</strong>
+              <strong><AppleEmoji text={conversation.title} /></strong>
               {muted && <BellOff size={15} aria-label="Уведомления выключены" />}
             </span>
             <small className={typingLabel ? 'is-typing' : ''}>{typingLabel || status}</small>
@@ -1801,7 +1880,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
           </header>
           <section className="mova-contact-info__profile">
             <ConversationAvatar conversation={conversation} currentUser={currentUser} />
-            <h3>{conversation.title}</h3>
+            <h3><AppleEmoji text={conversation.title} /></h3>
             <p>{status}</p>
           </section>
           <section className="mova-contact-info__card">
@@ -1867,7 +1946,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
         <header className="mova-call-chat-header">
           <MessageCircle size={20} />
           <span>
-            <strong>{conversation.title}</strong>
+            <strong><AppleEmoji text={conversation.title} /></strong>
             <small>Чат звонка</small>
           </span>
           <IconButton label="Закрыть чат" onClick={() => setCallChatOpen(false)}>
@@ -1982,10 +2061,10 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
       <div className="mova-real-messages" ref={messagesContainer}>
         <div className="mova-real-thread-intro">
           <ConversationAvatar conversation={conversation} currentUser={currentUser} />
-          <h1>{conversation.title}</h1>
+          <h1><AppleEmoji text={conversation.title} /></h1>
           <p>{conversation.kind === 'direct' ? `Это начало вашей переписки${other ? ` с ${other.name}` : ''}.` : 'Группа создана. Можно начинать разговор.'}</p>
         </div>
-        {messages.map((message, index) => {
+        {loading && messages.length === 0 ? <MessageListSkeleton /> : messages.map((message, index) => {
           const own = message.authorId === currentUser.id;
           const previous = messages[index - 1];
           const grouped = previous?.authorId === message.authorId && new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() < 300000;
@@ -2004,7 +2083,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
               {selectingMessages && <span className="mova-message-selector">{selectedForAction && <Check size={14} />}</span>}
               {!own && !grouped && <Avatar name={message.author.name} src={message.author.avatarDataUrl} color={message.author.color} size="sm" />}
               <div>
-                {conversation.kind === 'group' && !own && !grouped && <strong>{message.author.name}</strong>}
+                {conversation.kind === 'group' && !own && !grouped && <strong><AppleEmoji text={message.author.name} /></strong>}
                 <div className="mova-real-bubble">
                   {message.replyTo && (
                     <button
@@ -2018,14 +2097,14 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
                       }
                       aria-label={`Перейти к сообщению ${message.replyTo.author.name}`}
                     >
-                      <strong>{message.replyTo.author.name}</strong>
-                      <span>{message.replyTo.content || message.replyTo.attachmentName || 'Вложение'}</span>
+                      <strong><AppleEmoji text={message.replyTo.author.name} /></strong>
+                      <span><AppleEmoji text={message.replyTo.content || message.replyTo.attachmentName || 'Вложение'} /></span>
                     </button>
                   )}
                   {message.attachment &&
                     (message.attachment.type.startsWith('image/') ? (
                       <button type="button" className="mova-message-image" onClick={() => setImagePreview(message.attachment || null)} aria-label={`Открыть изображение ${message.attachment.name}`}>
-                        <img src={message.attachment.dataUrl} alt={message.attachment.name} />
+                        <CachedImage src={message.attachment.dataUrl} alt={message.attachment.name} />
                       </button>
                     ) : (
                       <a className="mova-message-file" href={message.attachment.dataUrl} download={message.attachment.name}>
@@ -2036,7 +2115,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
                         </span>
                       </a>
                     ))}
-                  {message.content && <p>{message.content}</p>}
+                  {message.content && <p><AppleEmoji text={message.content} /></p>}
                   {message.editedAt && <span className="mova-message-edited">изменено</span>}
                   <time>
                     {new Intl.DateTimeFormat('ru', {
@@ -2107,7 +2186,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
             {editingMessage ? <Pencil size={17} /> : <Reply size={17} />}
             <span>
               <strong>{editingMessage ? 'Редактирование сообщения' : `Ответ ${replyingTo?.author.name}`}</strong>
-              <small>{(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'}</small>
+              <small><AppleEmoji text={(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'} /></small>
             </span>
             <button
               type="button"
@@ -2181,7 +2260,7 @@ export function RealMessages({ conversation, currentUser, messages, typingUserId
                   setEmojiOpen(false);
                 }}
               >
-                {emoji}
+                <AppleEmoji text={emoji} />
               </button>
             ))}
           </div>
@@ -2219,12 +2298,15 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const SIDEBAR_MIN_WIDTH = 260;
   const SIDEBAR_MAX_WIDTH = 560;
   const SIDEBAR_COLLAPSE_THRESHOLD = 220;
-  const [conversations, setConversations] = useState<AppConversation[]>([]);
-  const [users, setUsers] = useState<AppUser[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AppMessage[]>([]);
+  const initialConversations = conversationCache.get(currentUser.id)?.value || [];
+  const initialSelectedId = preferredConversation(initialConversations);
+  const [conversations, setConversations] = useState<AppConversation[]>(initialConversations);
+  const [users, setUsers] = useState<AppUser[]>(userCache.get(currentUser.id)?.value || []);
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
+  const [messages, setMessages] = useState<AppMessage[]>(() => (initialSelectedId ? messageCache.get(messageCacheKey(currentUser.id, initialSelectedId))?.value || [] : []));
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string[]>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!isFresh(conversationCache.get(currentUser.id)) || !isFresh(userCache.get(currentUser.id)));
+  const [messagesLoading, setMessagesLoading] = useState(() => Boolean(initialSelectedId && !isFresh(messageCache.get(messageCacheKey(currentUser.id, initialSelectedId)))));
   const [createOpen, setCreateOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2315,30 +2397,54 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   );
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
   const selectConversation = useCallback((conversationId: string) => {
-    if (selectedIdRef.current !== conversationId) setMessages([]);
     setSelectedId(conversationId);
     window.localStorage.setItem('mova-selected-conversation', conversationId);
   }, []);
-  const reloadConversations = useCallback(async () => {
+  const reloadConversations = useCallback(async (force = false) => {
+    const cached = conversationCache.get(currentUser.id);
+    if (!force && isFresh(cached)) {
+      setConversations(cached!.value);
+      setSelectedId((current) => (current && cached!.value.some((item) => item.id === current) ? current : preferredConversation(cached!.value)));
+      return;
+    }
     const result = await api.conversations();
+    conversationCache.set(currentUser.id, { value: result.conversations, updatedAt: Date.now() });
     setConversations(result.conversations);
     setSelectedId((current) => {
       const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
       return current && result.conversations.some((item) => item.id === current) ? current : preferred && result.conversations.some((item) => item.id === preferred) ? preferred : result.conversations[0]?.id || null;
     });
-  }, []);
+  }, [currentUser.id]);
   useEffect(() => {
-    Promise.all([reloadConversations(), api.users().then((result) => setUsers(result.users))]).finally(() => setLoading(false));
+    const loadUsers = async () => {
+      const cached = userCache.get(currentUser.id);
+      if (isFresh(cached)) return setUsers(cached!.value);
+      const result = await api.users();
+      userCache.set(currentUser.id, { value: result.users, updatedAt: Date.now() });
+      setUsers(result.users);
+    };
+    Promise.all([reloadConversations(), loadUsers()]).finally(() => setLoading(false));
     realtime.connect();
     const unsubscribe = realtime.subscribe((event: RealtimeEvent) => {
       if (event.type === 'message:new') {
         updateTypingUser(event.message.conversationId, event.message.authorId, false);
+        const cacheKey = messageCacheKey(currentUserRef.current.id, event.message.conversationId);
+        const cachedEntry = messageCache.get(cacheKey);
+        const cached = cachedEntry?.value || [];
+        if (!cached.some((item) => item.id === event.message.id)) messageCache.set(cacheKey, { value: [...cached, event.message], updatedAt: cachedEntry ? Date.now() : 0 });
         setMessages((items) => (event.message.conversationId === selectedIdRef.current && !items.some((item) => item.id === event.message.id) ? [...items, event.message] : items));
-        void reloadConversations();
+        setConversations((items) => {
+          const { author: _author, ...lastMessage } = event.message;
+          const next = items.map((conversation) => (conversation.id === event.message.conversationId ? { ...conversation, lastMessage } : conversation));
+          conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+          return next;
+        });
       }
-      if (event.type === 'message:update' && event.message.conversationId === selectedIdRef.current) {
-        setMessages((items) => items.map((message) => (message.id === event.message.id ? event.message : message)));
-        void reloadConversations();
+      if (event.type === 'message:update') {
+        const cacheKey = messageCacheKey(currentUserRef.current.id, event.message.conversationId);
+        const cachedEntry = messageCache.get(cacheKey);
+        if (cachedEntry) messageCache.set(cacheKey, { value: cachedEntry.value.map((message) => (message.id === event.message.id ? event.message : message)), updatedAt: Date.now() });
+        if (event.message.conversationId === selectedIdRef.current) setMessages((items) => items.map((message) => (message.id === event.message.id ? event.message : message)));
       }
       if (event.type === 'typing' && event.userId !== currentUserRef.current.id) updateTypingUser(event.conversationId, event.userId, event.active);
       if (event.type === 'message:read' && event.conversationId === selectedIdRef.current) {
@@ -2356,7 +2462,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       }
       if (event.type === 'call:invite') selectConversation(event.conversationId);
       if (event.type === 'call:state' && event.status !== 'idle' && (sessionStorage.getItem('mova-active-call') === event.conversationId || sessionStorage.getItem('mova-pending-call') === event.conversationId || event.status === 'ringing')) selectConversation(event.conversationId);
-      if (event.type === 'conversation:new') void reloadConversations();
+      if (event.type === 'conversation:new') void reloadConversations(true);
       if (event.type === 'profile:update' || event.type === 'presence:update') {
         setUsers((items) => items.map((user) => (user.id === event.user.id ? event.user : user)));
         setConversations((items) =>
@@ -2401,9 +2507,31 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     return () => window.clearTimeout(timer);
   }, [currentUser.presence, currentUser.dndUntil, onUserUpdate]);
   useEffect(() => {
-    if (!selectedId) return setMessages([]);
-    api.messages(selectedId).then((result) => setMessages(result.messages));
-  }, [selectedId]);
+    if (!selectedId) {
+      setMessages([]);
+      setMessagesLoading(false);
+      return;
+    }
+    const key = messageCacheKey(currentUser.id, selectedId);
+    const cached = messageCache.get(key);
+    if (cached) setMessages(cached.value);
+    else setMessages([]);
+    if (isFresh(cached)) {
+      setMessagesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setMessagesLoading(true);
+    api.messages(selectedId)
+      .then((result) => {
+        messageCache.set(key, { value: result.messages, updatedAt: Date.now() });
+        if (!cancelled) setMessages(result.messages);
+      })
+      .finally(() => !cancelled && setMessagesLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, currentUser.id]);
   useEffect(() => {
     const markRead = () => {
       if (!selectedId || document.visibilityState !== 'visible') return;
@@ -2440,14 +2568,20 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const send = async (content: string, attachment?: MessageAttachment, replyToId?: string) => {
     if (!selectedId) return;
     const result = await api.sendMessage(selectedId, content, attachment, replyToId);
-    setMessages((items) => (items.some((item) => item.id === result.message.id) ? items : [...items, result.message]));
-    void reloadConversations();
+    setMessages((items) => {
+      const next = items.some((item) => item.id === result.message.id) ? items : [...items, result.message];
+      messageCache.set(messageCacheKey(currentUser.id, selectedId), { value: next, updatedAt: Date.now() });
+      return next;
+    });
   };
   const edit = async (messageId: string, content: string) => {
     if (!selectedId) return;
     const result = await api.editMessage(selectedId, messageId, content);
-    setMessages((items) => items.map((message) => (message.id === result.message.id ? result.message : message)));
-    void reloadConversations();
+    setMessages((items) => {
+      const next = items.map((message) => (message.id === result.message.id ? result.message : message));
+      messageCache.set(messageCacheKey(currentUser.id, selectedId), { value: next, updatedAt: Date.now() });
+      return next;
+    });
   };
   const visible = useMemo(() => conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [conversations, query]);
   return (
@@ -2468,7 +2602,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         </div>
         <div className="mova-real-chat-list">
           {loading ? (
-            <div className="mova-real-loading">Загружаем разговоры…</div>
+            <ConversationListSkeleton />
           ) : visible.length === 0 ? (
             <div className="mova-real-empty-list">
               <MessageCircle size={25} />
@@ -2481,7 +2615,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
                 <ConversationAvatar conversation={conversation} currentUser={currentUser} />
                 <span>
                   <span>
-                    <strong>{conversation.title}</strong>
+                    <strong><AppleEmoji text={conversation.title} /></strong>
                     <time>
                       {conversation.lastMessage
                         ? new Intl.DateTimeFormat('ru', {
@@ -2491,7 +2625,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
                         : ''}
                     </time>
                   </span>
-                  <small>{conversation.lastMessage?.content || (conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор')}</small>
+                  <small><AppleEmoji text={conversation.lastMessage?.content || (conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор')} /></small>
                 </span>
               </button>
             ))
@@ -2534,6 +2668,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
           conversation={selected}
           currentUser={currentUser}
           messages={messages}
+          loading={messagesLoading}
           typingUserIds={typingByConversation[selected.id] || []}
           onSend={send}
           onEdit={edit}
@@ -2562,7 +2697,11 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         users={users}
         onClose={() => setCreateOpen(false)}
         onCreated={(conversation) => {
-          setConversations((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
+          setConversations((items) => {
+            const next = [conversation, ...items.filter((item) => item.id !== conversation.id)];
+            conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+            return next;
+          });
           selectConversation(conversation.id);
         }}
       />
@@ -2605,6 +2744,7 @@ export function RealApp() {
       onUserUpdate={setCurrentUser}
       onLogout={() => {
         realtime.close();
+        clearClientCache();
         session.clear();
         setCurrentUser(null);
       }}

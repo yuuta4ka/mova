@@ -573,6 +573,7 @@ function handleRequest(request, response) {
 function leaveVoice(socket) {
   if (!socket.voiceConversationId || !socket.userId) return;
   const conversationId = socket.voiceConversationId;
+  socket.voiceConversationId = null;
   const room = voiceRooms.get(conversationId);
   const userSockets = room?.get(socket.userId);
   userSockets?.delete(socket);
@@ -582,9 +583,17 @@ function leaveVoice(socket) {
   }
   if (room?.size === 0) {
     voiceRooms.delete(conversationId);
-    scheduleCallCleanup(conversationId);
+    const call = activeCalls.get(conversationId);
+    activeCalls.delete(conversationId);
+    clearCallCleanup(conversationId);
+    broadcastToConversation(conversationId, {
+      type: 'call:end',
+      conversationId,
+      fromUserId: call?.fromUserId || socket.userId,
+    });
+  } else if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(callStateFor(conversationId, socket)));
   }
-  socket.voiceConversationId = null;
 }
 
 function handleSocket(socket, request) {
@@ -658,9 +667,7 @@ function handleSocket(socket, request) {
         return broadcastToConversation(conversationId, { type: 'call:decline', conversationId, fromUserId: user.id }, user.id);
       }
       if (event.type === 'call:end') {
-        activeCalls.delete(conversationId);
-        clearCallCleanup(conversationId);
-        return broadcastToConversation(conversationId, { type: 'call:end', conversationId, fromUserId: user.id }, user.id);
+        return leaveVoice(socket);
       }
       if (event.type === 'voice:join') {
         leaveVoice(socket);
