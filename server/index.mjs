@@ -21,6 +21,18 @@ const voiceRooms = new Map();
 const activeCalls = new Map();
 const callCleanupTimers = new Map();
 
+const defaultIceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+function rtcIceServers() {
+  if (process.env.MOVA_ICE_SERVERS) {
+    try {
+      const parsed = JSON.parse(process.env.MOVA_ICE_SERVERS);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch (error) { console.error('MOVA_ICE_SERVERS must be valid JSON:', error.message); }
+  }
+  const urls = String(process.env.MOVA_TURN_URLS || process.env.MOVA_TURN_URL || '').split(',').map((value) => value.trim()).filter(Boolean);
+  return urls.length ? [...defaultIceServers, { urls, username: process.env.MOVA_TURN_USERNAME || '', credential: process.env.MOVA_TURN_CREDENTIAL || '' }] : defaultIceServers;
+}
+
 const emptyDatabase = { users: [], conversations: [], memberships: [], messages: [] };
 let database = emptyDatabase;
 
@@ -103,6 +115,7 @@ async function handleApi(request, response) {
       return json(response, 200, { token: createToken(user.id), user: publicUser(user) });
     }
     const user = auth(request); if (!user) return json(response, 401, { error: 'Требуется вход' });
+    if (request.method === 'GET' && url.pathname === '/api/rtc-config') return json(response, 200, { iceServers: rtcIceServers() });
     if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user: publicUser(user) });
     if (request.method === 'GET' && url.pathname === '/api/users') return json(response, 200, { users: database.users.filter((item) => item.id !== user.id).map(publicUser) });
     if (request.method === 'PATCH' && url.pathname === '/api/profile') {

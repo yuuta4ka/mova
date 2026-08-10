@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { realtime, type AppUser, type RealtimeEvent } from '../lib/api';
+import { api, realtime, type AppUser, type RealtimeEvent } from '../lib/api';
 import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
 
 export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'active' | 'error';
@@ -13,7 +13,6 @@ interface RemoteAudioEntry {
   element: HTMLAudioElement;
   gain: GainNode | null;
   source: MediaStreamAudioSourceNode | null;
-  destination: MediaStreamAudioDestinationNode | null;
   stopMonitor: () => void;
 }
 
@@ -97,12 +96,9 @@ function startVoiceActivityMonitor(analyser: AnalyserNode, onChange: (speaking: 
   return () => { cancelAnimationFrame(animation); if (active) onChange(false); };
 }
 
-function iceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
-  const turnUrl = import.meta.env.VITE_TURN_URL;
-  if (turnUrl) servers.push({ urls: turnUrl, username: import.meta.env.VITE_TURN_USERNAME || '', credential: import.meta.env.VITE_TURN_CREDENTIAL || '' });
-  return servers;
-}
+const fallbackIceServers: RTCIceServer[] = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+];
 
 export function useVoiceCall(conversationId: string | null, currentUserId?: string) {
   const [state, setState] = useState<CallState>('idle');
@@ -132,6 +128,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const peers = useRef(new Map<string, RTCPeerConnection>());
+  const configuredIceServers = useRef<RTCIceServer[]>(fallbackIceServers);
+  const iceConfigPromise = useRef<Promise<void> | null>(null);
   const remoteAudio = useRef(new Map<string, RemoteAudioEntry>());
   const remoteMediaRef = useRef<Record<string, { camera?: string; screen?: string }>>({});
   const participantVolumesRef = useRef(participantVolumes);
@@ -149,13 +147,24 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     setRemoteMedia((items) => { const next = updater(items); remoteMediaRef.current = next; return next; });
   }, []);
 
+  const unlockAudio = useCallback(() => {
+    let context = localAudioContext.current;
+    if (!context || context.state === 'closed') {
+      context = new AudioContext();
+      localAudioContext.current = context;
+    }
+    const settings = loadAudioSettings();
+    const setSinkId = (context as AudioContext & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
+    if (settings.outputDeviceId !== 'default' && setSinkId) void setSinkId.call(context, settings.outputDeviceId).catch(() => undefined);
+    void context.resume().catch(() => undefined);
+    return context;
+  }, []);
+
   const applyRemoteVolume = useCallback((entry: RemoteAudioEntry, settings = loadAudioSettings()) => {
     const scoped = entry.mediaKind === 'screen' ? screenVolumesRef.current[entry.userId] ?? 100 : participantVolumesRef.current[entry.userId] ?? 100;
     const volume = Math.max(0, Math.min(4, settings.outputVolume / 100 * scoped / 100));
-    if (entry.gain) entry.gain.gain.value = volume;
-    else entry.element.volume = Math.min(1, volume);
-    if (entry.gain) entry.element.volume = deafenedRef.current ? 0 : 1;
-    else if (deafenedRef.current) entry.element.volume = 0;
+    if (entry.gain) entry.gain.gain.value = deafenedRef.current ? 0 : volume;
+    entry.element.volume = entry.gain || deafenedRef.current ? 0 : Math.min(1, volume);
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (entry.element as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
     if (setSinkId) void setSinkId.call(entry.element, sinkId).catch(() => undefined);
@@ -190,15 +199,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     const context = localAudioContext.current;
     let source: MediaStreamAudioSourceNode | null = null;
     let gain: GainNode | null = null;
-    let destination: MediaStreamAudioDestinationNode | null = null;
     let stopMonitor: () => void = () => undefined;
     const mediaKind: RemoteMediaKind = remoteMediaRef.current[userId]?.screen === stream.id ? 'screen' : 'voice';
-    if (context) {
+    if (context?.state === 'running') {
       source = context.createMediaStreamSource(new MediaStream([event.track]));
       gain = context.createGain();
-      destination = context.createMediaStreamDestination();
-      source.connect(gain).connect(destination);
-      element.srcObject = destination.stream;
+      source.connect(gain).connect(context.destination);
       if (mediaKind === 'voice') {
         const analyser = context.createAnalyser();
         source.connect(analyser);
@@ -206,13 +212,16 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           setSpeakingUsers((items) => speaking ? { ...items, [userId]: true } : Object.fromEntries(Object.entries(items).filter(([id]) => id !== userId)));
         });
       }
-    } else element.srcObject = new MediaStream([event.track]);
+    } else element.srcObject = stream;
 
-    const entry: RemoteAudioEntry = { userId, streamId: stream.id, mediaKind, element, gain, source, destination, stopMonitor };
+    const entry: RemoteAudioEntry = { userId, streamId: stream.id, mediaKind, element, gain, source, stopMonitor };
     remoteAudio.current.set(key, entry);
     applyRemoteVolume(entry);
-    const play = () => void element.play().then(() => setError((value) => value.startsWith('Браузер заблокировал звук') ? '' : value)).catch(() => setError('Браузер заблокировал звук. Нажмите в любом месте страницы, чтобы включить его.'));
-    const retry = () => play();
+    const play = () => {
+      if (gain) return;
+      void element.play().then(() => setError((value) => value.startsWith('Браузер заблокировал звук') ? '' : value)).catch(() => setError('Браузер заблокировал звук. Нажмите в любом месте страницы, чтобы включить его.'));
+    };
+    const retry = () => { void localAudioContext.current?.resume().catch(() => undefined); play(); };
     document.addEventListener('pointerdown', retry, { once: true });
     event.track.onended = () => {
       document.removeEventListener('pointerdown', retry);
@@ -225,7 +234,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const createPeer = useCallback((userId: string) => {
     const existing = peers.current.get(userId);
     if (existing) return existing;
-    const peer = new RTCPeerConnection({ iceServers: iceServers() });
+    const peer = new RTCPeerConnection({ iceServers: configuredIceServers.current });
     localStream.current?.getTracks().forEach((track) => peer.addTrack(track, localStream.current!));
     cameraStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, cameraStreamRef.current!));
     screenStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, screenStreamRef.current!));
@@ -279,9 +288,13 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     try {
       updateState('connecting');
       setError('');
+      if (!iceConfigPromise.current) iceConfigPromise.current = api.rtcConfig().then(({ iceServers }) => {
+        if (iceServers.length) configuredIceServers.current = iceServers;
+      }).catch(() => undefined);
+      await iceConfigPromise.current;
       const settings = loadAudioSettings();
       const sourceStream = await navigator.mediaDevices.getUserMedia({ audio: { ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}), echoCancellation: settings.echoCancellation, noiseSuppression: settings.noiseSuppression, autoGainControl: settings.autoGainControl }, video: false });
-      const context = new AudioContext();
+      const context = localAudioContext.current?.state === 'closed' ? new AudioContext() : localAudioContext.current || new AudioContext();
       const source = context.createMediaStreamSource(sourceStream);
       const gain = context.createGain();
       const destination = context.createMediaStreamDestination();
@@ -440,13 +453,15 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   const call = () => {
     if (!conversationId || stateRef.current !== 'idle') return;
+    unlockAudio();
     updateState('ringing'); setIncomingFrom(null); setError(''); setStoredCall(pendingCallKey, conversationId);
     stopTone.current(); stopTone.current = startRingtone('outgoing');
     realtime.send({ type: 'call:invite', conversationId });
-    ringTimeout.current = window.setTimeout(() => { stopTone.current(); realtime.send({ type: 'call:decline', conversationId }); if (storedCall(pendingCallKey) === conversationId) setStoredCall(pendingCallKey, null); updateState('idle'); }, 30_000);
+    ringTimeout.current = window.setTimeout(() => { realtime.send({ type: 'call:decline', conversationId }); leave(false); }, 30_000);
   };
   const accept = async () => {
     if (!conversationId || stateRef.current !== 'incoming') return;
+    unlockAudio();
     stopTone.current(); setStoredCall(pendingCallKey, conversationId);
     realtime.send({ type: 'call:accept', conversationId }); setIncomingFrom(null); await connectAudio();
   };

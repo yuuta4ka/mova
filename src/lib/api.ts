@@ -3,6 +3,7 @@ export interface MessageAttachment { name: string; type: string; size: number; d
 export interface MessageReadReceipt { userId: string; readAt: string }
 export interface AppMessage { id: string; conversationId: string; authorId: string; content: string; attachment?: MessageAttachment; createdAt: string; sentAt?: string; readBy?: MessageReadReceipt[]; author: AppUser }
 export interface AppConversation { id: string; kind: 'direct' | 'group'; title: string; members: AppUser[]; lastMessage: Omit<AppMessage, 'author'> | null; createdAt: string }
+export interface RtcConfig { iceServers: RTCIceServer[] }
 
 const tokenKey = 'mova-session';
 export const session = {
@@ -31,6 +32,7 @@ export const api = {
   messages: (conversationId: string) => request<{ messages: AppMessage[] }>(`/api/conversations/${conversationId}/messages`),
   sendMessage: (conversationId: string, content: string, attachment?: MessageAttachment) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ content, attachment }) }),
   markConversationRead: (conversationId: string, throughMessageId: string) => request<{ conversationId: string; userId: string; messageIds: string[]; readAt: string }>(`/api/conversations/${conversationId}/read`, { method: 'POST', body: JSON.stringify({ throughMessageId }) }),
+  rtcConfig: () => request<RtcConfig>('/api/rtc-config'),
 };
 
 export type RealtimeEvent =

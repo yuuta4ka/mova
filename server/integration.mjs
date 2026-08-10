@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 const testDirectory = await mkdtemp(join(tmpdir(), 'mova-integration-'));
 const port = 8791;
 const base = `http://127.0.0.1:${port}`;
-const server = spawn(process.execPath, ['server/index.mjs'], { cwd: new URL('..', import.meta.url), env: { ...process.env, MOVA_PORT: String(port), MOVA_DATABASE_PATH: join(testDirectory, 'db.json') }, stdio: ['ignore', 'ignore', 'inherit'] });
+const server = spawn(process.execPath, ['server/index.mjs'], { cwd: new URL('..', import.meta.url), env: { ...process.env, MOVA_PORT: String(port), MOVA_DATABASE_PATH: join(testDirectory, 'db.json'), MOVA_TURN_URLS: 'turn:turn.example.test:3478,turns:turn.example.test:443', MOVA_TURN_USERNAME: 'integration-user', MOVA_TURN_CREDENTIAL: 'integration-secret' }, stdio: ['ignore', 'ignore', 'inherit'] });
 
 const waitForServer = async () => { for (let attempt = 0; attempt < 30; attempt += 1) { try { if ((await fetch(`${base}/api/health`)).ok) return; } catch {} await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('Integration server did not start'); };
 const call = async (path, method = 'GET', data, token) => { const response = await fetch(`${base}${path}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: data ? JSON.stringify(data) : undefined }); const result = await response.json(); if (!response.ok) throw new Error(JSON.stringify(result)); return result; };
@@ -23,6 +23,8 @@ try {
   const profile = await call('/api/profile', 'PATCH', { name: 'Первый игрок', handle: '@first_player', bio: 'Проверка профиля', avatarDataUrl: '', bannerDataUrl: '', activity: { name: 'Играет в Mova', startedAt: new Date().toISOString() } }, first.token);
   const presence = await call('/api/presence', 'POST', { presence: 'dnd', dndUntil: new Date(Date.now() + 900_000).toISOString() }, first.token);
   const conversation = await call('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
+  const rtcConfig = await call('/api/rtc-config', 'GET', undefined, first.token);
+  if (rtcConfig.iceServers.length !== 2 || rtcConfig.iceServers[1].username !== 'integration-user' || rtcConfig.iceServers[1].urls.length !== 2) throw new Error('Runtime TURN configuration was not returned');
   const attachmentMessage = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Файл', attachment: { name: 'mova-test.txt', type: 'text/plain', size: 9, dataUrl: 'data:text/plain;base64,bW92YSB0ZXN0' } }, first.token);
   const firstSocket = await openSocket(first.token); const secondSocket = await openSocket(second.token);
   const readPromise = waitFor(firstSocket, 'message:read');
@@ -40,7 +42,7 @@ try {
   recovered.socket.send(JSON.stringify({ type: 'voice:join', conversationId: conversation.conversation.id })); const recoveredPeers = await waitFor(recovered.socket, 'voice:peers');
   const endPromise = waitFor(secondSocket, 'call:end'); recovered.socket.send(JSON.stringify({ type: 'call:end', conversationId: conversation.conversation.id })); const ended = await endPromise;
   recovered.socket.close(); secondSocket.close();
-  console.log(JSON.stringify({ profile: profile.user.handle, activity: profile.user.activity.name, presence: presence.user.presence, attachment: attachmentMessage.message.attachment.name, sentAt: Boolean(attachmentMessage.message.sentAt), readBy: messagesAfterRead.messages[0].readBy[0].userId === second.user.id, readEvent: readReceipt.messageIds.includes(attachmentMessage.message.id), incomingFrom: incoming.from.name, voicePeers: peers.peers.length, media: `${media.mediaKind}:${media.enabled}`, voiceState: `${voiceState.muted}:${voiceState.deafened}`, recoveredCall: `${recovered.event.status}:${recoveredPeers.peers.length}`, endedBy: ended.fromUserId }));
+  console.log(JSON.stringify({ profile: profile.user.handle, activity: profile.user.activity.name, presence: presence.user.presence, rtcIceServers: rtcConfig.iceServers.length, attachment: attachmentMessage.message.attachment.name, sentAt: Boolean(attachmentMessage.message.sentAt), readBy: messagesAfterRead.messages[0].readBy[0].userId === second.user.id, readEvent: readReceipt.messageIds.includes(attachmentMessage.message.id), incomingFrom: incoming.from.name, voicePeers: peers.peers.length, media: `${media.mediaKind}:${media.enabled}`, voiceState: `${voiceState.muted}:${voiceState.deafened}`, recoveredCall: `${recovered.event.status}:${recoveredPeers.peers.length}`, endedBy: ended.fromUserId }));
 } finally {
   server.kill('SIGTERM');
   await rm(testDirectory, { recursive: true, force: true });
