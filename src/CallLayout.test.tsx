@@ -4,16 +4,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RealMessages } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const callMedia = vi.hoisted(() => ({ screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn() }));
+const callMedia = vi.hoisted(() => ({ screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), conversationIds: [] as string[] }));
 
 vi.mock('./hooks/useVoiceCall', () => ({
-  useVoiceCall: () => ({
+  useVoiceCall: (conversationId: string) => {
+    callMedia.conversationIds.push(conversationId);
+    return ({
     state: 'active', muted: false, deafened: false, participants: callMedia.participants, error: '', incomingFrom: null,
     cameraStream: null, screenStream: callMedia.screenStream, remoteVideoStreams: [], remoteMedia: {}, remoteVoiceStates: {}, localSpeaking: callMedia.localSpeaking, speakingUsers: {},
     participantVolumes: {}, screenVolumes: {}, setParticipantVolume: callMedia.setParticipantVolume, setScreenVolume: vi.fn(),
     call: vi.fn(), accept: vi.fn(), decline: vi.fn(), leave: vi.fn(), toggleMute: vi.fn(), toggleDeafen: vi.fn(),
     toggleCamera: vi.fn(), toggleScreen: vi.fn(), shareScreen: vi.fn(), stopScreen: vi.fn(), updateScreenQuality: vi.fn(),
-  }),
+    });
+  },
 }));
 
 const currentUser: AppUser = { id: 'me', name: 'Юта', email: 'me@mova.test', handle: '@yuuta', color: '#74DCCB', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
@@ -26,12 +29,22 @@ beforeEach(() => {
   callMedia.localSpeaking = false;
   callMedia.participants = [];
   callMedia.setParticipantVolume.mockReset();
+  callMedia.conversationIds = [];
   window.localStorage.clear();
   Object.defineProperty(HTMLMediaElement.prototype, 'play', { configurable: true, value: vi.fn().mockResolvedValue(undefined) });
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
 });
 
 describe('call layout', () => {
+  it('keeps the active call bound to its original conversation when another chat opens', async () => {
+    const secondConversation = { ...conversation, id: 'second-chat', title: 'Другой чат' };
+    const { rerender } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    rerender(<RealMessages conversation={secondConversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    await waitFor(() => expect(callMedia.conversationIds.at(-1)).toBe('chat'));
+  });
+
   it('highlights the participant while their microphone carries speech', async () => {
     callMedia.localSpeaking = true;
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);

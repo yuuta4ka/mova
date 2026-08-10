@@ -30,6 +30,9 @@
 .mova-call-volume-menu{position:fixed;z-index:420;display:grid;gap:10px;width:274px;padding:14px;color:#f2f2f5;background:#22242b;border:1px solid rgba(255,255,255,.11);border-radius:15px;box-shadow:0 18px 55px rgba(0,0,0,.52)}
 .mova-call-volume-menu>span{display:flex;align-items:center;gap:8px;font-size:11px}.mova-call-volume-menu>span>svg{color:#9d88e7}.mova-call-volume-menu>span>b{margin-left:auto;color:#c8baf6;font-size:10px}
 .mova-call-volume-menu>input{width:100%;accent-color:#8d76db}.mova-call-volume-menu>small{color:#818590;font-size:8px}
+.mova-network-quality{position:absolute;left:0;top:6px;display:flex;align-items:center;gap:6px;height:38px;padding:0 10px;color:#8edcb4;background:rgba(68,185,126,.1);border:1px solid rgba(68,185,126,.18);border-radius:12px;font-size:10px}.mova-network-quality>b{font-size:9px;font-weight:650}.mova-network-quality.is-fair{color:#f1c66f;background:rgba(218,166,59,.1);border-color:rgba(218,166,59,.2)}.mova-network-quality.is-poor{color:#ff8494;background:rgba(229,83,104,.1);border-color:rgba(229,83,104,.2)}
+.mova-network-details{display:grid;gap:7px;margin:5px 2px;padding:9px;color:#dfe0e4;background:#191a1e;border:1px solid rgba(255,255,255,.06);border-radius:11px}.mova-network-details>strong{display:flex;align-items:center;gap:6px;font-size:10px}.mova-network-details>span{display:flex;align-items:center;gap:7px}.mova-network-details>span>b{color:#70d9a4;font-size:10px}.mova-network-details>span.is-fair>b{color:#e7be67}.mova-network-details>span.is-poor>b{color:#f07889}.mova-network-details small{color:#858790;font-size:8px}
+@media(max-width:780px){.mova-network-quality>b{display:none}.mova-network-quality{padding-inline:9px}}
 
 /* Full conversation call canvas */
 .mova-tg-app{grid-template-columns:var(--mova-sidebar-width,360px) minmax(0,1fr)}

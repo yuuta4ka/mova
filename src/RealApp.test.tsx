@@ -4,19 +4,70 @@ import { describe, expect, it, vi } from 'vitest';
 import { formatPresenceStatus, PendingCallStage, RealMessages } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const currentUser: AppUser = { id: 'me', name: 'Юта', email: 'me@mova.test', handle: '@yuuta', color: '#74DCCB', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
-const friend: AppUser = { id: 'friend', name: 'Друг', email: 'friend@mova.test', handle: '@friend', color: '#9B83F4', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
-const conversation: AppConversation = { id: 'chat', kind: 'direct', title: 'Друг', members: [currentUser, friend], lastMessage: null, createdAt: '2026-08-10T00:00:00.000Z' };
+const currentUser: AppUser = {
+  id: 'me',
+  name: 'Юта',
+  email: 'me@mova.test',
+  handle: '@yuuta',
+  color: '#74DCCB',
+  presence: 'online',
+  createdAt: '2026-08-10T00:00:00.000Z',
+};
+const friend: AppUser = {
+  id: 'friend',
+  name: 'Друг',
+  email: 'friend@mova.test',
+  handle: '@friend',
+  color: '#9B83F4',
+  presence: 'online',
+  createdAt: '2026-08-10T00:00:00.000Z',
+};
+const conversation: AppConversation = {
+  id: 'chat',
+  kind: 'direct',
+  title: 'Друг',
+  members: [currentUser, friend],
+  lastMessage: null,
+  createdAt: '2026-08-10T00:00:00.000Z',
+};
 
 describe('presence status', () => {
   const now = new Date('2026-08-10T12:00:00.000Z').getTime();
   it('uses the live connection state instead of a stale presence value', () => {
-    expect(formatPresenceStatus({ ...friend, presence: 'online', isOnline: false, lastActiveAt: '2026-08-10T11:55:00.000Z' }, now)).toBe('был(а) 5 минут назад');
+    expect(
+      formatPresenceStatus(
+        {
+          ...friend,
+          presence: 'online',
+          isOnline: false,
+          lastActiveAt: '2026-08-10T11:55:00.000Z',
+        },
+        now,
+      ),
+    ).toBe('был(а) 5 минут назад');
     expect(formatPresenceStatus({ ...friend, isOnline: true }, now)).toBe('в сети');
   });
   it('formats hours and days with Russian plural forms', () => {
-    expect(formatPresenceStatus({ ...friend, isOnline: false, lastActiveAt: '2026-08-10T09:00:00.000Z' }, now)).toBe('был(а) 3 часа назад');
-    expect(formatPresenceStatus({ ...friend, isOnline: false, lastActiveAt: '2026-08-08T12:00:00.000Z' }, now)).toBe('был(а) 2 дня назад');
+    expect(
+      formatPresenceStatus(
+        {
+          ...friend,
+          isOnline: false,
+          lastActiveAt: '2026-08-10T09:00:00.000Z',
+        },
+        now,
+      ),
+    ).toBe('был(а) 3 часа назад');
+    expect(
+      formatPresenceStatus(
+        {
+          ...friend,
+          isOnline: false,
+          lastActiveAt: '2026-08-08T12:00:00.000Z',
+        },
+        now,
+      ),
+    ).toBe('был(а) 2 дня назад');
   });
 });
 
@@ -28,7 +79,12 @@ describe('RealMessages attachments', () => {
   it('attaches an image pasted from the clipboard', async () => {
     renderChat();
     const image = new File(['image'], 'pasted.png', { type: 'image/png' });
-    fireEvent.paste(screen.getByRole('textbox', { name: 'Сообщение в Друг' }), { clipboardData: { items: [{ kind: 'file', getAsFile: () => image }], files: [image] } });
+    fireEvent.paste(screen.getByRole('textbox', { name: 'Сообщение в Друг' }), {
+      clipboardData: {
+        items: [{ kind: 'file', getAsFile: () => image }],
+        files: [image],
+      },
+    });
     expect(await screen.findByText('pasted.png')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled();
   });
@@ -37,19 +93,38 @@ describe('RealMessages attachments', () => {
     const { container } = renderChat();
     const thread = container.querySelector('.mova-open-chat')!;
     const image = new File(['image'], 'dropped.png', { type: 'image/png' });
-    fireEvent.dragEnter(thread, { dataTransfer: { types: ['Files'], files: [image] } });
+    fireEvent.dragEnter(thread, {
+      dataTransfer: { types: ['Files'], files: [image] },
+    });
     expect(screen.getByText('Отпустите, чтобы прикрепить')).toBeVisible();
-    fireEvent.drop(thread, { dataTransfer: { types: ['Files'], files: [image] } });
+    fireEvent.drop(thread, {
+      dataTransfer: { types: ['Files'], files: [image] },
+    });
     expect(await screen.findByText('dropped.png')).toBeVisible();
   });
 
   it('opens an image in the viewer instead of downloading it', async () => {
     const user = userEvent.setup();
-    const attachment = { name: 'photo.png', type: 'image/png', size: 68, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' };
-    const message: AppMessage = { id: 'message', conversationId: conversation.id, authorId: friend.id, content: '', attachment, createdAt: '2026-08-10T00:01:00.000Z', author: friend };
+    const attachment = {
+      name: 'photo.png',
+      type: 'image/png',
+      size: 68,
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    };
+    const message: AppMessage = {
+      id: 'message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: '',
+      attachment,
+      createdAt: '2026-08-10T00:01:00.000Z',
+      author: friend,
+    };
     renderChat([message]);
     await user.click(screen.getByRole('button', { name: 'Открыть изображение photo.png' }));
-    const viewer = screen.getByRole('dialog', { name: 'Просмотр изображения photo.png' });
+    const viewer = screen.getByRole('dialog', {
+      name: 'Просмотр изображения photo.png',
+    });
     expect(viewer).toBeVisible();
     expect(viewer.parentElement).toBe(document.body);
     expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'photo.png');
@@ -60,9 +135,30 @@ describe('RealMessages attachments', () => {
 
 describe('RealMessages navigation', () => {
   const searchMessages: AppMessage[] = [
-    { id: 'oldest', conversationId: conversation.id, authorId: friend.id, content: 'Важная старая запись', createdAt: '2026-08-10T00:01:00.000Z', author: friend },
-    { id: 'middle', conversationId: conversation.id, authorId: friend.id, content: 'Обычное сообщение', createdAt: '2026-08-10T00:02:00.000Z', author: friend },
-    { id: 'newest', conversationId: conversation.id, authorId: currentUser.id, content: 'Важная новая запись', createdAt: '2026-08-10T00:03:00.000Z', author: currentUser },
+    {
+      id: 'oldest',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: 'Важная старая запись',
+      createdAt: '2026-08-10T00:01:00.000Z',
+      author: friend,
+    },
+    {
+      id: 'middle',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: 'Обычное сообщение',
+      createdAt: '2026-08-10T00:02:00.000Z',
+      author: friend,
+    },
+    {
+      id: 'newest',
+      conversationId: conversation.id,
+      authorId: currentUser.id,
+      content: 'Важная новая запись',
+      createdAt: '2026-08-10T00:03:00.000Z',
+      author: currentUser,
+    },
   ];
 
   it('starts at the newest result and navigates toward older results', async () => {
@@ -81,8 +177,64 @@ describe('RealMessages navigation', () => {
   });
 });
 
+describe('RealMessages replies and editing', () => {
+  const incoming: AppMessage = {
+    id: 'incoming',
+    conversationId: conversation.id,
+    authorId: friend.id,
+    content: 'Исходный вопрос',
+    createdAt: '2026-08-10T00:01:00.000Z',
+    author: friend,
+  };
+  const own: AppMessage = {
+    id: 'own-editable',
+    conversationId: conversation.id,
+    authorId: currentUser.id,
+    content: 'Текст с опечаткой',
+    createdAt: '2026-08-10T00:02:00.000Z',
+    author: currentUser,
+  };
+
+  it('sends a reply tied to the selected message', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming]} onSend={onSend} />);
+
+    await user.click(screen.getByRole('button', { name: 'Ответить на сообщение' }));
+    expect(screen.getByText('Ответ Друг')).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: 'Сообщение в Друг' }), 'Мой ответ');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(onSend).toHaveBeenCalledWith('Мой ответ', undefined, 'incoming');
+  });
+
+  it('edits an own message and marks rendered edits', async () => {
+    const user = userEvent.setup();
+    const onEdit = vi.fn().mockResolvedValue(undefined);
+    const edited = { ...own, editedAt: '2026-08-10T00:03:00.000Z' };
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[edited]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={onEdit} />);
+
+    expect(screen.getByText('изменено')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Редактировать сообщение' }));
+    const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
+    await user.clear(composer);
+    await user.type(composer, 'Исправленный текст');
+    await user.click(screen.getByRole('button', { name: 'Сохранить изменения' }));
+
+    expect(onEdit).toHaveBeenCalledWith('own-editable', 'Исправленный текст');
+  });
+});
+
 describe('RealMessages delivery status', () => {
-  const ownMessage = (overrides: Partial<AppMessage> = {}): AppMessage => ({ id: 'own', conversationId: conversation.id, authorId: currentUser.id, content: 'Статус', createdAt: '2026-08-10T00:03:00.000Z', author: currentUser, ...overrides });
+  const ownMessage = (overrides: Partial<AppMessage> = {}): AppMessage => ({
+    id: 'own',
+    conversationId: conversation.id,
+    authorId: currentUser.id,
+    content: 'Статус',
+    createdAt: '2026-08-10T00:03:00.000Z',
+    author: currentUser,
+    ...overrides,
+  });
 
   it('does not claim that a message was sent without a server acknowledgement', () => {
     renderChat([ownMessage()]);
@@ -96,7 +248,12 @@ describe('RealMessages delivery status', () => {
   });
 
   it('shows read only with the recipient receipt', () => {
-    renderChat([ownMessage({ sentAt: '2026-08-10T00:03:00.100Z', readBy: [{ userId: friend.id, readAt: '2026-08-10T00:04:00.000Z' }] })]);
+    renderChat([
+      ownMessage({
+        sentAt: '2026-08-10T00:03:00.100Z',
+        readBy: [{ userId: friend.id, readAt: '2026-08-10T00:04:00.000Z' }],
+      }),
+    ]);
     expect(screen.getByLabelText('Прочитано')).toBeVisible();
   });
 });
