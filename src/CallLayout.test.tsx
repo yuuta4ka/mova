@@ -4,16 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RealMessages } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const callMedia = vi.hoisted(() => ({ screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, object> }));
+const callMedia = vi.hoisted(() => ({ state: 'active', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleDeafen: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, object> }));
 
 vi.mock('./hooks/useVoiceCall', () => ({
   useVoiceCall: (conversationId: string) => {
     callMedia.conversationIds.push(conversationId);
     return ({
-    state: 'active', muted: false, deafened: false, participants: callMedia.participants, error: '', incomingFrom: null,
+    state: callMedia.state, createdAt: callMedia.createdAt, startedAt: callMedia.startedAt, muted: false, deafened: false, participants: callMedia.participants, error: '', incomingFrom: null,
     cameraStream: null, screenStream: callMedia.screenStream, remoteVideoStreams: [], remoteMedia: {}, remoteVoiceStates: {}, localSpeaking: callMedia.localSpeaking, speakingUsers: {},
     participantVolumes: {}, screenVolumes: {}, diagnostics: callMedia.diagnostics, setParticipantVolume: callMedia.setParticipantVolume, setScreenVolume: vi.fn(),
-    call: vi.fn(), accept: vi.fn(), decline: vi.fn(), leave: vi.fn(), toggleMute: vi.fn(), toggleDeafen: vi.fn(),
+    call: vi.fn(), accept: callMedia.accept, decline: vi.fn(), leave: vi.fn(), toggleMute: vi.fn(), toggleDeafen: callMedia.toggleDeafen,
     toggleCamera: vi.fn(), toggleScreen: vi.fn(), shareScreen: vi.fn(), stopScreen: vi.fn(), updateScreenQuality: vi.fn(),
     });
   },
@@ -25,11 +25,16 @@ const conversation: AppConversation = { id: 'chat', kind: 'direct', title: 'Др
 const incomingMessage = (id: string): AppMessage => ({ id, conversationId: conversation.id, authorId: friend.id, author: friend, content: `Сообщение ${id}`, createdAt: `2026-08-10T00:00:0${id}.000Z`, readBy: [] });
 
 beforeEach(() => {
+  callMedia.state = 'active';
+  callMedia.createdAt = '2026-08-10T00:00:00.000Z';
+  callMedia.startedAt = '2026-08-10T00:00:00.000Z';
   callMedia.screenStream = null;
   callMedia.localSpeaking = false;
   callMedia.participants = [];
   callMedia.diagnostics = {};
   callMedia.setParticipantVolume.mockReset();
+  callMedia.toggleDeafen.mockReset();
+  callMedia.accept.mockReset();
   callMedia.conversationIds = [];
   window.localStorage.clear();
   Object.defineProperty(HTMLMediaElement.prototype, 'play', { configurable: true, value: vi.fn().mockResolvedValue(undefined) });
@@ -37,6 +42,52 @@ beforeEach(() => {
 });
 
 describe('call layout', () => {
+  it('keeps the control dock icon-only and exposes a headphones mute button', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    const controls = container.querySelector('.mova-call-controls');
+    expect(controls).not.toBeNull();
+    expect(controls?.querySelectorAll(':scope > button')).toHaveLength(7);
+    expect(controls?.querySelectorAll('.mova-call-control-icon')).toHaveLength(7);
+    expect(controls?.textContent).toBe('');
+
+    await user.click(screen.getByRole('button', { name: 'Выключить звук в наушниках' }));
+    expect(callMedia.toggleDeafen).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: /свернуть список чатов/i })).not.toBeInTheDocument();
+  });
+
+  it('shows an active call under the chat header after leaving and lets the user reconnect', async () => {
+    callMedia.state = 'available';
+    callMedia.startedAt = new Date(Date.now() - 83_000).toISOString();
+    const user = userEvent.setup();
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(await screen.findByRole('region', { name: 'Активный звонок с Друг' })).toBeVisible();
+    expect(container.querySelector('.mova-active-call-host')).toHaveTextContent('Звонок идёт · 01:23');
+    await user.click(screen.getByRole('button', { name: 'Подключиться к звонку' }));
+    expect(callMedia.accept).toHaveBeenCalledOnce();
+  });
+
+  it('renders a completed call as a system message with its duration', () => {
+    callMedia.state = 'idle';
+    const callMessage: AppMessage = {
+      id: 'call-message',
+      conversationId: conversation.id,
+      authorId: currentUser.id,
+      author: currentUser,
+      kind: 'call',
+      content: 'Звонок завершён · 12:34',
+      call: { status: 'completed', durationSeconds: 754, startedAt: '2026-08-10T11:00:00.000Z', endedAt: '2026-08-10T11:12:34.000Z' },
+      createdAt: '2026-08-10T11:12:34.000Z',
+      readBy: [],
+    };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[callMessage]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(container.querySelector('.mova-call-system-message')).toHaveTextContent('Звонок завершён');
+    expect(container.querySelector('.mova-call-system-message')).toHaveTextContent('Длительность 12:34');
+  });
+
   it('keeps the active call bound to its original conversation when another chat opens', async () => {
     const secondConversation = { ...conversation, id: 'second-chat', title: 'Другой чат' };
     const { rerender } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
@@ -59,9 +110,11 @@ describe('call layout', () => {
     callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'fair', roundTripTimeMs: 146 } };
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    expect(await screen.findByText('Задержка 146 мс')).toBeVisible();
     const indicator = container.querySelector('.mova-network-quality');
     expect(indicator).toHaveClass('is-fair');
+    expect(indicator).toHaveAttribute('data-tooltip', 'Задержка 146 мс');
+    expect(indicator).toHaveAttribute('title', 'Задержка 146 мс');
+    expect(indicator).not.toHaveTextContent('Задержка 146 мс');
     expect(indicator?.querySelectorAll('.mova-network-bars > i')).toHaveLength(4);
     expect(screen.queryByText(/Потери|джиттер|Хорошая сеть|Средняя сеть|Слабая сеть/)).not.toBeInTheDocument();
   });

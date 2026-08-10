@@ -39,6 +39,12 @@ const outgoingRingtoneUrl = new URL('../../calling-sound.mp3', import.meta.url).
 const connectSoundUrl = new URL('../../connect.mp3', import.meta.url).href;
 const disconnectSoundUrl = new URL('../../disconnect.mp3', import.meta.url).href;
 const leaveSoundUrl = new URL('../../leave.mp3', import.meta.url).href;
+const micOffSoundUrl = new URL('../../mic-off.mp3', import.meta.url).href;
+const micOnSoundUrl = new URL('../../mic-on.mp3', import.meta.url).href;
+const soundOffSoundUrl = new URL('../../sound-off.mp3', import.meta.url).href;
+const soundOnSoundUrl = new URL('../../sound-on.mp3', import.meta.url).href;
+const demoOffSoundUrl = new URL('../../demo-off.mp3', import.meta.url).href;
+const demoOnSoundUrl = new URL('../../demo-on.mp3', import.meta.url).href;
 const activeCallKey = 'mova-active-call';
 const pendingCallKey = 'mova-pending-call';
 const participantVolumeKey = 'mova-call-participant-volumes';
@@ -69,11 +75,16 @@ function setStoredCall(key: string, conversationId: string | null) {
 
 function startRingtone(kind: 'incoming' | 'outgoing') {
   try {
+    const settings = loadAudioSettings();
     const audio = new Audio(kind === 'incoming' ? incomingRingtoneUrl : outgoingRingtoneUrl);
     let active = true;
     audio.loop = true;
-    audio.volume = 0.58;
-    void audio.play().catch(() => undefined);
+    audio.volume = settings.systemVolume / 100;
+    const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
+    const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
+    const play = () => void audio.play().catch(() => undefined);
+    if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
+    else play();
     return () => {
       if (!active) return;
       active = false;
@@ -87,42 +98,29 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
   }
 }
 
-function playCallSound(kind: 'connect' | 'disconnect' | 'leave') {
+type CallSound = 'connect' | 'disconnect' | 'leave' | 'mic-off' | 'mic-on' | 'sound-off' | 'sound-on' | 'demo-off' | 'demo-on';
+
+function playCallSound(kind: CallSound) {
   try {
     const settings = loadAudioSettings();
-    const urls = { connect: connectSoundUrl, disconnect: disconnectSoundUrl, leave: leaveSoundUrl };
+    const urls: Record<CallSound, string> = {
+      connect: connectSoundUrl,
+      disconnect: disconnectSoundUrl,
+      leave: leaveSoundUrl,
+      'mic-off': micOffSoundUrl,
+      'mic-on': micOnSoundUrl,
+      'sound-off': soundOffSoundUrl,
+      'sound-on': soundOnSoundUrl,
+      'demo-off': demoOffSoundUrl,
+      'demo-on': demoOnSoundUrl,
+    };
     const audio = new Audio(urls[kind]);
-    audio.volume = Math.min(1, settings.outputVolume / 100);
+    audio.volume = settings.systemVolume / 100;
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
     const play = () => void audio.play().catch(() => undefined);
     if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
     else play();
-  } catch {}
-}
-
-function playControlTone(kind: 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'end') {
-  try {
-    const context = new AudioContext();
-    const settings = loadAudioSettings();
-    const setSinkId = (context as AudioContext & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
-    if (settings.outputDeviceId !== 'default' && setSinkId) void setSinkId.call(context, settings.outputDeviceId).catch(() => undefined);
-    const frequencies = kind === 'mute' ? [520, 350] : kind === 'unmute' ? [350, 560] : kind === 'deafen' ? [570, 420, 300] : kind === 'undeafen' ? [300, 430, 590] : [560, 420, 280];
-    const master = context.createGain();
-    const level = Math.min(2, settings.outputVolume / 100) * 0.075;
-    master.gain.setValueAtTime(level, context.currentTime);
-    master.gain.linearRampToValueAtTime(0, context.currentTime + frequencies.length * 0.075 + 0.07);
-    master.connect(context.destination);
-    frequencies.forEach((frequency, index) => {
-      const oscillator = context.createOscillator();
-      oscillator.type = 'sine';
-      oscillator.frequency.value = frequency;
-      oscillator.connect(master);
-      oscillator.start(context.currentTime + index * 0.075);
-      oscillator.stop(context.currentTime + (index + 1) * 0.075 + 0.025);
-    });
-    void context.resume();
-    window.setTimeout(() => void context.close().catch(() => undefined), 700);
   } catch {}
 }
 
@@ -170,6 +168,8 @@ const fallbackIceServers: RTCIceServer[] = [{ urls: ['stun:stun.l.google.com:193
 
 export function useVoiceCall(conversationId: string | null, currentUserId?: string) {
   const [state, setState] = useState<CallState>('idle');
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [participants, setParticipants] = useState<string[]>([]);
@@ -707,8 +707,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             }
             if (!conversationId || !('conversationId' in event) || event.conversationId !== conversationId) return;
             if (event.type === 'call:state') {
+              setCreatedAt(event.createdAt || null);
+              setStartedAt(event.startedAt || null);
               setParticipants((items) => [...new Set([...items, ...event.participants.filter((id) => id !== currentUserId)])]);
               if (event.status === 'idle') {
+                setCreatedAt(null);
+                setStartedAt(null);
                 if (stateRef.current !== 'idle') leave(false);
                 if (storedCall(activeCallKey) === conversationId) setStoredCall(activeCallKey, null);
                 if (storedCall(pendingCallKey) === conversationId) setStoredCall(pendingCallKey, null);
@@ -734,12 +738,15 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
               return;
             }
             if (event.type === 'call:invite' && stateRef.current === 'idle') {
+              setCreatedAt(event.createdAt);
+              setStartedAt(null);
               setIncomingFrom(event.from);
               updateState('incoming');
               stopTone.current();
               stopTone.current = startRingtone('incoming');
             }
             if (event.type === 'call:accept') {
+              setStartedAt(event.startedAt);
               stopTone.current();
               if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
               ringTimeout.current = null;
@@ -748,6 +755,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             }
             if (event.type === 'call:decline' && ['ringing', 'incoming'].includes(stateRef.current)) leave(false);
             if (event.type === 'call:end') {
+              setCreatedAt(null);
+              setStartedAt(null);
               if (stateRef.current !== 'idle') leave(false);
               else {
                 if (storedCall(activeCallKey) === conversationId) setStoredCall(activeCallKey, null);
@@ -893,6 +902,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (!conversationId || stateRef.current !== 'idle') return;
     unlockAudio();
     updateState('ringing');
+    setCreatedAt(new Date().toISOString());
+    setStartedAt(null);
     setIncomingFrom(null);
     setError('');
     setStoredCall(pendingCallKey, conversationId);
@@ -907,6 +918,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const accept = async () => {
     if (!conversationId || !['incoming', 'available'].includes(stateRef.current)) return;
     const joiningExistingCall = stateRef.current === 'available';
+    if (!joiningExistingCall) setStartedAt(new Date().toISOString());
     unlockAudio();
     stopTone.current();
     setStoredCall(pendingCallKey, conversationId);
@@ -920,7 +932,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   };
   const toggleMute = () => {
     const next = !mutedRef.current;
-    playControlTone(next ? 'mute' : 'unmute');
+    playCallSound(next ? 'mic-off' : 'mic-on');
     if (deafenedRef.current && !next) {
       deafenedRef.current = false;
       setDeafened(false);
@@ -941,7 +953,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   };
   const toggleDeafen = () => {
     const next = !deafenedRef.current;
-    playControlTone(next ? 'deafen' : 'undeafen');
+    playCallSound(next ? 'sound-off' : 'sound-on');
     deafenedRef.current = next;
     setDeafened(next);
     if (next) {
@@ -1030,6 +1042,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     });
     screenStreamRef.current = null;
     setScreenStream(null);
+    playCallSound('demo-off');
     realtime.send({
       type: 'voice:media',
       conversationId,
@@ -1092,6 +1105,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       }
       screenStreamRef.current = stream;
       setScreenStream(stream);
+      playCallSound('demo-on');
       peers.current.forEach((peer) => stream.getTracks().forEach((track) => peer.addTrack(track, stream)));
       realtime.send({
         type: 'voice:media',
@@ -1134,6 +1148,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   return {
     state,
+    createdAt,
+    startedAt,
     muted,
     deafened,
     participants,

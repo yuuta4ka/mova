@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, HeadphoneOff, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { Avatar, Button, IconButton } from './components/Primitives';
@@ -487,6 +487,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
                 </label>
                 {!outputSelectionSupported && <small>Выбор выхода не поддерживается этим браузером — используется системное устройство.</small>}
                 <RangeSetting label="Громкость собеседников" value={settings.outputVolume} onChange={(outputVolume) => setSettings({ ...settings, outputVolume })} />
+                <RangeSetting label="Громкость системных звуков" value={settings.systemVolume} max={100} onChange={(systemVolume) => setSettings({ ...settings, systemVolume })} />
                 <Button variant="secondary" size="sm" leadingIcon={<Volume2 size={15} />} onClick={() => void testOutput()}>
                   Проверить звук
                 </Button>
@@ -597,14 +598,14 @@ function ScreenShareDefaults({ settings, onChange }: { settings: ScreenShareSett
   );
 }
 
-function RangeSetting({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+function RangeSetting({ label, value, max = 200, onChange }: { label: string; value: number; max?: number; onChange: (value: number) => void }) {
   return (
     <label className="mova-range-setting">
       <span>
         {label}
         <b>{value}%</b>
       </span>
-      <input type="range" min="0" max="200" step="1" value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input type="range" min="0" max={max} step="1" value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
 }
@@ -1072,21 +1073,50 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
   );
 }
 
+const formatCallDuration = (seconds: number) => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds]
+    .slice(hours ? 0 : 1)
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':');
+};
+
+function CallControlButton({ label, active = false, off = false, danger = false, badge, onClick, children }: { label: string; active?: boolean; off?: boolean; danger?: boolean; badge?: ReactNode; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      className={`${active ? 'is-on ' : ''}${off ? 'is-off ' : ''}${danger ? 'is-hangup' : ''}`.trim()}
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      data-tooltip={label}
+    >
+      <span className="mova-call-control-icon" aria-hidden="true">{children}</span>
+      {badge ? <b className="mova-call-chat-unread" aria-hidden="true">{badge}</b> : null}
+    </button>
+  );
+}
+
 function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onToggleChat, onCallStateChange, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onCallStateChange: (open: boolean) => void; onOpenSettings?: () => void }) {
   const [callConversation, setCallConversation] = useState(conversation);
   const call = useVoiceCall(callConversation.id, currentUser.id);
   const [stageHost, setStageHost] = useState<HTMLElement | null>(null);
+  const [bannerHost, setBannerHost] = useState<HTMLElement | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [screenMenuOpen, setScreenMenuOpen] = useState(false);
   const [showSelf, setShowSelf] = useState(true);
   const [showNoVideo, setShowNoVideo] = useState(true);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(() => loadScreenShareSettings());
+  const [activeSeconds, setActiveSeconds] = useState(0);
   const startWithCamera = useRef(false);
   useEffect(() => {
     if (call.state === 'idle' && callConversation.id !== conversation.id) setCallConversation(conversation);
   }, [call.state, callConversation.id, conversation]);
   useEffect(() => {
     setStageHost(document.querySelector('.mova-open-chat > .mova-call-host'));
+    setBannerHost(document.querySelector('.mova-open-chat > .mova-active-call-host'));
   }, [conversation.id]);
   useEffect(() => {
     const update = (event: Event) => setScreenQuality((event as CustomEvent<ScreenShareSettings>).detail || loadScreenShareSettings());
@@ -1122,6 +1152,18 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     onCallStateChange(call.state !== 'idle' && call.state !== 'available');
   }, [call.state, onCallStateChange]);
   useEffect(() => {
+    const timeSource = call.startedAt || call.createdAt;
+    if (!timeSource || !['active', 'available', 'ringing', 'incoming'].includes(call.state)) {
+      setActiveSeconds(0);
+      return;
+    }
+    const started = new Date(timeSource).getTime();
+    const update = () => setActiveSeconds(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    update();
+    const timer = window.setInterval(update, 1_000);
+    return () => window.clearInterval(timer);
+  }, [call.createdAt, call.startedAt, call.state]);
+  useEffect(() => {
     const start = (event: Event) => {
       const detail = (event as CustomEvent<{ conversationId: string; video: boolean }>).detail;
       if (detail?.conversationId !== conversation.id || call.state !== 'idle') return;
@@ -1145,11 +1187,23 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
       </Button>
     );
   if (call.state === 'available')
-    return (
-      <Button className="mova-return-call" variant="secondary" size="sm" title={call.error || undefined} aria-label={call.error ? `Повторить подключение. ${call.error}` : 'Вернуться в звонок'} leadingIcon={<Phone size={16} />} onClick={call.accept}>
-        {call.error ? 'Повторить' : 'Вернуться'}
-      </Button>
-    );
+    return bannerHost
+      ? createPortal(
+          <section className="mova-active-call-banner" aria-label={`Активный звонок с ${callConversation.title}`}>
+            <span className="mova-active-call-banner__icon" aria-hidden="true"><Phone size={19} /></span>
+            <span className="mova-active-call-banner__details">
+              <strong><AppleEmoji text={callConversation.title} /></strong>
+              <small><i aria-hidden="true" />Звонок идёт · {formatCallDuration(activeSeconds)}</small>
+            </span>
+            {call.error && <small className="mova-active-call-banner__error">Не удалось подключить микрофон</small>}
+            <button type="button" title={call.error || undefined} aria-label={call.error ? `Повторить подключение. ${call.error}` : 'Подключиться к звонку'} onClick={call.accept}>
+              <Phone size={16} />
+              <span>{call.error ? 'Повторить' : 'Подключиться'}</span>
+            </button>
+          </section>,
+          bannerHost,
+        )
+      : null;
   if (call.state !== 'active') return stageHost ? createPortal(<PendingCallStage state={call.state} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={call.state === 'ringing' || call.state === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
 
   if (call.state === 'active') {
@@ -1171,86 +1225,81 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     const latency = peerDiagnostics.reduce<number | undefined>((maximum, peer) => (peer.roundTripTimeMs === undefined ? maximum : Math.max(maximum ?? 0, peer.roundTripTimeMs)), undefined);
     const latencyLabel = latency === undefined ? 'Измеряем задержку…' : `Задержка ${latency} мс`;
     const networkLabel = networkQuality === 'good' ? '4 полосы' : networkQuality === 'fair' ? '3 полосы' : networkQuality === 'poor' ? '1 полоса' : 'нет данных';
-    const participantTiles = (
-      <>
-        {showSelf && (localCamera ? <CallVideoTile stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} /> : <CallAvatarTile user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} />)}
-        {cameraTiles.map((tile) => {
-          const user = callConversation.members.find((member) => member.id === tile.userId);
-          const voice = call.remoteVoiceStates[tile.userId];
-          return (
-            <CallVideoTile
-              key={`${tile.userId}-${tile.streamId}`}
-              stream={tile.stream}
-              label={user?.name || 'Участник'}
-              kind="camera"
+    const participantTiles: ReactNode[] = [];
+    if (showSelf)
+      participantTiles.push(
+        localCamera ? (
+          <CallVideoTile key="local-camera" stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} />
+        ) : (
+          <CallAvatarTile key="local-avatar" user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} />
+        ),
+      );
+    cameraTiles.forEach((tile) => {
+      const user = callConversation.members.find((member) => member.id === tile.userId);
+      const voice = call.remoteVoiceStates[tile.userId];
+      participantTiles.push(
+        <CallVideoTile
+          key={`${tile.userId}-${tile.streamId}`}
+          stream={tile.stream}
+          label={user?.name || 'Участник'}
+          kind="camera"
+          muted={voice?.muted}
+          deafened={voice?.deafened}
+          speaking={call.speakingUsers[tile.userId]}
+          volume={
+            user
+              ? {
+                  label: `Громкость ${user.name}`,
+                  value: call.participantVolumes[tile.userId] ?? 100,
+                  onChange: (value) => call.setParticipantVolume(tile.userId, value),
+                }
+              : undefined
+          }
+        />,
+      );
+    });
+    if (showNoVideo)
+      call.participants
+        .filter((id) => !remoteWithCamera.has(id))
+        .forEach((id) => {
+          const user = callConversation.members.find((member) => member.id === id);
+          const voice = call.remoteVoiceStates[id];
+          if (!user) return;
+          participantTiles.push(
+            <CallAvatarTile
+              key={id}
+              user={user}
+              label={user.name}
               muted={voice?.muted}
               deafened={voice?.deafened}
-              speaking={call.speakingUsers[tile.userId]}
-              volume={
-                user
-                  ? {
-                      label: `Громкость ${user.name}`,
-                      value: call.participantVolumes[tile.userId] ?? 100,
-                      onChange: (value) => call.setParticipantVolume(tile.userId, value),
-                    }
-                  : undefined
-              }
-            />
+              speaking={call.speakingUsers[id]}
+              volume={{
+                label: `Громкость ${user.name}`,
+                value: call.participantVolumes[id] ?? 100,
+                onChange: (value) => call.setParticipantVolume(id, value),
+              }}
+            />,
           );
-        })}
-        {showNoVideo &&
-          call.participants
-            .filter((id) => !remoteWithCamera.has(id))
-            .map((id) => {
-              const user = callConversation.members.find((member) => member.id === id);
-              const voice = call.remoteVoiceStates[id];
-              return user ? (
-                <CallAvatarTile
-                  key={id}
-                  user={user}
-                  label={user.name}
-                  muted={voice?.muted}
-                  deafened={voice?.deafened}
-                  speaking={call.speakingUsers[id]}
-                  volume={{
-                    label: `Громкость ${user.name}`,
-                    value: call.participantVolumes[id] ?? 100,
-                    onChange: (value) => call.setParticipantVolume(id, value),
-                  }}
-                />
-              ) : null;
-            })}
-      </>
-    );
+        });
 
     return stageHost
       ? createPortal(
           <section className="mova-call-stage" data-call-connected={callConnected} data-audio-sending={microphoneSending} data-audio-receiving={microphoneReceiving}>
             <header>
+              <div className="mova-call-header-tools">
+                <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${latencyLabel}`} data-tooltip={latencyLabel} title={latencyLabel}>
+                  <span className="mova-network-bars" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                </div>
+              </div>
               <span>
                 <strong>{callConversation.title}</strong>
-                <small>Голосовой разговор</small>
+                <small>{formatCallDuration(activeSeconds)} · голосовой разговор</small>
               </span>
-              <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${latencyLabel}`} title={`Качество соединения: ${networkLabel}`}>
-                <span className="mova-network-bars" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>{latencyLabel}</span>
-              </div>
-              {!chatOpen && (
-                <button type="button" className="mova-call-chat-toggle" onClick={onToggleChat} aria-label={unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}>
-                  <MessageCircle size={20} />
-                  <span>Открыть чат</span>
-                  {unreadCount > 0 && (
-                    <b className="mova-call-chat-unread" aria-hidden="true">
-                      {unreadCount > 99 ? '99+' : unreadCount}
-                    </b>
-                  )}
-                </button>
-              )}
             </header>
             {hasScreen ? (
               <div className="mova-call-grid has-screen">
@@ -1283,47 +1332,55 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                 <div className="mova-call-participants">{participantTiles}</div>
               </div>
             ) : (
-              <div className="mova-call-grid">{participantTiles}</div>
+              <div className="mova-call-grid is-participants">
+                <div className="mova-call-primary-participant">{participantTiles[0]}</div>
+                {participantTiles.length > 1 && <div className="mova-call-secondary-participants">{participantTiles.slice(1)}</div>}
+              </div>
             )}
             <div className="mova-call-controls">
-              <button type="button" className={call.muted ? 'is-off' : ''} onClick={call.toggleMute} aria-label={call.muted ? 'Включить микрофон' : 'Выключить микрофон'}>
-                {call.muted ? <MicOff size={21} /> : <Mic size={21} />}
-                <span>Микрофон</span>
-              </button>
-              <button type="button" className={localCamera ? 'is-on' : ''} onClick={() => void call.toggleCamera()} aria-label={localCamera ? 'Выключить камеру' : 'Включить камеру'}>
-                {localCamera ? <Video size={21} /> : <VideoOff size={21} />}
-                <span>Камера</span>
-              </button>
-              <button
-                type="button"
-                className={localScreen ? 'is-on' : ''}
+              <CallControlButton label={call.muted ? 'Включить микрофон' : 'Выключить микрофон'} off={call.muted} onClick={call.toggleMute}>
+                {call.muted ? <MicOff size={22} /> : <Mic size={22} />}
+              </CallControlButton>
+              <CallControlButton label={call.deafened ? 'Включить звук в наушниках' : 'Выключить звук в наушниках'} off={call.deafened} onClick={call.toggleDeafen}>
+                {call.deafened ? <HeadphoneOff size={22} /> : <Headphones size={22} />}
+              </CallControlButton>
+              <CallControlButton label={localCamera ? 'Выключить камеру' : 'Включить камеру'} active={Boolean(localCamera)} off={!localCamera} onClick={() => void call.toggleCamera()}>
+                {localCamera ? <Video size={22} /> : <VideoOff size={22} />}
+              </CallControlButton>
+              <CallControlButton
+                label={localScreen ? 'Настроить демонстрацию' : 'Показать экран'}
+                active={Boolean(localScreen)}
                 onClick={() => {
                   if (localScreen) {
                     setScreenMenuOpen((open) => !open);
                     setMoreOpen(false);
                   } else void call.shareScreen(screenQuality);
                 }}
-                aria-label={localScreen ? 'Настроить демонстрацию' : 'Показать экран'}
               >
-                <MonitorUp size={21} />
-                <span>Экран</span>
-              </button>
-              <button
-                type="button"
-                className={moreOpen ? 'is-on' : ''}
+                <MonitorUp size={22} />
+              </CallControlButton>
+              {!chatOpen && (
+                <CallControlButton
+                  label={unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}
+                  badge={unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined}
+                  onClick={onToggleChat}
+                >
+                  <MessageCircle size={22} />
+                </CallControlButton>
+              )}
+              <CallControlButton
+                label="Дополнительно"
+                active={moreOpen}
                 onClick={() => {
                   setMoreOpen((open) => !open);
                   setScreenMenuOpen(false);
                 }}
-                aria-label="Дополнительно"
               >
-                <MoreHorizontal size={21} />
-                <span>Ещё</span>
-              </button>
-              <button type="button" className="is-hangup" onClick={call.leave} aria-label="Выйти из звонка">
-                <PhoneOff size={22} />
-                <span>Выйти</span>
-              </button>
+                <MoreHorizontal size={22} />
+              </CallControlButton>
+              <CallControlButton label="Выйти из звонка" danger onClick={call.leave}>
+                <PhoneOff size={23} />
+              </CallControlButton>
             </div>
             {screenMenuOpen && localScreen && (
               <ScreenShareMenu
@@ -1422,12 +1479,12 @@ export function PendingCallStage({ state, conversation, currentUser, caller, err
       <div className="mova-call-pending__actions">
         {incoming && (
           <button type="button" className="is-accept" onClick={onAccept}>
-            <Phone size={25} />
+            <span className="mova-call-action-icon"><Phone size={25} /></span>
             <span>Принять</span>
           </button>
         )}
         <button type="button" className="is-decline" onClick={onEnd}>
-          <PhoneOff size={25} />
+          <span className="mova-call-action-icon"><PhoneOff size={25} /></span>
           <span>{incoming ? 'Отклонить' : state === 'error' ? 'Закрыть' : 'Отменить'}</span>
         </button>
       </div>
@@ -2021,6 +2078,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </IconButton>
         </div>
       </header>
+      <div className="mova-active-call-host" />
       {profileInfoOpen && (
         <aside className="mova-contact-info" aria-label={`Информация о ${conversation.title}`}>
           <header>
@@ -2216,6 +2274,25 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           <p>{conversation.kind === 'direct' ? `Это начало вашей переписки${other ? ` с ${other.name}` : ''}.` : 'Группа создана. Можно начинать разговор.'}</p>
         </div>
         {loading && messages.length === 0 ? <MessageListSkeleton /> : messages.map((message, index) => {
+          const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)));
+          if (message.kind === 'call')
+            return (
+              <article
+                key={message.id}
+                ref={(element) => {
+                  if (element) messageElements.current.set(message.id, element);
+                  else messageElements.current.delete(message.id);
+                }}
+                className={`mova-call-system-message ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''}`}
+              >
+                <span aria-hidden="true"><PhoneOff size={17} /></span>
+                <span>
+                  <strong>Звонок завершён</strong>
+                  <small>Длительность {formatCallDuration(message.call?.durationSeconds || 0)}</small>
+                </span>
+                <time>{new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>
+              </article>
+            );
           const own = message.authorId === currentUser.id;
           const previous = messages[index - 1];
           const grouped = previous?.authorId === message.authorId && new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() < 300000;
@@ -2223,7 +2300,6 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           const continuesGroup = next?.authorId === message.authorId && new Date(next.createdAt).getTime() - new Date(message.createdAt).getTime() < 300000;
           const imageAttachment = Boolean(message.attachment?.type.startsWith('image/'));
           const imageCaption = imageAttachment && Boolean(message.content.trim() || message.replyTo);
-          const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)));
           const selectedForAction = selectedMessages.includes(message.id);
           return (
             <article
@@ -2578,9 +2654,14 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     () =>
       realtime.subscribe((event) => {
         if (event.type === 'message:new' && event.message.authorId !== currentUserRef.current.id && currentUserRef.current.presence !== 'dnd') {
+          const settings = loadAudioSettings();
           const audio = new Audio(messageSoundUrl);
-          audio.volume = 0.5;
-          void audio.play().catch(() => undefined);
+          audio.volume = settings.systemVolume / 100;
+          const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
+          const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
+          const play = () => void audio.play().catch(() => undefined);
+          if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
+          else play();
         }
       }),
     [],

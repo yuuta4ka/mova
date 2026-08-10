@@ -163,7 +163,7 @@ try {
       conversationId: conversation.conversation.id,
     }),
   );
-  await acceptedPromise;
+  const accepted = await acceptedPromise;
   firstSocket.send(
     JSON.stringify({
       type: 'voice:join',
@@ -224,6 +224,7 @@ try {
   await leftPromise;
   const returnState = await returnStatePromise;
   const endPromise = waitFor(secondSocket, 'call:end');
+  const completedCallMessagePromise = waitFor(secondSocket, 'message:new');
   secondSocket.send(
     JSON.stringify({
       type: 'voice:leave',
@@ -231,6 +232,8 @@ try {
     }),
   );
   const ended = await endPromise;
+  const completedCallMessage = await completedCallMessagePromise;
+  const messagesAfterCall = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
   recovered.socket.close();
   secondSocket.close();
   console.log(
@@ -250,12 +253,16 @@ try {
       readBy: messagesAfterRead.messages[0].readBy[0].userId === second.user.id,
       readEvent: readReceipt.messageIds.includes(attachmentMessage.message.id),
       incomingFrom: incoming.from.name,
+      callCreatedAt: Boolean(incoming.createdAt),
+      callStartedAt: Boolean(accepted.startedAt && recovered.event.startedAt),
       voicePeers: peers.peers.length,
       media: `${media.mediaKind}:${media.enabled}`,
       voiceState: `${voiceState.muted}:${voiceState.deafened}`,
       recoveredCall: `${recovered.event.status}:${recoveredPeers.peers.length}`,
       availableAfterLeave: returnState.status === 'active' && returnState.joined === false,
       endedBy: ended.fromUserId,
+      completedCallMessage: completedCallMessage.message.kind === 'call' && completedCallMessage.message.call.status === 'completed' && completedCallMessage.message.call.durationSeconds >= 0,
+      storedCallMessage: messagesAfterCall.messages.at(-1)?.kind === 'call',
     }),
   );
 } finally {

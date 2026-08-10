@@ -30,8 +30,7 @@
 .mova-call-volume-menu{position:fixed;z-index:420;display:grid;gap:10px;width:274px;padding:14px;color:#f2f2f5;background:#22242b;border:1px solid rgba(255,255,255,.11);border-radius:15px;box-shadow:0 18px 55px rgba(0,0,0,.52)}
 .mova-call-volume-menu>span{display:flex;align-items:center;gap:8px;font-size:11px}.mova-call-volume-menu>span>svg{color:#9d88e7}.mova-call-volume-menu>span>b{margin-left:auto;color:#c8baf6;font-size:10px}
 .mova-call-volume-menu>input{width:100%;accent-color:#8d76db}.mova-call-volume-menu>small{color:#818590;font-size:8px}
-.mova-network-quality{position:absolute;left:0;top:6px;display:flex;align-items:center;gap:9px;height:38px;padding:0 12px;color:#8edcb4;background:rgba(24,29,38,.88);border:1px solid rgba(255,255,255,.08);border-radius:13px;box-shadow:0 7px 20px rgba(0,0,0,.18);font-size:10px;font-weight:650;backdrop-filter:blur(12px)}.mova-network-quality.is-fair{color:#f1c66f}.mova-network-quality.is-poor{color:#ff8494}.mova-network-quality.is-unknown{color:#7d8491}.mova-network-bars{display:flex;align-items:flex-end;gap:2px;width:20px;height:17px}.mova-network-bars>i{display:block;width:3px;background:currentColor;border-radius:2px;opacity:.18}.mova-network-bars>i:nth-child(1){height:5px}.mova-network-bars>i:nth-child(2){height:8px}.mova-network-bars>i:nth-child(3){height:12px}.mova-network-bars>i:nth-child(4){height:16px}.mova-network-quality.is-poor .mova-network-bars>i:nth-child(1),.mova-network-quality.is-fair .mova-network-bars>i:nth-child(-n+3),.mova-network-quality.is-good .mova-network-bars>i{opacity:1}.mova-network-quality>span:last-child{white-space:nowrap}
-@media(max-width:780px){.mova-network-quality{padding-inline:9px}.mova-network-quality>span:last-child{max-width:110px;overflow:hidden;text-overflow:ellipsis}}
+.mova-network-quality{position:absolute;left:0;top:6px;display:grid;place-items:center;width:42px;height:42px;padding:0;color:#8edcb4;background:rgba(24,29,38,.88);border:1px solid rgba(255,255,255,.08);border-radius:13px;box-shadow:0 7px 20px rgba(0,0,0,.18);font-size:10px;font-weight:650;backdrop-filter:blur(12px)}.mova-network-quality.is-fair{color:#f1c66f}.mova-network-quality.is-poor{color:#ff8494}.mova-network-quality.is-unknown{color:#7d8491}.mova-network-bars{display:flex;align-items:flex-end;gap:2px;width:20px;height:17px}.mova-network-bars>i{display:block;width:3px;background:currentColor;border-radius:2px;opacity:.18}.mova-network-bars>i:nth-child(1){height:5px}.mova-network-bars>i:nth-child(2){height:8px}.mova-network-bars>i:nth-child(3){height:12px}.mova-network-bars>i:nth-child(4){height:16px}.mova-network-quality.is-poor .mova-network-bars>i:nth-child(1),.mova-network-quality.is-fair .mova-network-bars>i:nth-child(-n+3),.mova-network-quality.is-good .mova-network-bars>i{opacity:1}.mova-network-quality::after{content:attr(data-tooltip);position:absolute;z-index:40;top:calc(100% + 8px);left:0;padding:7px 9px;color:#f5f5f7;background:#111217;border:1px solid rgba(255,255,255,.08);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.34);font-size:11px;font-weight:600;line-height:1;white-space:nowrap;opacity:0;pointer-events:none;transform:translateY(-3px);transition:opacity 130ms ease,transform 130ms ease}.mova-network-quality:hover::after,.mova-network-quality:focus-visible::after{opacity:1;transform:translateY(0)}
 
 /* Full conversation call canvas */
 .mova-tg-app{grid-template-columns:var(--mova-sidebar-width,360px) minmax(0,1fr)}
@@ -100,3 +99,129 @@ body>.mova-call-tile.is-expanded>.mova-call-label{position:fixed;left:22px;botto
 @media(max-width:1100px){.mova-call-chat-toggle span{display:none}.mova-call-chat-toggle{width:42px;padding:0;justify-content:center;border-radius:50%}}
 @media(max-width:1100px){.mova-call-chat-unread{position:absolute;top:-6px;right:-6px;min-width:19px;height:19px;padding:0 5px;border-color:#10131a}}
 @media(prefers-reduced-motion:reduce){.mova-open-chat.is-call-chat-open>.mova-call-chat-header,.mova-open-chat.is-call-chat-open>.mova-real-messages,.mova-open-chat.is-call-chat-open>.mova-real-composer{animation:none}}
+
+/* Discord-first call chrome. Icon backgrounds live on wrappers so Lucide strokes stay crisp. */
+.mova-open-chat.is-in-call .mova-call-stage>header{position:relative;display:flex;align-items:center;justify-content:center}
+.mova-call-header-tools{position:absolute;left:0;top:5px;display:flex;align-items:center;gap:8px}
+.mova-call-control-icon svg,.mova-call-action-icon svg{display:block;overflow:visible;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;shape-rendering:geometricPrecision}
+.mova-call-header-tools .mova-network-quality{position:static;left:auto;top:auto;box-shadow:none}
+.mova-open-chat.is-in-call .mova-call-stage>header>span>small{font-size:11px;font-variant-numeric:tabular-nums}
+
+.mova-call-grid.is-participants>.mova-call-primary-participant,.mova-call-grid.is-participants>.mova-call-secondary-participants{display:contents}
+.mova-open-chat.is-in-call .mova-call-grid.is-participants:not(:has(>.mova-call-secondary-participants)){grid-template-columns:minmax(0,760px);justify-content:center}
+.mova-open-chat.is-in-call.is-call-chat-open .mova-call-grid.is-participants{grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));grid-auto-rows:minmax(210px,1fr)}
+.mova-open-chat.is-in-call.is-call-chat-open .mova-call-grid.is-participants:has(>.mova-call-secondary-participants>.mova-call-tile:nth-child(2):last-child)>.mova-call-secondary-participants>.mova-call-tile:last-child{grid-column:1/-1;justify-self:center;width:calc(50% - 5px)}
+.mova-open-chat.is-in-call .mova-call-tile{background:radial-gradient(circle at 50% 42%,#292d38 0,#1c1f27 72%);border-color:rgba(255,255,255,.065);border-radius:18px}
+.mova-call-tile.is-speaking{border-color:#3fd36f;box-shadow:inset 0 0 0 2px #3fd36f,0 0 0 1px rgba(63,211,111,.22)}
+.mova-call-tile>.mova-call-label{height:32px;padding-inline:11px;border-radius:10px;font-size:12px;font-weight:600}
+
+.mova-open-chat.is-in-call .mova-call-controls{position:relative;z-index:25;align-items:center;gap:6px;min-height:64px;padding:8px 10px;background:rgba(27,29,36,.88);border:1px solid rgba(255,255,255,.085);border-radius:999px;box-shadow:0 18px 48px rgba(0,0,0,.4);backdrop-filter:blur(22px) saturate(130%)}
+.mova-open-chat.is-in-call .mova-call-controls>button{position:relative;display:grid;place-items:center;width:48px;height:48px;min-width:48px;padding:0;color:#d9dbe1;background:transparent;border:0;border-radius:50%;cursor:pointer}
+.mova-open-chat.is-in-call .mova-call-control-icon{display:grid;place-items:center;width:42px;height:42px;color:#eef0f4;background:#343741;border:1px solid rgba(255,255,255,.055);border-radius:50%;transition:color 150ms ease,background 150ms ease,transform 150ms ease,border-color 150ms ease}
+.mova-open-chat.is-in-call .mova-call-controls>button:hover .mova-call-control-icon{color:#fff;background:#424650;transform:translateY(-1px)}
+.mova-open-chat.is-in-call .mova-call-controls>button.is-on .mova-call-control-icon{color:#fff;background:var(--mova-accent-color,#8774e1);border-color:transparent}
+.mova-open-chat.is-in-call .mova-call-controls>button.is-off .mova-call-control-icon{color:#ffb3bd;background:#4b2931;border-color:rgba(255,124,140,.1)}
+.mova-open-chat.is-in-call .mova-call-controls>button.is-hangup{width:48px;min-width:48px;margin-left:3px}
+.mova-open-chat.is-in-call .mova-call-controls>button.is-hangup .mova-call-control-icon{width:42px;height:42px;color:#fff;background:#e34f61;border-color:transparent}
+.mova-open-chat.is-in-call .mova-call-controls>button.is-hangup:hover .mova-call-control-icon{background:#f05c6e}
+.mova-open-chat.is-in-call .mova-call-controls>button::after{content:attr(data-tooltip);position:absolute;left:50%;bottom:calc(100% + 10px);z-index:3;padding:7px 9px;color:#f5f5f7;background:#111217;border:1px solid rgba(255,255,255,.08);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.34);font-size:11px;font-weight:600;line-height:1;white-space:nowrap;opacity:0;pointer-events:none;transform:translate(-50%,4px);transition:opacity 130ms ease,transform 130ms ease}
+.mova-open-chat.is-in-call .mova-call-controls>button:hover::after,.mova-open-chat.is-in-call .mova-call-controls>button:focus-visible::after{opacity:1;transform:translate(-50%,0)}
+.mova-open-chat.is-in-call .mova-call-controls .mova-call-chat-unread{position:absolute;z-index:2;top:0;right:0;min-width:19px;height:19px;padding:0 5px;border-color:#1b1d24}
+.mova-open-chat.is-in-call .mova-call-more{right:50%;bottom:86px;transform:translateX(50%)}
+
+.mova-call-pending__actions>button>.mova-call-action-icon{display:grid;place-items:center;width:60px;height:60px;color:#fff;border-radius:50%;box-shadow:0 10px 24px rgba(0,0,0,.24);transition:transform 150ms ease,filter 150ms ease}
+.mova-call-pending__actions>button:hover>.mova-call-action-icon{filter:brightness(1.1);transform:translateY(-2px)}
+.mova-call-pending__actions>button:active>.mova-call-action-icon{transform:scale(.95)}
+.mova-call-pending__actions>.is-accept>.mova-call-action-icon{color:#10201e;background:#62d9ca}
+.mova-call-pending__actions>.is-decline>.mova-call-action-icon{background:#e55368}
+
+@media(max-width:760px){
+  html:has(.mova-open-chat.is-in-call),body:has(.mova-open-chat.is-in-call),body:has(.mova-open-chat.is-in-call) #root{min-width:0}
+  .mova-tg-app:has(>.mova-open-chat.is-in-call){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:0;width:100%;min-width:0;min-height:100dvh;padding:0}
+  .mova-tg-app:has(>.mova-open-chat.is-in-call)>.mova-tg-sidebar{display:none}
+  .mova-tg-app>.mova-open-chat.is-in-call{grid-column:1;grid-row:1;width:100%;min-width:0;min-height:100dvh;border-radius:0}
+  .mova-open-chat.is-in-call>.mova-call-host>.mova-call-stage{padding:8px 10px max(10px,env(safe-area-inset-bottom))}
+  .mova-open-chat.is-in-call .mova-call-stage>header{height:54px;flex-basis:54px;padding-inline:52px}
+  .mova-open-chat.is-in-call .mova-call-stage>header strong{overflow:hidden;display:block;font-size:15px;text-overflow:ellipsis;white-space:nowrap}
+  .mova-call-header-tools{left:0;top:6px}
+  .mova-call-header-tools .mova-network-quality{width:42px;height:42px;border-radius:50%}
+  .mova-open-chat.is-in-call .mova-call-grid.is-participants{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) 94px;gap:8px;width:100%;padding:5px 0 9px;overflow:hidden}
+  .mova-open-chat.is-in-call .mova-call-grid.is-participants:not(:has(>.mova-call-secondary-participants)){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+  .mova-call-grid.is-participants>.mova-call-primary-participant{display:flex;min-width:0;min-height:0}
+  .mova-call-grid.is-participants>.mova-call-primary-participant>.mova-call-tile{width:100%;height:100%;min-height:0;flex:1}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants{display:flex;align-items:stretch;justify-content:flex-start;gap:8px;min-width:0;min-height:0;overflow-x:auto;scroll-snap-type:x proximity;scrollbar-width:none}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants::-webkit-scrollbar{display:none}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants>.mova-call-tile{width:116px;min-width:116px;min-height:0;scroll-snap-align:start;border-radius:14px}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants>.mova-call-tile>.mova-avatar{width:48px;height:48px;font-size:14px}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants>.mova-call-tile>.mova-call-label{left:5px;right:5px;bottom:5px;max-width:none;height:24px;padding:0 7px;overflow:hidden;font-size:9px;text-overflow:ellipsis;white-space:nowrap}
+  .mova-open-chat.is-in-call .mova-call-grid.has-screen{grid-template-rows:minmax(0,1fr) 94px;padding-bottom:9px}
+  .mova-open-chat.is-in-call .mova-call-participants{padding-top:7px;justify-content:flex-start;scroll-snap-type:x proximity}
+  .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile{width:116px;min-width:116px;flex-basis:116px;scroll-snap-align:start;border-radius:14px}
+  .mova-open-chat.is-in-call .mova-call-tile>.mova-avatar{width:76px;height:76px;font-size:20px}
+  .mova-open-chat.is-in-call .mova-call-tile>.mova-call-label{font-size:11px}
+  .mova-open-chat.is-in-call .mova-call-controls{gap:2px;width:calc(100% - 4px);min-height:56px;padding:6px;margin-inline:2px;justify-content:space-between;overflow:visible}
+  .mova-open-chat.is-in-call .mova-call-controls>button{width:40px;height:44px;min-width:40px}
+  .mova-open-chat.is-in-call .mova-call-control-icon{width:38px;height:38px}
+  .mova-open-chat.is-in-call .mova-call-controls>button.is-hangup{width:40px;min-width:40px;margin-left:1px}
+  .mova-open-chat.is-in-call .mova-call-controls>button.is-hangup .mova-call-control-icon{width:38px;height:38px}
+  .mova-open-chat.is-in-call .mova-call-controls>button::after{display:none}
+  .mova-open-chat.is-in-call .mova-call-controls .mova-call-chat-unread{top:-1px;right:-1px}
+  .mova-open-chat.is-in-call .mova-call-more,.mova-open-chat.is-in-call .mova-screen-menu{position:fixed;left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom));width:auto;transform:none}
+  .mova-call-pending{padding:10px 16px max(18px,env(safe-area-inset-bottom))}
+  .mova-call-pending__avatar{width:112px;height:112px;margin-bottom:18px}
+  .mova-call-pending__avatar>.mova-avatar,.mova-call-pending__avatar>.mova-real-group-avatar{width:92px;height:92px;flex-basis:92px}
+  .mova-call-pending h1{font-size:26px}
+  .mova-call-pending__content>p{font-size:12px}
+  .mova-call-pending__actions{gap:28px}
+  .mova-call-pending__actions>button>.mova-call-action-icon{width:56px;height:56px}
+  .mova-tg-app>.mova-open-chat.is-in-call.is-call-chat-open{grid-template-columns:minmax(0,1fr);grid-template-rows:58px minmax(0,1fr) auto}
+  .mova-open-chat.is-call-chat-open>.mova-call-host:not(:empty){display:none}
+  .mova-open-chat.is-call-chat-open>.mova-call-chat-resizer{display:none}
+  .mova-open-chat.is-call-chat-open>.mova-call-chat-header{grid-column:1;grid-row:1;padding-left:14px}
+  .mova-open-chat.is-call-chat-open>.mova-real-messages{grid-column:1;grid-row:2;padding:14px 10px}
+  .mova-open-chat.is-call-chat-open>.mova-real-composer{grid-column:1;grid-row:3;width:auto;margin:8px 8px max(8px,env(safe-area-inset-bottom))}
+}
+
+/* Persistent call status under the conversation header. */
+.mova-active-call-host:empty{display:none}
+.mova-active-call-host:not(:empty){z-index:5;width:calc(100% - 36px);max-width:var(--mova-chat-content-width,696px);flex:0 0 auto;align-self:center;margin:0 0 8px}
+.mova-active-call-banner{display:flex;align-items:center;gap:12px;min-height:62px;padding:8px 10px 8px 12px;color:#f3f4f6;background:linear-gradient(100deg,rgba(48,51,62,.98),rgba(36,38,47,.98));border:1px solid rgba(255,255,255,.075);border-radius:18px;box-shadow:0 12px 30px rgba(0,0,0,.2)}
+.mova-active-call-banner__icon{display:grid;place-items:center;width:40px;height:40px;flex:0 0 40px;color:#182321;background:#66d7c7;border-radius:13px;box-shadow:0 8px 20px rgba(79,205,188,.16)}
+.mova-active-call-banner__icon svg,.mova-active-call-banner>button svg,.mova-call-system-message>span:first-child svg{display:block;overflow:visible;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;shape-rendering:geometricPrecision}
+.mova-active-call-banner__details{display:grid;min-width:0;flex:1}
+.mova-active-call-banner__details>strong{overflow:hidden;font-size:13px;font-weight:720;text-overflow:ellipsis;white-space:nowrap}
+.mova-active-call-banner__details>small{display:flex;align-items:center;gap:7px;margin-top:3px;color:#a9afb9;font-size:10px;font-variant-numeric:tabular-nums}
+.mova-active-call-banner__details>small>i{width:7px;height:7px;background:#57d58a;border-radius:50%;box-shadow:0 0 0 4px rgba(87,213,138,.1)}
+.mova-active-call-banner__error{max-width:160px;color:#ff9aa7;font-size:9px;line-height:1.3}
+.mova-active-call-banner>button{display:flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:0 15px;color:#fff;background:var(--mova-accent-color,#8774e1);border:0;border-radius:13px;font:inherit;font-size:11px;font-weight:720;cursor:pointer;transition:filter 140ms ease,transform 140ms ease}
+.mova-active-call-banner>button:hover{filter:brightness(1.1);transform:translateY(-1px)}
+
+/* Every participant keeps a stable 16:9 frame. */
+.mova-open-chat.is-in-call .mova-call-grid.is-participants{grid-auto-rows:auto;align-content:center}
+.mova-open-chat.is-in-call .mova-call-grid.is-participants .mova-call-tile:not(.is-screen),.mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile:not(.is-screen){height:auto;min-height:0;aspect-ratio:16/9}
+.mova-open-chat.is-in-call.is-call-chat-open .mova-call-grid.is-participants{grid-auto-rows:auto;align-content:center}
+
+/* Call history is a neutral system event, not a message bubble from either user. */
+.mova-call-system-message{display:flex;align-items:center;gap:10px;width:max-content;max-width:min(100%,420px);margin:18px auto;padding:8px 11px;color:#c9cbd2;background:rgba(19,22,29,.68);border:1px solid rgba(255,255,255,.065);border-radius:14px;box-shadow:0 7px 22px rgba(0,0,0,.1)}
+.mova-call-system-message>span:first-child{display:grid;place-items:center;width:32px;height:32px;flex:0 0 32px;color:#aaa0d7;background:rgba(135,116,225,.12);border-radius:10px}
+.mova-call-system-message>span:nth-child(2){display:grid;min-width:0}
+.mova-call-system-message strong{font-size:11px;font-weight:700}
+.mova-call-system-message small{margin-top:2px;color:#8f949f;font-size:9px;font-variant-numeric:tabular-nums}
+.mova-call-system-message time{margin-left:7px;color:#707681;font-size:8px}
+.mova-call-system-message.is-search-match{outline:1px solid color-mix(in srgb,var(--mova-accent-color,#8774e1) 65%,transparent)}
+.mova-call-system-message.is-active-search-match{background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 15%,rgba(19,22,29,.78))}
+
+@media(max-width:760px){
+  .mova-active-call-host:not(:empty){width:calc(100% - 16px);margin-bottom:7px}
+  .mova-active-call-banner{gap:9px;min-height:58px;padding:7px 8px 7px 10px;border-radius:16px}
+  .mova-active-call-banner__icon{width:38px;height:38px;flex-basis:38px;border-radius:12px}
+  .mova-active-call-banner__error{display:none}
+  .mova-active-call-banner>button{min-width:42px;min-height:40px;padding:0 12px}
+  .mova-active-call-banner>button>span{display:none}
+  .mova-open-chat.is-in-call .mova-call-grid.is-participants{grid-template-rows:minmax(0,1fr) 94px;align-content:stretch}
+  .mova-call-grid.is-participants>.mova-call-primary-participant{align-items:center}
+  .mova-call-grid.is-participants>.mova-call-primary-participant>.mova-call-tile{height:auto;flex:0 1 auto;aspect-ratio:16/9}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants{align-items:center}
+  .mova-call-grid.is-participants>.mova-call-secondary-participants>.mova-call-tile,.mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile{height:auto;aspect-ratio:16/9}
+  .mova-call-system-message{margin-block:14px;padding:7px 9px}
+}

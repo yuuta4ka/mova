@@ -44,6 +44,13 @@ export interface AppMessage {
   sentAt?: string;
   editedAt?: string;
   readBy?: MessageReadReceipt[];
+  kind?: 'user' | 'call';
+  call?: {
+    status: 'completed';
+    durationSeconds: number;
+    startedAt: string;
+    endedAt: string;
+  };
   author: AppUser;
 }
 export interface AppConversation {
@@ -144,18 +151,22 @@ export type RealtimeEvent =
   | { type: 'conversation:new'; conversationId: string }
   | { type: 'typing'; conversationId: string; userId: string; active: boolean }
   | { type: 'profile:update' | 'presence:update'; user: AppUser }
-  | { type: 'call:invite'; conversationId: string; from: AppUser }
+  | { type: 'call:invite'; conversationId: string; from: AppUser; createdAt: string }
   | {
-      type: 'call:accept' | 'call:decline';
+      type: 'call:accept';
       conversationId: string;
       fromUserId: string;
+      startedAt: string;
     }
+  | { type: 'call:decline'; conversationId: string; fromUserId: string }
   | { type: 'call:end'; conversationId: string; fromUserId: string }
   | {
       type: 'call:state';
       conversationId: string;
       status: 'idle' | 'ringing' | 'active';
       from?: AppUser;
+      createdAt?: string;
+      startedAt?: string;
       participants: string[];
       joined: boolean;
     }

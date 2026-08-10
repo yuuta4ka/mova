@@ -193,6 +193,8 @@ function callStateFor(conversationId, socket) {
     ...(active
       ? {
           from: publicUser(database.users.find((item) => item.id === active.fromUserId)),
+          createdAt: new Date(active.createdAt).toISOString(),
+          ...(active.startedAt ? { startedAt: new Date(active.startedAt).toISOString() } : {}),
         }
       : {}),
     participants: roomUserIds(conversationId),
@@ -204,18 +206,55 @@ function clearCallCleanup(conversationId) {
   if (timer) clearTimeout(timer);
   callCleanupTimers.delete(conversationId);
 }
+function callDurationLabel(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds]
+    .slice(hours ? 0 : 1)
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':');
+}
+function finishCall(conversationId, fallbackUserId = '') {
+  const call = activeCalls.get(conversationId);
+  if (!call) return;
+  activeCalls.delete(conversationId);
+  clearCallCleanup(conversationId);
+  const endedAt = Date.now();
+  broadcastToConversation(conversationId, {
+    type: 'call:end',
+    conversationId,
+    fromUserId: call.fromUserId || fallbackUserId,
+  });
+  if (!call.startedAt) return;
+  const durationSeconds = Math.max(0, Math.floor((endedAt - call.startedAt) / 1000));
+  const createdAt = new Date(endedAt).toISOString();
+  const message = {
+    id: id('msg'),
+    conversationId,
+    authorId: call.fromUserId || fallbackUserId,
+    kind: 'call',
+    content: `Звонок завершён · ${callDurationLabel(durationSeconds)}`,
+    call: {
+      status: 'completed',
+      durationSeconds,
+      startedAt: new Date(call.startedAt).toISOString(),
+      endedAt: createdAt,
+    },
+    createdAt,
+    sentAt: createdAt,
+    readBy: [],
+  };
+  database.messages.push(message);
+  void persist();
+  broadcastToConversation(conversationId, { type: 'message:new', message: messageDto(message) });
+}
 function scheduleCallCleanup(conversationId, delay = 60_000) {
   clearCallCleanup(conversationId);
   const timer = setTimeout(() => {
     callCleanupTimers.delete(conversationId);
     if (voiceRooms.get(conversationId)?.size || !activeCalls.has(conversationId)) return;
-    const call = activeCalls.get(conversationId);
-    activeCalls.delete(conversationId);
-    broadcastToConversation(conversationId, {
-      type: 'call:end',
-      conversationId,
-      fromUserId: call?.fromUserId || '',
-    });
+    finishCall(conversationId);
   }, delay);
   callCleanupTimers.set(conversationId, timer);
 }
@@ -591,14 +630,7 @@ function leaveVoice(socket) {
   }
   if (room?.size === 0) {
     voiceRooms.delete(conversationId);
-    const call = activeCalls.get(conversationId);
-    activeCalls.delete(conversationId);
-    clearCallCleanup(conversationId);
-    broadcastToConversation(conversationId, {
-      type: 'call:end',
-      conversationId,
-      fromUserId: call?.fromUserId || socket.userId,
-    });
+    finishCall(conversationId, socket.userId);
   } else if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(callStateFor(conversationId, socket)));
   }
@@ -648,13 +680,14 @@ function handleSocket(socket, request) {
       }
       if (event.type === 'call:sync') return socket.send(JSON.stringify(callStateFor(conversationId, socket)));
       if (event.type === 'call:invite') {
+        const createdAt = Date.now();
         activeCalls.set(conversationId, {
           fromUserId: user.id,
           status: 'ringing',
-          createdAt: Date.now(),
+          createdAt,
         });
         scheduleCallCleanup(conversationId, 45_000);
-        return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(user) }, user.id);
+        return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(user), createdAt: new Date(createdAt).toISOString() }, user.id);
       }
       if (event.type === 'call:accept') {
         const active = activeCalls.get(conversationId) || {
@@ -662,9 +695,10 @@ function handleSocket(socket, request) {
           createdAt: Date.now(),
         };
         active.status = 'active';
+        active.startedAt ||= Date.now();
         activeCalls.set(conversationId, active);
         scheduleCallCleanup(conversationId);
-        return broadcastToConversation(conversationId, { type: 'call:accept', conversationId, fromUserId: user.id }, user.id);
+        return broadcastToConversation(conversationId, { type: 'call:accept', conversationId, fromUserId: user.id, startedAt: new Date(active.startedAt).toISOString() }, user.id);
       }
       if (event.type === 'call:decline') {
         const active = activeCalls.get(conversationId);
@@ -681,12 +715,19 @@ function handleSocket(socket, request) {
         leaveVoice(socket);
         socket.voiceConversationId = conversationId;
         clearCallCleanup(conversationId);
-        if (!activeCalls.has(conversationId))
+        if (!activeCalls.has(conversationId)) {
+          const startedAt = Date.now();
           activeCalls.set(conversationId, {
             fromUserId: user.id,
             status: 'active',
-            createdAt: Date.now(),
+            createdAt: startedAt,
+            startedAt,
           });
+        } else {
+          const active = activeCalls.get(conversationId);
+          active.status = 'active';
+          active.startedAt ||= Date.now();
+        }
         if (!voiceRooms.has(conversationId)) voiceRooms.set(conversationId, new Map());
         const room = voiceRooms.get(conversationId);
         const peers = [...room.keys()].filter((userId) => userId !== user.id);

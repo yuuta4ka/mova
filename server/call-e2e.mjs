@@ -81,7 +81,7 @@ try {
   ]);
 
   await caller.page.getByRole('button', { name: 'Выйти из звонка' }).click();
-  await caller.page.getByRole('button', { name: 'Вернуться в звонок' }).waitFor({ timeout: 5_000 });
+  await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).waitFor({ timeout: 5_000 });
   await callee.page.locator('.mova-call-stage').waitFor({ state: 'visible' });
 
   const messageWhileCallContinues = `Звонок продолжается ${suffix}`;
@@ -90,7 +90,7 @@ try {
   await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
   await callee.page.locator('.mova-real-message').getByText(messageWhileCallContinues, { exact: true }).waitFor({ timeout: 5_000 });
 
-  await caller.page.getByRole('button', { name: 'Вернуться в звонок' }).click();
+  await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).click();
   await Promise.all([
     caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
     callee.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
@@ -102,7 +102,7 @@ try {
       throw new DOMException('Permission denied by regression test', 'NotAllowedError');
     };
   });
-  await caller.page.getByRole('button', { name: 'Вернуться в звонок' }).click();
+  await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).click();
   await caller.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
 
   const messageAfterMicFailure = `После ошибки микрофона ${suffix}`;
@@ -112,6 +112,7 @@ try {
 
   await callee.page.getByRole('button', { name: 'Выйти из звонка' }).click();
   await caller.page.getByRole('button', { name: 'Позвонить' }).waitFor({ timeout: 5_000 });
+  await caller.page.locator('.mova-call-system-message').filter({ hasText: 'Звонок завершён' }).waitFor({ timeout: 5_000 });
 
   const storedMessages = await api(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
   console.log(JSON.stringify({ connected: true, callerAudio: true, calleeAudio: true, returnedToCall: true, micFailureDoesNotBlockChat: true, messagesSent: storedMessages.messages.length }));
