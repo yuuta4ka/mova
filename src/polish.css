@@ -37,7 +37,7 @@ html.mova-landing-document body { background: #0b0d12; }
 }
 .mova-landing-nav { width:min(1240px,calc(100% - 64px)); height:84px; border-color:var(--mova-ui-line); }
 .mova-landing-brand { gap:11px; }
-.mova-landing-brand>span { width:40px; height:40px; border-radius:13px; font-size:14px; box-shadow:0 9px 28px rgba(89,205,189,.13); }
+.mova-landing-brand>img { width:40px; height:40px; filter:drop-shadow(0 9px 20px rgba(89,205,189,.13)); }
 .mova-landing-brand strong { font-size:20px; letter-spacing:-.045em; }
 .mova-landing-nav>div { gap:32px; }
 .mova-landing-nav>div>a { color:#9ba2ad; font-size:14px; font-weight:620; }
@@ -89,7 +89,7 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-auth { min-height:620px; padding:32px; background:#10131a; }
 .mova-auth__aurora { background:radial-gradient(760px 560px at 50% 17%,rgba(128,105,220,.14),transparent 72%); }
 .mova-auth-card { width:min(440px,100%); padding:38px; background:#191c24; border-color:var(--mova-ui-line); border-radius:28px; box-shadow:var(--mova-ui-shadow); }
-.mova-auth-logo { width:80px; height:80px; font-size:28px; box-shadow:0 14px 38px color-mix(in srgb,var(--mova-accent-color,#8774e1) 34%,transparent); }
+.mova-auth-logo { width:80px; height:80px; filter:drop-shadow(0 14px 28px rgba(89,205,189,.18)); }
 .mova-auth-card>header h1 { margin:20px 0 6px; font-size:30px; font-weight:680; }
 .mova-auth-card>header p { color:var(--mova-ui-muted); font-size:14px; }
 .mova-auth-tabs { margin:28px 0 21px; padding:4px; background:#12151b; border:1px solid rgba(255,255,255,.045); border-radius:15px; }
@@ -181,7 +181,7 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-settings { grid-template-columns:220px minmax(0,1fr); width:min(980px,100%); height:min(760px,92dvh); color:var(--mova-ui-text); background:#1a1c23; border-color:var(--mova-ui-line-strong); border-radius:24px; box-shadow:var(--mova-ui-shadow); }
 .mova-settings>aside { gap:5px; padding:20px 12px; background:#14161b; border-color:var(--mova-ui-line); }
 .mova-settings>aside>div { gap:11px; padding:2px 10px 20px; }
-.mova-settings>aside>div>span { width:36px; height:36px; font-size:13px; }
+.mova-settings>aside>div>img { width:36px; height:36px; }
 .mova-settings>aside>div>strong { font-size:15px; }
 .mova-settings>aside>button { gap:10px; height:44px; padding:0 12px; color:#9da1ab; border-radius:12px; font-size:14px; }
 .mova-settings>aside>button.is-active { background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 23%,#24262e); box-shadow:inset 3px 0 0 var(--mova-accent-color,#8774e1); }

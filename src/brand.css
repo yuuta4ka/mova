@@ -1,0 +1,22 @@
+.mova-real-welcome > div > span {
+  width: 64px;
+  height: 64px;
+  color: inherit;
+  background: transparent;
+  border-radius: 0;
+}
+
+.mova-real-welcome > div > span img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 24px rgba(93, 226, 211, .14));
+}
+
+.mova-tg-app .mova-real-welcome > div > span {
+  width: 58px;
+  height: 58px;
+  background: transparent;
+  border-radius: 0;
+}

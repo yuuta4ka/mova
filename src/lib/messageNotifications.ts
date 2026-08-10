@@ -25,7 +25,7 @@ export function showMessageNotification(message: AppMessage, conversation: AppCo
   const copy = messageNotificationCopy(message, conversation);
   const notification = new window.Notification(copy.title, {
     body: copy.body,
-    icon: message.author.avatarDataUrl || '/icon.png',
+    icon: message.author.avatarDataUrl || '/icon-192.png',
     tag: `mova-conversation-${message.conversationId}`,
     silent: true,
   });

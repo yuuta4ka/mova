@@ -10,6 +10,7 @@ import './input-focus.css';
 import './auth.css';
 import './landing.css';
 import './polish.css';
+import './brand.css';
 import { RealApp } from './RealApp';
 import { LandingPage } from './LandingPage';
 

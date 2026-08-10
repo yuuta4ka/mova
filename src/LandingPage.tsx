@@ -43,7 +43,7 @@ const downloads = [
 function Brand() {
   return (
     <a className="mova-landing-brand" href="/" aria-label="Mova — главная">
-      <span>M</span>
+      <img src="/mova-logo.png" alt="" />
       <strong>Mova</strong>
     </a>
   );

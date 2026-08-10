@@ -39,7 +39,7 @@ import { Avatar, Badge, Button, Divider, IconButton, Tooltip } from './Primitive
 export function SpaceRail({ spaces }: { spaces: Space[] }) {
   return (
     <nav className="mova-space-rail" aria-label="Пространства">
-      <div className="mova-wordmark">Mova</div>
+      <div className="mova-wordmark"><img src="/mova-logo.png" alt="Mova" /></div>
       <div className="mova-space-rail__items">
         {spaces.map((space) => (
           <Tooltip key={space.id} label={space.name} side="right">
@@ -155,7 +155,7 @@ export function EmptyState({ icon, title, description, action }: { icon?: ReactN
 
 export function MovaTopbar({ currentUser, section, onSectionChange }: { currentUser: User; section: 'chats' | 'spaces'; onSectionChange: (section: 'chats' | 'spaces') => void }) {
   return <header className="mova-topbar">
-    <button type="button" className="mova-topbar__brand" aria-label="Главная Mova"><span>M</span><strong>Mova</strong></button>
+    <button type="button" className="mova-topbar__brand" aria-label="Главная Mova"><img src="/mova-logo.png" alt="" /><strong>Mova</strong></button>
     <nav className="mova-mode-switch" aria-label="Разделы приложения">
       <button type="button" className={section === 'chats' ? 'is-active' : ''} aria-current={section === 'chats' ? 'page' : undefined} onClick={() => onSectionChange('chats')}><MessagesSquare size={17} />Чаты</button>
       <button type="button" className={section === 'spaces' ? 'is-active' : ''} aria-current={section === 'spaces' ? 'page' : undefined} onClick={() => onSectionChange('spaces')}><Compass size={17} />Пространства</button>

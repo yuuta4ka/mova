@@ -9,7 +9,8 @@
       * { box-sizing: border-box; }
       body { min-height:100vh;margin:0;display:grid;place-items:center;padding:32px;color:#eef3f5;background:radial-gradient(800px 580px at 18% 12%,rgba(88,206,189,.16),transparent 65%),radial-gradient(700px 500px at 90% 90%,rgba(140,108,225,.13),transparent 65%),#080c12; }
       main { width:min(480px,100%);padding:34px;background:rgba(18,25,34,.84);border:1px solid rgba(228,237,250,.1);border-radius:28px;box-shadow:0 30px 90px rgba(0,0,0,.42);backdrop-filter:blur(24px); }
-      .logo { display:grid;place-items:center;width:58px;height:58px;margin-bottom:22px;color:#10201f;background:linear-gradient(145deg,#97eade,#58cebd);border-radius:19px;font-size:24px;font-weight:900;box-shadow:0 0 35px rgba(93,226,211,.18); }
+      .logo { display:block;width:64px;height:64px;margin-bottom:22px;filter:drop-shadow(0 0 24px rgba(93,226,211,.2)); }
+      .logo img { display:block;width:100%;height:100%;object-fit:contain; }
       h1 { margin:0;font-size:29px;letter-spacing:-.045em; }
       p { margin:10px 0 26px;color:#8d99a8;font-size:14px;line-height:1.55; }
       label { display:grid;gap:8px;color:#b8c0ca;font-size:12px;font-weight:700; }
@@ -23,7 +24,7 @@
   </head>
   <body>
     <main>
-      <div class="logo">M</div>
+      <div class="logo"><img src="./assets/icon.png" alt="Mova" /></div>
       <h1>Подключить Mova</h1>
       <p>Введите публичный адрес вашей Mova на Amvera. Он сохранится только на этом компьютере.</p>
       <form id="form">

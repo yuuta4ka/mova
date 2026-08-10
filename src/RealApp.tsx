@@ -384,7 +384,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
       <section className="mova-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <aside>
           <div>
-            <span>M</span>
+            <img src="/mova-logo.png" alt="" />
             <strong>Настройки</strong>
           </div>
           <button type="button" className={section === 'profile' ? 'is-active' : ''} onClick={() => setSection('profile')}>
@@ -763,7 +763,7 @@ function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
       <section className="mova-auth__panel">
         <div className="mova-glass-card mova-auth-card">
           <header>
-            <span className="mova-auth-logo">M</span>
+            <img className="mova-auth-logo" src="/mova-logo.png" alt="" />
             <h1>Mova</h1>
             <p>{mode === 'register' ? 'Создайте аккаунт' : 'Войдите в свой аккаунт'}</p>
           </header>
@@ -3138,9 +3138,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       ) : (
         <section className="mova-real-welcome">
           <div>
-            <span>
-              <MessageCircle size={26} />
-            </span>
+            <span><img src="/mova-logo.png" alt="" /></span>
             <h1>Mova</h1>
             <p>Выберите разговор или создайте новый</p>
             <Button leadingIcon={<Plus size={17} />} onClick={() => setCreateOpen(true)}>
@@ -3182,7 +3180,7 @@ export function RealApp() {
   if (checking)
     return (
       <div className="mova-boot">
-        <span>M</span>
+        <img src="/mova-logo.png" alt="" />
         <p>Открываем Mova…</p>
       </div>
     );
