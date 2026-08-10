@@ -4,14 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RealMessages } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const callMedia = vi.hoisted(() => ({ state: 'active', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleDeafen: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, object> }));
+const callMedia = vi.hoisted(() => ({ state: 'active', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, cameraStream: null as MediaStream | null, screenStream: null as MediaStream | null, remoteVideoStreams: [] as Array<{ userId: string; streamId: string; stream: MediaStream }>, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleDeafen: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, object> }));
 
 vi.mock('./hooks/useVoiceCall', () => ({
   useVoiceCall: (conversationId: string) => {
     callMedia.conversationIds.push(conversationId);
     return ({
     state: callMedia.state, createdAt: callMedia.createdAt, startedAt: callMedia.startedAt, muted: false, deafened: false, participants: callMedia.participants, error: '', incomingFrom: null,
-    cameraStream: null, screenStream: callMedia.screenStream, remoteVideoStreams: [], remoteMedia: {}, remoteVoiceStates: {}, localSpeaking: callMedia.localSpeaking, speakingUsers: {},
+    cameraStream: callMedia.cameraStream, screenStream: callMedia.screenStream, remoteVideoStreams: callMedia.remoteVideoStreams, remoteMedia: {}, remoteVoiceStates: {}, localSpeaking: callMedia.localSpeaking, speakingUsers: {},
     participantVolumes: {}, screenVolumes: {}, diagnostics: callMedia.diagnostics, setParticipantVolume: callMedia.setParticipantVolume, setScreenVolume: vi.fn(),
     call: vi.fn(), accept: callMedia.accept, decline: vi.fn(), leave: vi.fn(), toggleMute: vi.fn(), toggleDeafen: callMedia.toggleDeafen,
     toggleCamera: vi.fn(), toggleScreen: vi.fn(), shareScreen: vi.fn(), stopScreen: vi.fn(), updateScreenQuality: vi.fn(),
@@ -28,7 +28,9 @@ beforeEach(() => {
   callMedia.state = 'active';
   callMedia.createdAt = '2026-08-10T00:00:00.000Z';
   callMedia.startedAt = '2026-08-10T00:00:00.000Z';
+  callMedia.cameraStream = null;
   callMedia.screenStream = null;
+  callMedia.remoteVideoStreams = [];
   callMedia.localSpeaking = false;
   callMedia.participants = [];
   callMedia.diagnostics = {};
@@ -185,12 +187,28 @@ describe('call layout', () => {
     expect(screen.getByRole('button', { name: 'Закрыть полноэкранный режим' })).toBeVisible();
   });
 
-  it('can expand an avatar tile and adjust a participant from its context menu', async () => {
+  it('keeps the remote participant primary and the local preview separate', async () => {
+    const stream = (id: string) => ({ id, getTracks: () => [], getVideoTracks: () => [{ getSettings: () => ({ width: 1280, height: 720, aspectRatio: 16 / 9 }) }] }) as unknown as MediaStream;
+    callMedia.cameraStream = stream('local-camera');
+    callMedia.remoteVideoStreams = [{ userId: 'friend', streamId: 'friend-camera', stream: stream('friend-camera') }];
+    callMedia.participants = ['friend'];
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    const primary = container.querySelector('.mova-call-primary-participant .mova-call-tile');
+    const selfView = container.querySelector('.mova-call-self-view .mova-call-tile');
+    expect(primary).toHaveTextContent('Друг');
+    expect(primary).not.toHaveTextContent('· вы');
+    expect(selfView).toHaveTextContent('Юта · вы');
+    expect(selfView).toHaveAttribute('data-self-view', 'true');
+    expect(screen.queryByRole('button', { name: 'Открыть Юта · вы на весь экран' })).not.toBeInTheDocument();
+  });
+
+  it('can expand a remote avatar tile and adjust that participant from its context menu', async () => {
     callMedia.participants = ['friend'];
     const user = userEvent.setup();
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    await user.click(await screen.findByRole('button', { name: 'Открыть Юта · вы на весь экран' }));
+    await user.click(await screen.findByRole('button', { name: 'Открыть Друг на весь экран' }));
     expect(document.body.querySelector('.mova-call-tile.is-avatar.is-expanded')).not.toBeNull();
     await user.click(screen.getByRole('button', { name: 'Закрыть полноэкранный режим' }));
 

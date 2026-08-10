@@ -517,6 +517,7 @@ async function handleApi(request, response) {
           error: 'Сообщение для ответа не найдено',
         });
       const createdAt = new Date().toISOString();
+      const clientId = String(data.clientId || '').slice(0, 100);
       const message = {
         id: id('msg'),
         conversationId: messageMatch[1],
@@ -524,6 +525,7 @@ async function handleApi(request, response) {
         content,
         ...(attachment ? { attachment } : {}),
         ...(replyToId ? { replyToId } : {}),
+        ...(clientId ? { clientId } : {}),
         createdAt,
         sentAt: createdAt,
         readBy: [],

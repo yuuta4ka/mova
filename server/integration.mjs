@@ -128,6 +128,7 @@ try {
     'POST',
     {
       content: 'Файл',
+      clientId: 'integration-attachment-message',
       attachment: uploadedAttachment,
     },
     first.token,
@@ -258,6 +259,7 @@ try {
       latestPreview: conversationOverview.conversations[0].lastMessage.content,
       rtcIceServers: rtcConfig.iceServers.length,
       attachment: attachmentMessage.message.attachment.name,
+      clientId: attachmentMessage.message.clientId === 'integration-attachment-message',
       attachmentUrl: attachmentMessage.message.attachment.url.startsWith('/uploads/'),
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id && replyEvent.message.replyTo.attachment.name === 'mova-test.txt',
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),

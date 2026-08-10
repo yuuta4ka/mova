@@ -76,3 +76,58 @@
 .mova-create-tabs button.is-active{border-color:var(--mova-accent-color,#8774e1)}.mova-create-name:focus-within,.mova-create-search:focus-within{color:var(--mova-accent-color,#8774e1);border-color:var(--mova-accent-color,#8774e1);box-shadow:0 0 0 2px color-mix(in srgb,var(--mova-accent-color,#8774e1) 12%,transparent)}
 .mova-tg-app.is-account-menu-open .mova-sidebar-resizer{pointer-events:none;visibility:hidden}
 .mova-icon-button.is-active{color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 35%,white)!important;background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 14%,transparent)!important}
+
+/* Interface polish: roomier type, responsive motion and Telegram-like sending. */
+.mova-tg-app>.mova-real-thread{--mova-chat-content-width:820px}
+.mova-tg-app .mova-real-thread__header{height:56px;min-height:56px;flex-basis:56px;margin-top:10px;padding-inline:6px;border-radius:28px;box-shadow:0 8px 24px rgba(0,0,0,.12);transition:background 180ms ease,box-shadow 180ms ease}
+.mova-chat-identity{height:50px;border-radius:25px}
+.mova-chat-identity>.mova-avatar,.mova-chat-identity>.mova-real-group-avatar{width:44px;height:44px;flex-basis:44px}
+.mova-chat-identity strong{font-size:17px;font-weight:600;line-height:22px}.mova-chat-identity small{font-size:14px;line-height:19px}
+.mova-tg-app .mova-real-thread__header .mova-icon-button,.mova-tg-app .mova-real-thread__header .mova-button{width:44px;height:44px;transition:color 150ms ease,background 150ms ease,transform 150ms ease}
+.mova-tg-app .mova-real-thread__header .mova-icon-button:hover,.mova-tg-app .mova-real-thread__header .mova-button:hover{transform:translateY(-1px)}
+.mova-tg-app .mova-real-thread-intro p{font-size:13px;line-height:1.45}
+.mova-tg-app .mova-real-message{margin-bottom:9px}
+.mova-tg-app .mova-real-message:not(.is-group-end){margin-bottom:3px}
+.mova-tg-app .mova-real-bubble{padding:7px 10px 7px;border-radius:17px 17px 17px 0;box-shadow:0 3px 10px rgba(0,0,0,.08);transition:background 160ms ease,box-shadow 160ms ease,filter 160ms ease}
+.mova-tg-app .mova-real-message.is-own .mova-real-bubble{border-radius:17px 17px 0 17px;box-shadow:0 4px 14px color-mix(in srgb,var(--mova-accent-color,#8774e1) 18%,transparent)}
+.mova-tg-app .mova-real-bubble p{font-size:16px;line-height:22px}.mova-tg-app .mova-real-bubble time{font-size:12px;line-height:14px}
+.mova-message-reply strong,.mova-message-reply small,.mova-composer-context strong,.mova-composer-context small{font-size:12px}
+.mova-message-edited{font-size:10px}
+.mova-chat-search-panel input{font-size:14px}.mova-chat-search-panel>span{font-size:11px}
+.mova-real-typing{height:26px;font-size:12px}
+
+.mova-tg-app .mova-real-composer{min-height:56px;margin-top:10px;padding:6px;background:rgba(33,33,33,.97);border:1px solid transparent;border-radius:28px;box-shadow:0 10px 30px rgba(0,0,0,.16);transition:border-color 180ms ease,background 180ms ease,box-shadow 180ms ease,transform 180ms ease}
+.mova-tg-app .mova-real-composer:focus-within{background:#242424;border-color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 46%,transparent);box-shadow:0 12px 34px rgba(0,0,0,.2),0 0 0 3px color-mix(in srgb,var(--mova-accent-color,#8774e1) 11%,transparent)}
+.mova-tg-app .mova-real-composer>.mova-icon-button,.mova-tg-app .mova-real-composer>button:last-of-type{width:44px;height:44px;flex:0 0 44px;transition:color 150ms ease,background 150ms ease,transform 150ms ease,filter 150ms ease}
+.mova-tg-app .mova-real-composer>.mova-icon-button:hover{background:rgba(255,255,255,.07);transform:scale(1.05)}
+.mova-tg-app .mova-real-composer textarea{min-height:44px;padding:10px 2px;font-size:16px;line-height:22px}
+.mova-tg-app .mova-real-composer>button[type="submit"]:not(:disabled){animation:mova-send-ready 180ms cubic-bezier(.2,.9,.2,1)}
+.mova-tg-app .mova-real-composer>button[type="submit"]:not(:disabled):hover{filter:brightness(1.12);transform:scale(1.06)}
+.mova-tg-app .mova-real-composer>button[type="submit"]:not(:disabled):active{transform:scale(.9)}
+.mova-emoji-picker,.mova-chat-actions-menu,.mova-message-context-menu{animation:mova-popover-in 170ms cubic-bezier(.2,.8,.25,1) both;transform-origin:bottom right}
+
+.mova-tg-app .mova-real-message.is-sending>.mova-message-body{transform-origin:bottom right;animation:mova-message-send-in 260ms cubic-bezier(.16,.84,.32,1.16) both}
+.mova-tg-app .mova-real-message.is-sending .mova-real-bubble{filter:saturate(.94)}
+.mova-tg-app .mova-message-status.is-sending{color:rgba(255,255,255,.76)}
+.mova-tg-app .mova-message-status.is-sending svg{animation:mova-pending-clock 1.25s ease-in-out infinite}
+.mova-tg-app .mova-message-status.is-failed{color:#ffd0d5;background:rgba(116,25,38,.3);border-radius:50%}
+.mova-send-error,.mova-attachment-error{font-size:12px;animation:mova-error-in 180ms ease-out both}
+
+@keyframes mova-message-send-in{0%{opacity:0;transform:translate3d(24px,18px,0) scale(.9)}60%{opacity:1}100%{opacity:1;transform:translate3d(0,0,0) scale(1)}}
+@keyframes mova-send-ready{0%{opacity:.5;transform:scale(.78)}100%{opacity:1;transform:scale(1)}}
+@keyframes mova-pending-clock{50%{opacity:.58;transform:scale(.92)}}
+@keyframes mova-popover-in{0%{opacity:0;transform:translateY(7px) scale(.97)}100%{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes mova-error-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+@media(max-width:760px){
+  .mova-tg-app .mova-real-thread__header{height:52px;min-height:52px;flex-basis:52px;margin-top:6px}
+  .mova-chat-identity{height:46px}.mova-chat-identity>.mova-avatar,.mova-chat-identity>.mova-real-group-avatar{width:40px;height:40px;flex-basis:40px}
+  .mova-chat-identity strong{font-size:16px}.mova-chat-identity small{font-size:13px}
+  .mova-tg-app .mova-real-composer{width:calc(100% - 16px);margin-bottom:max(8px,env(safe-area-inset-bottom));padding:5px}
+  .mova-tg-app .mova-real-bubble{padding:6px 9px}.mova-tg-app .mova-real-bubble p{font-size:15px;line-height:21px}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .mova-tg-app .mova-real-message.is-sending>.mova-message-body,.mova-tg-app .mova-real-composer>button[type="submit"]:not(:disabled),.mova-tg-app .mova-message-status.is-sending svg,.mova-emoji-picker,.mova-chat-actions-menu,.mova-message-context-menu,.mova-send-error,.mova-attachment-error{animation:none}
+  .mova-tg-app .mova-real-thread__header .mova-icon-button:hover,.mova-tg-app .mova-real-thread__header .mova-button:hover,.mova-tg-app .mova-real-composer>.mova-icon-button:hover,.mova-tg-app .mova-real-composer>button[type="submit"]:not(:disabled):hover{transform:none}
+}

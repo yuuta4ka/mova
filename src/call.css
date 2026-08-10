@@ -225,3 +225,56 @@ body>.mova-call-tile.is-expanded>.mova-call-label{position:fixed;left:22px;botto
   .mova-call-grid.is-participants>.mova-call-secondary-participants>.mova-call-tile,.mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile{height:auto;aspect-ratio:16/9}
   .mova-call-system-message{margin-block:14px;padding:7px 9px}
 }
+
+/* Call motion and optical centering. */
+.mova-open-chat.is-in-call .mova-call-controls{padding:10px 10px 6px;animation:mova-call-dock-in 280ms cubic-bezier(.2,.8,.25,1) both}
+.mova-open-chat.is-in-call .mova-call-controls>button{transform:translateY(4px);transition:transform 150ms ease}
+.mova-open-chat.is-in-call .mova-call-controls>button:active{transform:translateY(4px) scale(.92)}
+.mova-active-call-banner{animation:mova-active-call-in 240ms cubic-bezier(.2,.8,.25,1) both}
+.mova-active-call-banner__details>strong{font-size:14px}.mova-active-call-banner__details>small{font-size:12px}
+.mova-active-call-banner__error{font-size:10px}.mova-active-call-banner>button{font-size:12px}
+.mova-call-system-message strong{font-size:13px}.mova-call-system-message small{font-size:11px}.mova-call-system-message time{font-size:10px}
+.mova-open-chat.is-in-call .mova-call-stage>header strong{font-size:18px}.mova-open-chat.is-in-call .mova-call-stage>header>span>small{font-size:12px}
+
+@keyframes mova-call-dock-in{from{opacity:0;transform:translateY(18px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes mova-active-call-in{from{opacity:0;transform:translateY(-8px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+
+@media(max-width:760px){
+  .mova-open-chat.is-in-call .mova-call-controls{padding:8px 6px 4px}
+  .mova-active-call-banner__details>strong{font-size:13px}.mova-active-call-banner__details>small{font-size:11px}
+}
+
+@media(prefers-reduced-motion:reduce){.mova-open-chat.is-in-call .mova-call-controls,.mova-active-call-banner{animation:none}.mova-open-chat.is-in-call .mova-call-controls>button{transition:none}}
+
+/* Remote-first camera layout. On phones the local preview remains a compact PiP
+   instead of competing with the person the user called. */
+.mova-call-grid.is-participants>.mova-call-self-view{display:contents}
+
+@media(max-width:760px){
+  .mova-open-chat.is-in-call .mova-call-grid.is-participants{position:relative}
+  .mova-call-grid.is-participants>.mova-call-self-view{position:absolute;z-index:12;right:10px;bottom:12px;display:block;width:clamp(104px,31vw,132px);aspect-ratio:16/9;filter:drop-shadow(0 12px 24px rgba(0,0,0,.42))}
+  .mova-call-grid.is-participants:has(>.mova-call-secondary-participants)>.mova-call-self-view{bottom:112px}
+  .mova-call-grid.is-participants>.mova-call-self-view>.mova-call-tile{width:100%;height:100%;min-height:0;aspect-ratio:16/9;border:1px solid rgba(255,255,255,.16);border-radius:14px;box-shadow:0 0 0 2px rgba(8,10,14,.76)}
+  .mova-call-grid.is-participants>.mova-call-self-view>.mova-call-tile>.mova-avatar{width:46px;height:46px;font-size:14px}
+  .mova-call-grid.is-participants>.mova-call-self-view>.mova-call-tile>.mova-call-label,.mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-self>.mova-call-label{left:5px;right:5px;bottom:5px;max-width:none;height:22px;padding:0 7px;overflow:hidden;border-radius:8px;font-size:9px;text-overflow:ellipsis;white-space:nowrap}
+  .mova-call-grid.is-participants>.mova-call-primary-participant>.mova-call-tile.has-video.is-camera>video{object-fit:contain}
+  .mova-call-grid.is-participants>.mova-call-primary-participant .mova-call-fullscreen{width:36px;height:36px;opacity:1}
+  .mova-call-tile.is-self .mova-call-fullscreen{display:none}
+
+  /* Mobile expansion stays in the call stage so the self preview can remain on top. */
+  .mova-call-grid:has(.mova-call-tile.is-expanded)>.mova-call-self-view{position:fixed;z-index:310;right:12px;bottom:calc(18px + env(safe-area-inset-bottom));width:clamp(108px,32vw,138px)}
+  .mova-call-grid.has-screen:has(.mova-call-tile.is-expanded) .mova-call-participants>.mova-call-tile.is-self{position:fixed;z-index:310;right:12px;bottom:calc(18px + env(safe-area-inset-bottom));width:clamp(108px,32vw,138px);height:auto;aspect-ratio:16/9;border-color:rgba(255,255,255,.16);box-shadow:0 12px 30px rgba(0,0,0,.48)}
+  .mova-call-grid .mova-call-tile.is-expanded{z-index:300}
+}
+
+@media(max-width:360px){
+  .mova-open-chat.is-in-call .mova-call-controls{gap:0;padding-inline:4px}
+  .mova-open-chat.is-in-call .mova-call-controls>button,.mova-open-chat.is-in-call .mova-call-controls>button.is-hangup{width:38px;min-width:38px}
+  .mova-open-chat.is-in-call .mova-call-control-icon,.mova-open-chat.is-in-call .mova-call-controls>button.is-hangup .mova-call-control-icon{width:36px;height:36px}
+}
+
+@media(max-width:760px) and (orientation:landscape) and (max-height:520px){
+  .mova-open-chat.is-in-call .mova-call-stage>header{height:46px;flex-basis:46px}
+  .mova-call-grid.is-participants>.mova-call-self-view{width:112px}
+  .mova-open-chat.is-in-call .mova-call-controls{min-height:50px}
+}

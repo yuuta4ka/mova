@@ -340,7 +340,7 @@ describe('RealMessages popover menus', () => {
 });
 
 describe('RealMessages send failures', () => {
-  it('keeps the draft editable and shows the server error', async () => {
+  it('clears the composer immediately and shows the server error separately', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockRejectedValue(new Error('Сервер временно недоступен'));
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={onSend} />);
@@ -349,9 +349,22 @@ describe('RealMessages send failures', () => {
     await user.type(composer, 'Не потеряй этот текст');
     await user.click(screen.getByRole('button', { name: 'Отправить' }));
 
+    expect(composer).toHaveValue('');
     expect(await screen.findByRole('alert')).toHaveTextContent('Сервер временно недоступен');
-    expect(composer).toHaveValue('Не потеряй этот текст');
-    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled();
+  });
+
+  it('does not keep text in the composer while the request is pending', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(() => new Promise<void>(() => undefined));
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={onSend} />);
+
+    const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
+    await user.type(composer, 'Отправляется сразу');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(composer).toHaveValue('');
   });
 });
 
@@ -397,6 +410,17 @@ describe('RealMessages delivery status', () => {
     renderChat([ownMessage({ sentAt: '2026-08-10T00:03:00.100Z', readBy: [] })]);
     expect(screen.getByLabelText('Отправлено')).toBeVisible();
     expect(screen.queryByLabelText('Прочитано')).not.toBeInTheDocument();
+  });
+
+  it('shows a clock while an optimistic message is sending', () => {
+    renderChat([ownMessage({ deliveryState: 'sending' })]);
+    expect(screen.getByLabelText('Отправляется')).toBeVisible();
+  });
+
+  it('shows a failed state without pretending the message was sent', () => {
+    renderChat([ownMessage({ deliveryState: 'failed' })]);
+    expect(screen.getByLabelText('Не отправлено')).toBeVisible();
+    expect(screen.queryByLabelText('Отправлено')).not.toBeInTheDocument();
   });
 
   it('shows read only with the recipient receipt', () => {

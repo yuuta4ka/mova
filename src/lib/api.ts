@@ -45,6 +45,8 @@ export interface AppMessage {
   sentAt?: string;
   editedAt?: string;
   readBy?: MessageReadReceipt[];
+  clientId?: string;
+  deliveryState?: 'sending' | 'failed';
   kind?: 'user' | 'call';
   call?: {
     status: 'completed';
@@ -138,10 +140,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
   messages: (conversationId: string) => request<{ messages: AppMessage[] }>(`/api/conversations/${conversationId}/messages`),
-  sendMessage: async (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string) =>
+  sendMessage: async (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string, clientId?: string) =>
     request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content, attachment: attachment ? await uploadAttachment(attachment) : undefined, replyToId }),
+      body: JSON.stringify({ content, attachment: attachment ? await uploadAttachment(attachment) : undefined, replyToId, clientId }),
     }),
   editMessage: (conversationId: string, messageId: string, content: string) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
   markConversationRead: (conversationId: string, throughMessageId: string) =>

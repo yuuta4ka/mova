@@ -9,6 +9,7 @@ import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioS
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
 import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } from './lib/accentSettings';
+import { requestMessageNotificationPermission, showMessageNotification } from './lib/messageNotifications';
 import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
@@ -93,6 +94,12 @@ export const updateConversationLastMessage = (items: AppConversation[], message:
     ),
   );
 };
+const reconcileClientMessage = (items: AppMessage[], message: AppMessage) => {
+  const matchingClientId = message.clientId ? items.findIndex((item) => item.clientId === message.clientId) : -1;
+  if (matchingClientId >= 0) return items.map((item, index) => (index === matchingClientId ? message : item));
+  if (items.some((item) => item.id === message.id)) return items.map((item) => (item.id === message.id ? message : item));
+  return [...items, message];
+};
 const preferredConversation = (items: AppConversation[]) => {
   const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
   return (preferred && items.some((item) => item.id === preferred) ? preferred : items[0]?.id) || null;
@@ -105,6 +112,18 @@ const clearClientCache = () => {
 };
 
 function MessageStatus({ message, conversation }: { message: AppMessage; conversation: AppConversation }) {
+  if (message.deliveryState === 'sending')
+    return (
+      <span className="mova-message-status is-sending" role="img" aria-label="Отправляется" title="Отправляется">
+        <Clock size={13} aria-hidden="true" />
+      </span>
+    );
+  if (message.deliveryState === 'failed')
+    return (
+      <span className="mova-message-status is-failed" role="img" aria-label="Не отправлено" title="Не отправлено">
+        <X size={13} aria-hidden="true" />
+      </span>
+    );
   if (!message.sentAt) return null;
   const recipients = conversation.members.filter((member) => member.id !== message.authorId);
   const readCount = recipients.filter((member) => message.readBy?.some((receipt) => receipt.userId === member.id)).length;
@@ -1221,19 +1240,18 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     const latency = peerDiagnostics.reduce<number | undefined>((maximum, peer) => (peer.roundTripTimeMs === undefined ? maximum : Math.max(maximum ?? 0, peer.roundTripTimeMs)), undefined);
     const latencyLabel = latency === undefined ? 'Измеряем задержку…' : `Задержка ${latency} мс`;
     const networkLabel = networkQuality === 'good' ? '4 полосы' : networkQuality === 'fair' ? '3 полосы' : networkQuality === 'poor' ? '1 полоса' : 'нет данных';
-    const participantTiles: ReactNode[] = [];
-    if (showSelf)
-      participantTiles.push(
-        localCamera ? (
-          <CallVideoTile key="local-camera" stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} />
+    const remoteParticipantTiles: ReactNode[] = [];
+    const selfTile = showSelf
+      ? localCamera ? (
+          <CallVideoTile key="local-camera" stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} selfView />
         ) : (
-          <CallAvatarTile key="local-avatar" user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} />
-        ),
-      );
+          <CallAvatarTile key="local-avatar" user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} selfView />
+        )
+      : null;
     cameraTiles.forEach((tile) => {
       const user = callConversation.members.find((member) => member.id === tile.userId);
       const voice = call.remoteVoiceStates[tile.userId];
-      participantTiles.push(
+      remoteParticipantTiles.push(
         <CallVideoTile
           key={`${tile.userId}-${tile.streamId}`}
           stream={tile.stream}
@@ -1261,7 +1279,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
           const user = callConversation.members.find((member) => member.id === id);
           const voice = call.remoteVoiceStates[id];
           if (!user) return;
-          participantTiles.push(
+          remoteParticipantTiles.push(
             <CallAvatarTile
               key={id}
               user={user}
@@ -1277,6 +1295,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
             />,
           );
         });
+    const participantTiles = [...remoteParticipantTiles, ...(selfTile ? [selfTile] : [])];
 
     return stageHost
       ? createPortal(
@@ -1330,7 +1349,8 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
             ) : (
               <div className="mova-call-grid is-participants">
                 <div className="mova-call-primary-participant">{participantTiles[0]}</div>
-                {participantTiles.length > 1 && <div className="mova-call-secondary-participants">{participantTiles.slice(1)}</div>}
+                {remoteParticipantTiles.length > 1 && <div className="mova-call-secondary-participants">{remoteParticipantTiles.slice(1)}</div>}
+                {selfTile && remoteParticipantTiles.length > 0 && <div className="mova-call-self-view">{selfTile}</div>}
               </div>
             )}
             <div className="mova-call-controls">
@@ -1578,8 +1598,9 @@ function CallVolumeMenu({ control, point, onClose }: { control: CallVolumeContro
     document.body,
   );
 }
-function CallTileShell({ className, label, muted, deafened, screen = false, speaking = false, expanded, onExpandedChange, volume, children }: { className: string; label: string; muted?: boolean; deafened?: boolean; screen?: boolean; speaking?: boolean; expanded: boolean; onExpandedChange: (expanded: boolean) => void; volume?: CallVolumeControl; children: ReactNode }) {
+function CallTileShell({ className, label, muted, deafened, screen = false, speaking = false, expandable = true, expanded, onExpandedChange, volume, children }: { className: string; label: string; muted?: boolean; deafened?: boolean; screen?: boolean; speaking?: boolean; expandable?: boolean; expanded: boolean; onExpandedChange: (expanded: boolean) => void; volume?: CallVolumeControl; children: ReactNode }) {
   const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null);
+  const mobileCallLayout = typeof window !== 'undefined' && (window.matchMedia?.('(max-width: 760px)').matches ?? false);
   useEffect(() => {
     if (!expanded) return;
     const close = (event: KeyboardEvent) => event.key === 'Escape' && onExpandedChange(false);
@@ -1593,18 +1614,20 @@ function CallTileShell({ className, label, muted, deafened, screen = false, spea
     setMenuPoint({ x: event.clientX, y: event.clientY });
   };
   const tile = (
-    <article className={`mova-call-tile ${className} ${speaking && !muted ? 'is-speaking' : ''} ${expanded ? 'is-expanded' : ''}`} data-speaking={speaking && !muted ? 'true' : undefined} onDoubleClick={() => onExpandedChange(!expanded)} onContextMenu={openMenu}>
+    <article className={`mova-call-tile ${className} ${speaking && !muted ? 'is-speaking' : ''} ${expanded ? 'is-expanded' : ''}`} data-speaking={speaking && !muted ? 'true' : undefined} data-self-view={className.includes('is-self') ? 'true' : undefined} onDoubleClick={() => expandable && onExpandedChange(!expanded)} onContextMenu={openMenu}>
       {children}
-      <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => onExpandedChange(!expanded)}>
-        {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
-      </button>
+      {expandable && (
+        <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => onExpandedChange(!expanded)}>
+          {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
+        </button>
+      )}
       <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} />
       {menuPoint && volume && <CallVolumeMenu control={volume} point={menuPoint} onClose={() => setMenuPoint(null)} />}
     </article>
   );
-  return expanded ? createPortal(tile, document.body) : tile;
+  return expanded && !mobileCallLayout ? createPortal(tile, document.body) : tile;
 }
-function CallVideoTile({ stream, label, kind, mirrored = false, muted, deafened, speaking = false, volume }: { stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; volume?: CallVolumeControl }) {
+function CallVideoTile({ stream, label, kind, mirrored = false, muted, deafened, speaking = false, selfView = false, volume }: { stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
@@ -1614,15 +1637,15 @@ function CallVideoTile({ stream, label, kind, mirrored = false, muted, deafened,
     }
   }, [stream, expanded]);
   return (
-    <CallTileShell className={`has-video is-${kind}`} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} speaking={speaking} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
+    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} speaking={speaking} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
       <video ref={videoRef} autoPlay playsInline muted className={mirrored ? 'is-mirrored' : ''} />
     </CallTileShell>
   );
 }
-function CallAvatarTile({ user, label, muted = false, deafened = false, speaking = false, volume }: { user: AppUser; label: string; muted?: boolean; deafened?: boolean; speaking?: boolean; volume?: CallVolumeControl }) {
+function CallAvatarTile({ user, label, muted = false, deafened = false, speaking = false, selfView = false, volume }: { user: AppUser; label: string; muted?: boolean; deafened?: boolean; speaking?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <CallTileShell className="is-avatar" label={label} muted={muted} deafened={deafened} speaking={speaking} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
+    <CallTileShell className={`is-avatar${selfView ? ' is-self' : ''}`} label={label} muted={muted} deafened={deafened} speaking={speaking} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
       <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="xl" initialsLength={1} />
     </CallTileShell>
   );
@@ -1736,6 +1759,15 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [messageMenu]);
 
+  useEffect(() => {
+    const input = composerInput.current;
+    if (!input) return;
+    input.style.height = '0px';
+    const height = Math.min(120, Math.max(44, input.scrollHeight));
+    input.style.height = `${height}px`;
+    input.style.overflowY = input.scrollHeight > 120 ? 'auto' : 'hidden';
+  }, [value, editingMessage]);
+
   const replyToMessage = (message: AppMessage) => {
     setMessageMenu(null);
     setReplyingTo(message);
@@ -1828,21 +1860,29 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
 
   const send = async () => {
     const content = value.trim();
-    if ((!content && !attachment) || sending) return;
-    setSending(true);
+    if ((!content && !attachment) || (editingMessage && sending)) return;
     setSendError('');
     announceTyping(false);
-    try {
-      if (editingMessage) {
-        if (!onEdit) return;
-        await onEdit(editingMessage.id, content);
-        setEditingMessage(null);
-      } else {
-        await onSend(content, attachment, replyingTo?.id);
-        setReplyingTo(null);
-      }
+    if (!editingMessage) {
+      const outgoingAttachment = attachment;
+      const replyToId = replyingTo?.id;
       setValue('');
       setAttachment(undefined);
+      setReplyingTo(null);
+      setEmojiOpen(false);
+      try {
+        await onSend(content, outgoingAttachment, replyToId);
+      } catch (sendFailure) {
+        setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
+      }
+      return;
+    }
+    setSending(true);
+    try {
+      if (!onEdit) return;
+      await onEdit(editingMessage.id, content);
+      setEditingMessage(null);
+      setValue('');
       setEmojiOpen(false);
     } catch (sendFailure) {
       setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
@@ -2305,7 +2345,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                 if (element) messageElements.current.set(message.id, element);
                 else messageElements.current.delete(message.id);
               }}
-              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
+              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${message.deliveryState === 'sending' ? 'is-sending' : message.deliveryState === 'failed' ? 'is-failed' : ''} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
               onClick={selectingMessages ? () => setSelectedMessages((items) => (selectedForAction ? items.filter((id) => id !== message.id) : [...items, message.id])) : undefined}
               onContextMenu={(event) => {
                 if (selectingMessages) return;
@@ -2318,7 +2358,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                   y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
                 });
               }}
-              key={message.id}
+              key={message.clientId || message.id}
             >
               {selectingMessages && <span className="mova-message-selector">{selectedForAction && <Check size={14} />}</span>}
               {!own && !grouped && <Avatar name={message.author.name} src={message.author.avatarDataUrl} color={message.author.color} size="sm" />}
@@ -2464,7 +2504,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
             }
           }}
           aria-label={`Сообщение в ${conversation.title}`}
-          placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Напишите сообщение…'}
+          placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
         />
         {emojiOpen && (
           <div className="mova-emoji-picker">
@@ -2486,7 +2526,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
         <IconButton label="Эмодзи" className={emojiOpen ? 'is-active' : ''} onClick={() => setEmojiOpen((open) => !open)}>
           <Smile size={19} />
         </IconButton>
-        <button type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || sending}>
+        <button type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
           <Send size={18} />
         </button>
         {attachmentError && <span className="mova-attachment-error">{attachmentError}</span>}
@@ -2559,6 +2599,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const sidebarCompact = sidebarWidth === SIDEBAR_COMPACT_WIDTH;
   const resolveSidebarWidth = (rawWidth: number) => (rawWidth < SIDEBAR_COLLAPSE_THRESHOLD ? SIDEBAR_COMPACT_WIDTH : Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, rawWidth)));
   const currentUserRef = useRef(currentUser);
+  const conversationsRef = useRef(conversations);
   const selectedIdRef = useRef(selectedId);
   const lastActivity = useRef(Date.now());
   const markingReadThrough = useRef<string | null>(null);
@@ -2566,6 +2607,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const overviewSyncInFlight = useRef<Promise<void> | null>(null);
   const realtimeReadyCount = useRef(0);
   currentUserRef.current = currentUser;
+  conversationsRef.current = conversations;
   selectedIdRef.current = selectedId;
   const updateTypingUser = useCallback((conversationId: string, userId: string, active: boolean) => {
     const key = `${conversationId}:${userId}`;
@@ -2661,10 +2703,24 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
           const play = () => void audio.play().catch(() => undefined);
           if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
           else play();
+          const conversation = conversationsRef.current.find((item) => item.id === event.message.conversationId);
+          showMessageNotification(event.message, conversation, () => {
+            setSelectedId(event.message.conversationId);
+            window.localStorage.setItem('mova-selected-conversation', event.message.conversationId);
+          });
         }
       }),
     [],
   );
+  useEffect(() => {
+    const requestPermission = () => void requestMessageNotificationPermission();
+    window.addEventListener('pointerdown', requestPermission, { once: true });
+    window.addEventListener('keydown', requestPermission, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', requestPermission);
+      window.removeEventListener('keydown', requestPermission);
+    };
+  }, []);
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
   const selectConversation = useCallback((conversationId: string) => {
     setSelectedId(conversationId);
@@ -2725,8 +2781,8 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         const cacheKey = messageCacheKey(currentUserRef.current.id, event.message.conversationId);
         const cachedEntry = messageCache.get(cacheKey);
         const cached = cachedEntry?.value || [];
-        if (!cached.some((item) => item.id === event.message.id)) messageCache.set(cacheKey, { value: [...cached, event.message], updatedAt: cachedEntry ? Date.now() : 0 });
-        setMessages((items) => (event.message.conversationId === selectedIdRef.current && !items.some((item) => item.id === event.message.id) ? [...items, event.message] : items));
+        messageCache.set(cacheKey, { value: reconcileClientMessage(cached, event.message), updatedAt: cachedEntry ? Date.now() : 0 });
+        setMessages((items) => (event.message.conversationId === selectedIdRef.current ? reconcileClientMessage(items, event.message) : items));
         setConversations((items) => {
           const next = updateConversationLastMessage(items, event.message);
           conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
@@ -2886,17 +2942,76 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   }, [selectedId, messages, currentUser.id]);
   const send = async (content: string, attachment?: MessageAttachment, replyToId?: string) => {
     if (!selectedId) return;
-    const result = await api.sendMessage(selectedId, content, attachment, replyToId);
+    const conversationId = selectedId;
+    const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const createdAt = new Date().toISOString();
+    const replyMessage = replyToId ? messages.find((message) => message.id === replyToId) : undefined;
+    const optimisticMessage: AppMessage = {
+      id: clientId,
+      clientId,
+      conversationId,
+      authorId: currentUser.id,
+      author: currentUser,
+      content,
+      ...(attachment ? { attachment } : {}),
+      ...(replyToId ? { replyToId } : {}),
+      ...(replyMessage
+        ? {
+            replyTo: {
+              id: replyMessage.id,
+              authorId: replyMessage.authorId,
+              content: replyMessage.content,
+              ...(replyMessage.attachment ? { attachmentName: replyMessage.attachment.name, attachment: replyMessage.attachment } : {}),
+              author: replyMessage.author,
+            },
+          }
+        : {}),
+      createdAt,
+      readBy: [],
+      deliveryState: 'sending',
+    };
     setMessages((items) => {
-      const next = items.some((item) => item.id === result.message.id) ? items : [...items, result.message];
-      messageCache.set(messageCacheKey(currentUser.id, selectedId), { value: next, updatedAt: Date.now() });
+      const next = [...items, optimisticMessage];
+      messageCache.set(messageCacheKey(currentUser.id, conversationId), { value: next, updatedAt: Date.now() });
       return next;
     });
     setConversations((items) => {
-      const next = updateConversationLastMessage(items, result.message);
+      const next = updateConversationLastMessage(items, optimisticMessage);
       conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
       return next;
     });
+    try {
+      const result = await api.sendMessage(conversationId, content, attachment, replyToId, clientId);
+      const cacheKey = messageCacheKey(currentUser.id, conversationId);
+      const cached = messageCache.get(cacheKey)?.value || [];
+      messageCache.set(cacheKey, { value: reconcileClientMessage(cached, result.message), updatedAt: Date.now() });
+      setMessages((items) => {
+        if (selectedIdRef.current !== conversationId) return items;
+        return reconcileClientMessage(items, result.message);
+      });
+      setConversations((items) => {
+        const next = updateConversationLastMessage(items, result.message);
+        conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+        return next;
+      });
+    } catch (sendFailure) {
+      const markFailed = (items: AppMessage[]) => items.map((message) => (message.clientId === clientId && !message.sentAt ? { ...message, deliveryState: 'failed' as const } : message));
+      const cacheKey = messageCacheKey(currentUser.id, conversationId);
+      const cached = messageCache.get(cacheKey)?.value || [];
+      messageCache.set(cacheKey, { value: markFailed(cached), updatedAt: Date.now() });
+      setMessages((items) => {
+        if (selectedIdRef.current !== conversationId) return items;
+        return markFailed(items);
+      });
+      setConversations((items) =>
+        items.map((conversation) =>
+          conversation.id === conversationId && conversation.lastMessage?.clientId === clientId
+            ? { ...conversation, lastMessage: { ...conversation.lastMessage, deliveryState: 'failed' } }
+            : conversation,
+        ),
+      );
+      throw sendFailure;
+    }
   };
   const edit = async (messageId: string, content: string) => {
     if (!selectedId) return;

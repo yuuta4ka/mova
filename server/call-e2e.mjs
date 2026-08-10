@@ -45,7 +45,7 @@ try {
   if (!executablePath) throw new Error('Chromium not found. Run `pnpm exec playwright install chromium` or set MOVA_BROWSER_PATH.');
   browser = await chromium.launch({ executablePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
   const openUser = async (token) => {
-    const context = await browser.newContext({ permissions: ['microphone'], baseURL: base });
+    const context = await browser.newContext({ permissions: ['microphone', 'camera'], baseURL: base, ...(process.env.MOVA_MOBILE_CALL_QA === '1' ? { viewport: { width: 390, height: 844 } } : {}) });
     await context.addInitScript((sessionToken) => sessionStorage.setItem('mova-session', sessionToken), token);
     const page = await context.newPage();
     const frames = [];
@@ -63,9 +63,11 @@ try {
   const callee = await openUser(second.token);
 
   const initialMessage = `До звонка ${suffix}`;
-  await caller.page.getByPlaceholder('Напишите сообщение…').fill(initialMessage);
+  await caller.page.getByPlaceholder('Сообщение...').fill(initialMessage);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
   await callee.page.locator('.mova-real-message').getByText(initialMessage, { exact: true }).waitFor({ timeout: 5_000 });
+  await caller.page.locator('.mova-real-message').filter({ hasText: initialMessage }).waitFor({ timeout: 5_000 });
+  if ((await caller.page.locator('.mova-real-message').filter({ hasText: initialMessage }).count()) !== 1) throw new Error('Optimistic message was duplicated after server acknowledgement');
 
   await caller.page.evaluate(() => {
     localStorage.setItem('mova-audio-settings', JSON.stringify({ inputDeviceId: 'missing-device', outputDeviceId: 'default' }));
@@ -80,15 +82,35 @@ try {
     callee.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
   ]);
 
+  await Promise.all([
+    caller.page.getByRole('button', { name: 'Включить камеру' }).click(),
+    callee.page.getByRole('button', { name: 'Включить камеру' }).click(),
+  ]);
+  await Promise.all([
+    caller.page.locator('.mova-call-primary-participant .mova-call-tile.has-video:not(.is-self)').waitFor({ timeout: 10_000 }),
+    caller.page.locator('.mova-call-self-view .mova-call-tile.has-video.is-self').waitFor({ timeout: 10_000 }),
+    callee.page.locator('.mova-call-primary-participant .mova-call-tile.has-video:not(.is-self)').waitFor({ timeout: 10_000 }),
+    callee.page.locator('.mova-call-self-view .mova-call-tile.has-video.is-self').waitFor({ timeout: 10_000 }),
+  ]);
+  if (await caller.page.getByRole('button', { name: /Открыть .* · вы на весь экран/ }).count()) throw new Error('The local preview must not replace the remote participant');
+  if (process.env.MOVA_CALL_SCREENSHOT) {
+    await caller.page.screenshot({ path: process.env.MOVA_CALL_SCREENSHOT });
+    await caller.page.locator('.mova-call-primary-participant').getByRole('button', { name: /Открыть .* на весь экран/ }).click();
+    await caller.page.locator('.mova-call-self-view .mova-call-tile.is-self').waitFor({ state: 'visible' });
+    await caller.page.screenshot({ path: process.env.MOVA_CALL_SCREENSHOT.replace(/\.png$/i, '') + '-expanded.png' });
+    await caller.page.getByRole('button', { name: 'Закрыть полноэкранный режим' }).click();
+  }
+
   await caller.page.getByRole('button', { name: 'Выйти из звонка' }).click();
   await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).waitFor({ timeout: 5_000 });
   await callee.page.locator('.mova-call-stage').waitFor({ state: 'visible' });
 
   const messageWhileCallContinues = `Звонок продолжается ${suffix}`;
-  await caller.page.getByPlaceholder('Напишите сообщение…').fill(messageWhileCallContinues);
+  await caller.page.getByPlaceholder('Сообщение...').fill(messageWhileCallContinues);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
   await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
   await callee.page.locator('.mova-real-message').getByText(messageWhileCallContinues, { exact: true }).waitFor({ timeout: 5_000 });
+  if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: 'Закрыть чат' }).click();
 
   await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).click();
   await Promise.all([
@@ -106,7 +128,7 @@ try {
   await caller.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
 
   const messageAfterMicFailure = `После ошибки микрофона ${suffix}`;
-  await caller.page.getByPlaceholder('Напишите сообщение…').fill(messageAfterMicFailure);
+  await caller.page.getByPlaceholder('Сообщение...').fill(messageAfterMicFailure);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
   await callee.page.locator('.mova-real-message').getByText(messageAfterMicFailure, { exact: true }).waitFor({ timeout: 5_000 });
 
