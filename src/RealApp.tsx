@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Signal, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Signal, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { Avatar, Button, IconButton } from './components/Primitives';
 import { AppleEmoji } from './components/AppleEmoji';
 import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioSettings } from './lib/audioSettings';
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
+import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const readImage = (file?: File) =>
@@ -46,7 +47,7 @@ export const formatPresenceStatus = (user?: AppUser, now = Date.now()) => {
 const messageSoundUrl = new URL('../sound-message.mp3', import.meta.url).href;
 const loadedImageSources = new Set<string>();
 
-function CachedImage({ src, alt, className = '' }: { src: string; alt: string; className?: string }) {
+function CachedImage({ src, alt, className = '', onLoad }: { src: string; alt: string; className?: string; onLoad?: () => void }) {
   const [loaded, setLoaded] = useState(() => loadedImageSources.has(src));
   useEffect(() => setLoaded(loadedImageSources.has(src)), [src]);
   return (
@@ -60,6 +61,7 @@ function CachedImage({ src, alt, className = '' }: { src: string; alt: string; c
         onLoad={() => {
           loadedImageSources.add(src);
           setLoaded(true);
+          onLoad?.();
         }}
       />
     </span>
@@ -240,9 +242,10 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
 }
 
 function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void }) {
-  const [section, setSection] = useState<'profile' | 'audio' | 'screen'>('audio');
+  const [section, setSection] = useState<'profile' | 'appearance' | 'audio' | 'screen'>('audio');
   const [settings, setSettings] = useState<AudioSettings>(defaultAudioSettings);
   const [screenSettings, setScreenSettings] = useState<ScreenShareSettings>(defaultScreenShareSettings);
+  const [backgroundColor, setBackgroundColor] = useState(defaultBackgroundColor);
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
   const [deviceError, setDeviceError] = useState('');
@@ -283,6 +286,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
     if (open) {
       setSettings(loadAudioSettings());
       setScreenSettings(loadScreenShareSettings());
+      setBackgroundColor(loadBackgroundColor());
       void refreshDevices(false);
     } else stopTest();
   }, [open, refreshDevices, stopTest]);
@@ -340,6 +344,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
   const save = () => {
     saveAudioSettings(settings);
     saveScreenShareSettings(screenSettings);
+    saveBackgroundColor(backgroundColor);
     stopTest();
     onClose();
   };
@@ -355,6 +360,10 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
             <Pencil size={17} />
             Профиль
           </button>
+          <button type="button" className={section === 'appearance' ? 'is-active' : ''} onClick={() => setSection('appearance')}>
+            <Palette size={17} />
+            Оформление
+          </button>
           <button type="button" className={section === 'audio' ? 'is-active' : ''} onClick={() => setSection('audio')}>
             <Headphones size={17} />
             Голос и звук
@@ -367,8 +376,8 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
         <main>
           <header>
             <div>
-              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'screen' ? 'Демонстрация экрана' : 'Голос и звук'}</h2>
-              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'screen' ? 'Качество при включении демонстрации' : 'Устройства и обработка голоса'}</p>
+              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : 'Голос и звук'}</h2>
+              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона приложения' : section === 'screen' ? 'Качество при включении демонстрации' : 'Устройства и обработка голоса'}</p>
             </div>
             <IconButton label="Закрыть настройки" onClick={onClose}>
               <X size={18} />
@@ -391,6 +400,8 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
                 Настроить профиль
               </Button>
             </div>
+          ) : section === 'appearance' ? (
+            <BackgroundDefaults color={backgroundColor} onChange={setBackgroundColor} />
           ) : section === 'screen' ? (
             <ScreenShareDefaults settings={screenSettings} onChange={setScreenSettings} />
           ) : (
@@ -486,6 +497,32 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
             <Button onClick={save}>Сохранить настройки</Button>
           </footer>
         </main>
+      </section>
+    </div>
+  );
+}
+
+function BackgroundDefaults({ color, onChange }: { color: string; onChange: (color: string) => void }) {
+  return (
+    <div className="mova-background-settings">
+      <section>
+        <div className="mova-background-preview" style={{ '--mova-preview-color': color } as CSSProperties}>
+          <i /><i /><span /><span />
+        </div>
+        <h3>Цвет фона</h3>
+        <p>Цвет применяется к основному окну и фону переписки.</p>
+        <div className="mova-background-presets">
+          {backgroundPresets.map((preset) => (
+            <button key={preset} type="button" className={color.toLowerCase() === preset ? 'is-active' : ''} style={{ backgroundColor: preset }} aria-label={`Цвет ${preset}`} aria-pressed={color.toLowerCase() === preset} onClick={() => onChange(preset)}>
+              {color.toLowerCase() === preset && <Check size={16} />}
+            </button>
+          ))}
+          <label aria-label="Выбрать свой цвет">
+            <Palette size={17} />
+            <input type="color" value={color} onChange={(event) => onChange(event.target.value)} />
+          </label>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => onChange(defaultBackgroundColor)}>Вернуть стандартный цвет</Button>
       </section>
     </div>
   );
@@ -655,7 +692,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
 }
 
 function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
-  const [mode, setMode] = useState<'register' | 'login'>('register');
+  const [mode, setMode] = useState<'register' | 'login'>('login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -676,41 +713,21 @@ function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
   return (
     <main className="mova-auth">
       <div className="mova-auth__aurora" />
-      <section className="mova-auth__intro">
-        <div className="mova-auth__brand">
-          <span>M</span>Mova
-        </div>
-        <div>
-          <span className="mova-auth__eyebrow">
-            <Sparkles size={14} />
-            Ваше место для разговоров
-          </span>
-          <h1>
-            Ближе к тем,
-            <br />
-            кто действительно важен.
-          </h1>
-          <p>Личные чаты, пространства для своих и голос — в одном спокойном месте.</p>
-        </div>
-        <div className="mova-auth__quote">
-          <div className="mova-auth__faces">
-            <span>Л</span>
-            <span>М</span>
-            <span>А</span>
-          </div>
-          <p>«Здесь хочется не листать, а разговаривать»</p>
-        </div>
-      </section>
       <section className="mova-auth__panel">
         <div className="mova-glass-card mova-auth-card">
           <header>
-            <h2>{mode === 'register' ? 'Создать аккаунт' : 'С возвращением'}</h2>
-            <p>{mode === 'register' ? 'Займёт меньше минуты' : 'Войдите, чтобы продолжить разговор'}</p>
+            <span className="mova-auth-logo">M</span>
+            <h1>Mova</h1>
+            <p>{mode === 'register' ? 'Создайте аккаунт' : 'Войдите в свой аккаунт'}</p>
           </header>
+          <div className="mova-auth-tabs" role="tablist" aria-label="Вход или регистрация">
+            <button type="button" role="tab" aria-selected={mode === 'login'} className={mode === 'login' ? 'is-active' : ''} onClick={() => { setMode('login'); setError(''); }}>Вход</button>
+            <button type="button" role="tab" aria-selected={mode === 'register'} className={mode === 'register' ? 'is-active' : ''} onClick={() => { setMode('register'); setError(''); }}>Регистрация</button>
+          </div>
           <form onSubmit={submit}>
             {mode === 'register' && (
               <label>
-                <span>Как вас зовут</span>
+                <span>Имя</span>
                 <input required minLength={2} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ваше имя" autoComplete="name" />
               </label>
             )}
@@ -724,21 +741,10 @@ function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
             </label>
             {error && <div className="mova-auth-error">{error}</div>}
             <Button type="submit" size="lg" loading={loading}>
-              {mode === 'register' ? 'Начать общение' : 'Войти в Mova'}
+              {mode === 'register' ? 'Создать аккаунт' : 'Войти'}
             </Button>
           </form>
-          <footer>
-            {mode === 'register' ? 'Уже есть аккаунт?' : 'Впервые в Mova?'}{' '}
-            <button
-              type="button"
-              onClick={() => {
-                setMode(mode === 'register' ? 'login' : 'register');
-                setError('');
-              }}
-            >
-              {mode === 'register' ? 'Войти' : 'Создать аккаунт'}
-            </button>
-          </footer>
+          <footer>Продолжая, вы соглашаетесь с правилами сервиса.</footer>
         </div>
       </section>
     </main>
@@ -2074,6 +2080,10 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           const own = message.authorId === currentUser.id;
           const previous = messages[index - 1];
           const grouped = previous?.authorId === message.authorId && new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() < 300000;
+          const next = messages[index + 1];
+          const continuesGroup = next?.authorId === message.authorId && new Date(next.createdAt).getTime() - new Date(message.createdAt).getTime() < 300000;
+          const imageAttachment = Boolean(message.attachment?.type.startsWith('image/'));
+          const imageCaption = imageAttachment && Boolean(message.content.trim() || message.replyTo);
           const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)));
           const selectedForAction = selectedMessages.includes(message.id);
           return (
@@ -2082,15 +2092,15 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                 if (element) messageElements.current.set(message.id, element);
                 else messageElements.current.delete(message.id);
               }}
-              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : ''} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
+              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
               onClick={selectingMessages ? () => setSelectedMessages((items) => (selectedForAction ? items.filter((id) => id !== message.id) : [...items, message.id])) : undefined}
               key={message.id}
             >
               {selectingMessages && <span className="mova-message-selector">{selectedForAction && <Check size={14} />}</span>}
               {!own && !grouped && <Avatar name={message.author.name} src={message.author.avatarDataUrl} color={message.author.color} size="sm" />}
-              <div>
+              <div className="mova-message-body">
                 {conversation.kind === 'group' && !own && !grouped && <strong><AppleEmoji text={message.author.name} /></strong>}
-                <div className="mova-real-bubble">
+                <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment ? ' has-file' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
                   {message.replyTo && (
                     <button
                       type="button"
@@ -2110,7 +2120,17 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                   {message.attachment &&
                     (message.attachment.type.startsWith('image/') ? (
                       <button type="button" className="mova-message-image" onClick={() => setImagePreview(message.attachment || null)} aria-label={`Открыть изображение ${message.attachment.name}`}>
-                        <CachedImage src={message.attachment.dataUrl} alt={message.attachment.name} />
+                        <CachedImage
+                          src={message.attachment.dataUrl}
+                          alt={message.attachment.name}
+                          onLoad={() => {
+                            if (!positionedAtBottom.current) return;
+                            window.requestAnimationFrame(() => {
+                              const container = messagesContainer.current;
+                              if (container) container.scrollTop = container.scrollHeight;
+                            });
+                          }}
+                        />
                       </button>
                     ) : (
                       <a className="mova-message-file" href={message.attachment.dataUrl} download={message.attachment.name}>
@@ -2314,6 +2334,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(!isFresh(conversationCache.get(currentUser.id)) || !isFresh(userCache.get(currentUser.id)));
   const [messagesLoading, setMessagesLoading] = useState(() => Boolean(initialSelectedId && !isFresh(messageCache.get(messageCacheKey(currentUser.id, initialSelectedId)))));
+  const [backgroundColor, setBackgroundColor] = useState(loadBackgroundColor);
   const [createOpen, setCreateOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2388,8 +2409,13 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     });
   useEffect(() => {
     const openSettings = () => setSettingsOpen(true);
+    const updateBackground = (event: Event) => setBackgroundColor((event as CustomEvent<string>).detail || loadBackgroundColor());
     window.addEventListener('mova-open-settings', openSettings);
-    return () => window.removeEventListener('mova-open-settings', openSettings);
+    window.addEventListener('mova-background-color', updateBackground);
+    return () => {
+      window.removeEventListener('mova-open-settings', openSettings);
+      window.removeEventListener('mova-background-color', updateBackground);
+    };
   }, []);
   useEffect(
     () =>
@@ -2592,7 +2618,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   };
   const visible = useMemo(() => conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [conversations, query]);
   return (
-    <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
+    <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor } as CSSProperties}>
       <div className="mova-real-aurora" />
       <aside className="mova-real-sidebar mova-tg-sidebar">
         <div className="mova-tg-search-row">
@@ -2632,7 +2658,20 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
                         : ''}
                     </time>
                   </span>
-                  <small><AppleEmoji text={conversation.lastMessage?.content || (conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор')} /></small>
+                  <small>
+                    <AppleEmoji
+                      text={
+                        conversation.lastMessage?.content ||
+                        (conversation.lastMessage?.attachment
+                          ? conversation.lastMessage.attachment.type.startsWith('image/')
+                            ? 'Фотография'
+                            : conversation.lastMessage.attachment.name
+                          : conversation.kind === 'group'
+                            ? `${conversation.members.length} участников`
+                            : 'Начните разговор')
+                      }
+                    />
+                  </small>
                 </span>
               </button>
             ))

@@ -133,6 +133,43 @@ describe('RealMessages attachments', () => {
   });
 });
 
+describe('RealMessages bubble grouping', () => {
+  const makeMessage = (id: string, author: AppUser, minute: number, content = id, attachment?: AppMessage['attachment']): AppMessage => ({
+    id,
+    conversationId: conversation.id,
+    authorId: author.id,
+    content,
+    attachment,
+    createdAt: `2026-08-10T00:${String(minute).padStart(2, '0')}:00.000Z`,
+    author,
+  });
+
+  it('marks only the end of a long sequence for a message tail', () => {
+    const messages = [0, 1, 2, 3, 4].map((minute) => makeMessage(`own-${minute}`, currentUser, minute));
+    const { container } = renderChat(messages);
+    const items = [...container.querySelectorAll('.mova-real-message')];
+
+    expect(items[0]).toHaveClass('is-group-start');
+    expect(items[0]).not.toHaveClass('is-group-end');
+    expect(items[2]).toHaveClass('is-grouped');
+    expect(items[2]).not.toHaveClass('is-group-end');
+    expect(items[4]).toHaveClass('is-grouped', 'is-group-end');
+  });
+
+  it('keeps a real bubble around an image caption and distinguishes image-only messages', () => {
+    const attachment = { name: 'photo.png', type: 'image/png', size: 10, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' };
+    const { container } = renderChat([
+      makeMessage('caption', currentUser, 0, 'Подпись под фотографией', attachment),
+      makeMessage('image-only', friend, 10, '', attachment),
+    ]);
+    const bubbles = [...container.querySelectorAll('.mova-real-bubble')];
+    expect(bubbles[0]).toHaveClass('has-image', 'has-caption');
+    expect(bubbles[1]).toHaveClass('has-image', 'is-image-only');
+    expect(bubbles[0].closest('.mova-real-message')).toHaveClass('is-group-end');
+    expect(bubbles[1].closest('.mova-real-message')).toHaveClass('is-group-end');
+  });
+});
+
 describe('RealMessages navigation', () => {
   const searchMessages: AppMessage[] = [
     {
