@@ -595,6 +595,7 @@ function handleSocket(socket, request) {
   socket.userId = user.id;
   if (!clients.has(user.id)) clients.set(user.id, new Set());
   clients.get(user.id).add(socket);
+  socket.typingConversationIds = new Set();
   socket.send(JSON.stringify({ type: 'ready', user: publicUser(user) }));
   socket.isAlive = true;
   socket.on('pong', () => {
@@ -614,7 +615,9 @@ function handleSocket(socket, request) {
         );
       const conversationId = event.conversationId;
       if (!conversationId || !isMember(user.id, conversationId)) return;
-      if (event.type === 'typing')
+      if (event.type === 'typing') {
+        if (event.active) socket.typingConversationIds.add(conversationId);
+        else socket.typingConversationIds.delete(conversationId);
         return broadcastToConversation(
           conversationId,
           {
@@ -625,6 +628,7 @@ function handleSocket(socket, request) {
           },
           user.id,
         );
+      }
       if (event.type === 'call:sync') return socket.send(JSON.stringify(callStateFor(conversationId, socket)));
       if (event.type === 'call:invite') {
         activeCalls.set(conversationId, {
@@ -708,6 +712,10 @@ function handleSocket(socket, request) {
   socket.on('close', () => {
     leaveVoice(socket);
     clients.get(user.id)?.delete(socket);
+    for (const conversationId of socket.typingConversationIds || []) {
+      const stillTyping = [...(clients.get(user.id) || [])].some((otherSocket) => otherSocket.typingConversationIds?.has(conversationId));
+      if (!stillTyping) broadcastToConversation(conversationId, { type: 'typing', conversationId, userId: user.id, active: false }, user.id);
+    }
     if (clients.get(user.id)?.size === 0) {
       clients.delete(user.id);
       user.lastActiveAt = new Date().toISOString();

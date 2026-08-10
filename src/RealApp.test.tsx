@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { formatPresenceStatus, PendingCallStage, RealMessages } from './RealApp';
-import type { AppConversation, AppMessage, AppUser } from './lib/api';
+import { realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 
 const currentUser: AppUser = {
   id: 'me',
@@ -222,6 +222,28 @@ describe('RealMessages replies and editing', () => {
     await user.click(screen.getByRole('button', { name: 'Сохранить изменения' }));
 
     expect(onEdit).toHaveBeenCalledWith('own-editable', 'Исправленный текст');
+  });
+});
+
+describe('RealMessages typing indicator', () => {
+  it('shows who is typing in the header and above the composer', () => {
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} typingUserIds={[friend.id]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getAllByText('Друг печатает…')).toHaveLength(2);
+  });
+
+  it('stops broadcasting typing after inactivity', () => {
+    vi.useFakeTimers();
+    const sendSpy = vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Сообщение в Друг' }), { target: { value: 'Черновик' } });
+    expect(sendSpy).toHaveBeenCalledWith({ type: 'typing', conversationId: conversation.id, active: true });
+    vi.advanceTimersByTime(2_500);
+    expect(sendSpy).toHaveBeenCalledWith({ type: 'typing', conversationId: conversation.id, active: false });
+
+    sendSpy.mockRestore();
+    vi.useRealTimers();
   });
 });
 

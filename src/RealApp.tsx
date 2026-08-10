@@ -1457,7 +1457,7 @@ function CallTileLabel({ label, muted, deafened, screen }: { label: string; mute
   );
 }
 
-export function RealMessages({ conversation, currentUser, messages, onSend, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
+export function RealMessages({ conversation, currentUser, messages, typingUserIds = [], onSend, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1493,6 +1493,9 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
   const previousMessageCount = useRef(0);
   const positionedAtBottom = useRef(false);
   const dragDepth = useRef(0);
+  const typingStopTimer = useRef<number | null>(null);
+  const typingActive = useRef(false);
+  const lastTypingSentAt = useRef(0);
   const knownCallMessageIds = useRef(new Set(messages.map((message) => message.id)));
   const other = conversation.members.find((member) => member.id !== currentUser.id);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
@@ -1500,6 +1503,44 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
   const activeMatchId = matchingMessages[activeMatchIndex]?.id || matchingMessages[0]?.id;
   const matchCount = matchingMessages.length;
   const status = conversation.kind === 'direct' ? formatPresenceStatus(other) : `${conversation.members.length} участников`;
+  const typingUsers = conversation.members.filter((member) => member.id !== currentUser.id && typingUserIds.includes(member.id));
+  const typingLabel =
+    typingUsers.length === 1
+      ? `${typingUsers[0].name} печатает…`
+      : typingUsers.length === 2
+        ? `${typingUsers[0].name} и ${typingUsers[1].name} печатают…`
+        : typingUsers.length > 2
+          ? `${typingUsers[0].name}, ${typingUsers[1].name} и ещё ${typingUsers.length - 2} печатают…`
+          : '';
+
+  const announceTyping = useCallback(
+    (active: boolean) => {
+      if (typingStopTimer.current !== null) window.clearTimeout(typingStopTimer.current);
+      typingStopTimer.current = null;
+      if (active) {
+        const now = Date.now();
+        if (!typingActive.current || now - lastTypingSentAt.current >= 3_000) {
+          realtime.send({ type: 'typing', conversationId: conversation.id, active: true });
+          lastTypingSentAt.current = now;
+        }
+        typingActive.current = true;
+        typingStopTimer.current = window.setTimeout(() => announceTyping(false), 2_500);
+      } else if (typingActive.current) {
+        typingActive.current = false;
+        realtime.send({ type: 'typing', conversationId: conversation.id, active: false });
+      }
+    },
+    [conversation.id],
+  );
+
+  useEffect(
+    () => () => {
+      if (typingStopTimer.current !== null) window.clearTimeout(typingStopTimer.current);
+      if (typingActive.current) realtime.send({ type: 'typing', conversationId: conversation.id, active: false });
+      typingActive.current = false;
+    },
+    [conversation.id],
+  );
 
   useEffect(() => {
     if (conversation.kind !== 'direct' || (other?.isOnline ?? other?.presence === 'online')) return;
@@ -1511,6 +1552,7 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
     const content = value.trim();
     if ((!content && !attachment) || sending) return;
     setSending(true);
+    announceTyping(false);
     try {
       if (editingMessage) {
         if (!onEdit) return;
@@ -1720,7 +1762,7 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
               <strong>{conversation.title}</strong>
               {muted && <BellOff size={15} aria-label="Уведомления выключены" />}
             </span>
-            <small>{status}</small>
+            <small className={typingLabel ? 'is-typing' : ''}>{typingLabel || status}</small>
           </span>
         </button>
         <div>
@@ -2050,6 +2092,16 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
           void send();
         }}
       >
+        {typingLabel && (
+          <div className="mova-real-typing" role="status" aria-live="polite">
+            <span aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            <strong>{typingLabel}</strong>
+          </div>
+        )}
         {(replyingTo || editingMessage) && (
           <div className="mova-composer-context">
             {editingMessage ? <Pencil size={17} /> : <Reply size={17} />}
@@ -2096,7 +2148,11 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
           rows={1}
           value={value}
           disabled={blocked}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
+          }}
+          onBlur={() => announceTyping(false)}
           onKeyDown={(event) => {
             if (event.key === 'Escape' && (editingMessage || replyingTo)) {
               event.preventDefault();
@@ -2121,6 +2177,7 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onEd
                 key={emoji}
                 onClick={() => {
                   setValue((text) => text + emoji);
+                  if (!editingMessage) announceTyping(true);
                   setEmojiOpen(false);
                 }}
               >
@@ -2166,6 +2223,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const [users, setUsers] = useState<AppUser[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AppMessage[]>([]);
+  const [typingByConversation, setTypingByConversation] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -2183,8 +2241,36 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const selectedIdRef = useRef(selectedId);
   const lastActivity = useRef(Date.now());
   const markingReadThrough = useRef<string | null>(null);
+  const typingExpiryTimers = useRef(new Map<string, number>());
   currentUserRef.current = currentUser;
   selectedIdRef.current = selectedId;
+  const updateTypingUser = useCallback((conversationId: string, userId: string, active: boolean) => {
+    const key = `${conversationId}:${userId}`;
+    const existingTimer = typingExpiryTimers.current.get(key);
+    if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    typingExpiryTimers.current.delete(key);
+    setTypingByConversation((items) => {
+      const current = items[conversationId] || [];
+      const nextUsers = active ? [...new Set([...current, userId])] : current.filter((id) => id !== userId);
+      if (nextUsers.length) return { ...items, [conversationId]: nextUsers };
+      const next = { ...items };
+      delete next[conversationId];
+      return next;
+    });
+    if (active) {
+      const timer = window.setTimeout(() => {
+        typingExpiryTimers.current.delete(key);
+        setTypingByConversation((items) => {
+          const nextUsers = (items[conversationId] || []).filter((id) => id !== userId);
+          if (nextUsers.length) return { ...items, [conversationId]: nextUsers };
+          const next = { ...items };
+          delete next[conversationId];
+          return next;
+        });
+      }, 7_000);
+      typingExpiryTimers.current.set(key, timer);
+    }
+  }, []);
   const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -2246,6 +2332,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     realtime.connect();
     const unsubscribe = realtime.subscribe((event: RealtimeEvent) => {
       if (event.type === 'message:new') {
+        updateTypingUser(event.message.conversationId, event.message.authorId, false);
         setMessages((items) => (event.message.conversationId === selectedIdRef.current && !items.some((item) => item.id === event.message.id) ? [...items, event.message] : items));
         void reloadConversations();
       }
@@ -2253,6 +2340,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         setMessages((items) => items.map((message) => (message.id === event.message.id ? event.message : message)));
         void reloadConversations();
       }
+      if (event.type === 'typing' && event.userId !== currentUserRef.current.id) updateTypingUser(event.conversationId, event.userId, event.active);
       if (event.type === 'message:read' && event.conversationId === selectedIdRef.current) {
         const readIds = new Set(event.messageIds);
         setMessages((items) =>
@@ -2282,9 +2370,11 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     });
     return () => {
       unsubscribe();
+      typingExpiryTimers.current.forEach((timer) => window.clearTimeout(timer));
+      typingExpiryTimers.current.clear();
       realtime.close();
     };
-  }, [reloadConversations, selectConversation, currentUser.id]);
+  }, [reloadConversations, selectConversation, currentUser.id, updateTypingUser]);
   useEffect(() => {
     const markActive = () => {
       lastActivity.current = Date.now();
@@ -2444,6 +2534,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
           conversation={selected}
           currentUser={currentUser}
           messages={messages}
+          typingUserIds={typingByConversation[selected.id] || []}
           onSend={send}
           onEdit={edit}
           onDeleteConversation={() => {

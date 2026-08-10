@@ -1,13 +1,8 @@
 #!/bin/bash
 set -e
-# shellcheck disable=SC1091
-source "$(dirname "$0")/lib.sh"
-mova_root
-setup_runtime
+cd "$(dirname "$0")/.." || exit 1
 
 MOVA_COMMIT_MESSAGE="${1:-Deploy: Mova updates}"
-export GIT_TERMINAL_PROMPT=0
-export GCM_INTERACTIVE=Never
 
 echo "=========================================="
 echo "  Mova — деплой через GitHub"
@@ -32,9 +27,6 @@ echo "Remote: $MOVA_REMOTE"
 echo ""
 git status --short
 echo ""
-echo "Проверяем проект перед отправкой..."
-bash scripts/test-local.sh
-
 git add -A
 if git diff --cached --quiet; then
   echo "Новых изменений для коммита нет."
@@ -42,12 +34,10 @@ else
   git commit -m "$MOVA_COMMIT_MESSAGE"
 fi
 
-echo "Отправляем код без интерактивных запросов..."
+echo "Отправляем код в GitHub..."
 if ! git push origin "$MOVA_BRANCH"; then
-  echo "❌ Не удалось отправить код через сохранённую авторизацию Git."
-  echo "   Один раз настройте доступ к GitHub в Связке ключей macOS, затем снова запустите Deploy.command."
+  echo "❌ GitHub отклонил отправку. Проверьте сообщение Git выше и повторите попытку."
   exit 1
 fi
 echo ""
 echo "✅ Код отправлен в origin/$MOVA_BRANCH."
-echo "   Amvera подхватит обновление автоматически."

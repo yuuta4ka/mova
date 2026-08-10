@@ -133,6 +133,12 @@ try {
   const heartbeatPromise = waitFor(firstSocket, 'heartbeat:ack');
   firstSocket.send(JSON.stringify({ type: 'heartbeat', sentAt: Date.now() }));
   await heartbeatPromise;
+  const typingStartPromise = waitFor(secondSocket, 'typing');
+  firstSocket.send(JSON.stringify({ type: 'typing', conversationId: conversation.conversation.id, active: true }));
+  const typingStarted = await typingStartPromise;
+  const typingStopPromise = waitFor(secondSocket, 'typing');
+  firstSocket.send(JSON.stringify({ type: 'typing', conversationId: conversation.conversation.id, active: false }));
+  const typingStopped = await typingStopPromise;
   const readPromise = waitFor(firstSocket, 'message:read');
   await call(`/api/conversations/${conversation.conversation.id}/read`, 'POST', { throughMessageId: attachmentMessage.message.id }, second.token);
   const readReceipt = await readPromise;
@@ -188,7 +194,12 @@ try {
     }),
   );
   const voiceState = await statePromise;
+  const disconnectTypingStartPromise = waitFor(secondSocket, 'typing');
+  firstSocket.send(JSON.stringify({ type: 'typing', conversationId: conversation.conversation.id, active: true }));
+  await disconnectTypingStartPromise;
+  const disconnectTypingStopPromise = waitFor(secondSocket, 'typing');
   firstSocket.close();
+  const typingStoppedOnDisconnect = await disconnectTypingStopPromise;
   const recovered = await openSocketWaitingFor(first.token, 'call:state');
   recovered.socket.send(
     JSON.stringify({
@@ -216,6 +227,8 @@ try {
       attachment: attachmentMessage.message.attachment.name,
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id,
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),
+      typing: typingStarted.active === true && typingStopped.active === false,
+      typingDisconnect: typingStoppedOnDisconnect.active === false,
       sentAt: Boolean(attachmentMessage.message.sentAt),
       readBy: messagesAfterRead.messages[0].readBy[0].userId === second.user.id,
       readEvent: readReceipt.messageIds.includes(attachmentMessage.message.id),
