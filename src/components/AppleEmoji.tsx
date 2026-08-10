@@ -10,16 +10,16 @@ emoji.img_sets.apple.path = 'https://cdn.jsdelivr.net/npm/emoji-datasource-apple
 
 const escapeHtml = (value: string) =>
   value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 
 export function appleEmojiHtml(text: string) {
   return emoji
     .replace_unified(escapeHtml(text))
-    .replaceAll('<img ', '<img loading="lazy" decoding="async" ');
+    .replace(/<img /g, '<img loading="lazy" decoding="async" ');
 }
 
 export function AppleEmoji({ text, className = '' }: { text: string; className?: string }) {

@@ -225,6 +225,22 @@ describe('RealMessages replies and editing', () => {
   });
 });
 
+describe('RealMessages send failures', () => {
+  it('keeps the draft editable and shows the server error', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockRejectedValue(new Error('Сервер временно недоступен'));
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={onSend} />);
+
+    const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
+    await user.type(composer, 'Не потеряй этот текст');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Сервер временно недоступен');
+    expect(composer).toHaveValue('Не потеряй этот текст');
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled();
+  });
+});
+
 describe('RealMessages typing indicator', () => {
   it('shows who is typing in the header and above the composer', () => {
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} typingUserIds={[friend.id]} onSend={vi.fn().mockResolvedValue(undefined)} />);

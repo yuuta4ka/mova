@@ -198,16 +198,20 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   }, []);
 
   const unlockAudio = useCallback(() => {
-    let context = localAudioContext.current;
-    if (!context || context.state === 'closed') {
-      context = new AudioContext();
-      localAudioContext.current = context;
+    try {
+      let context = localAudioContext.current;
+      if (!context || context.state === 'closed') {
+        context = new AudioContext();
+        localAudioContext.current = context;
+      }
+      const settings = loadAudioSettings();
+      const setSinkId = (context as AudioContext & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
+      if (settings.outputDeviceId !== 'default' && setSinkId) void setSinkId.call(context, settings.outputDeviceId).catch(() => undefined);
+      void context.resume().catch(() => undefined);
+      return context;
+    } catch {
+      return null;
     }
-    const settings = loadAudioSettings();
-    const setSinkId = (context as AudioContext & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
-    if (settings.outputDeviceId !== 'default' && setSinkId) void setSinkId.call(context, settings.outputDeviceId).catch(() => undefined);
-    void context.resume().catch(() => undefined);
-    return context;
   }, []);
 
   const applyRemoteVolume = useCallback((entry: RemoteAudioEntry, settings = loadAudioSettings()) => {
@@ -500,6 +504,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   const connectAudio = useCallback(async () => {
     if (!conversationId) return;
+    if (stateRef.current === 'connecting') return;
     if (localStream.current) {
       realtime.send({ type: 'voice:join', conversationId });
       announceLocalState();
@@ -508,6 +513,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setStoredCall(pendingCallKey, null);
       return;
     }
+    let sourceStream: MediaStream | null = null;
     try {
       updateState('connecting');
       setError('');
@@ -520,32 +526,54 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           .catch(() => undefined);
       await iceConfigPromise.current;
       const settings = loadAudioSettings();
-      const sourceStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
-          echoCancellation: settings.echoCancellation,
-          noiseSuppression: settings.noiseSuppression,
-          autoGainControl: settings.autoGainControl,
-        },
-        video: false,
-      });
-      const context = localAudioContext.current?.state === 'closed' ? new AudioContext() : localAudioContext.current || new AudioContext();
-      const source = context.createMediaStreamSource(sourceStream);
-      const analyser = context.createAnalyser();
-      source.connect(analyser);
+      if (!navigator.mediaDevices?.getUserMedia) throw new DOMException('Браузер не поддерживает доступ к микрофону', 'NotSupportedError');
+      const processingConstraints = {
+        echoCancellation: settings.echoCancellation,
+        noiseSuppression: settings.noiseSuppression,
+        autoGainControl: settings.autoGainControl,
+      };
+      try {
+        sourceStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
+            ...processingConstraints,
+          },
+          video: false,
+        });
+      } catch (preferredDeviceError) {
+        const canRetryDefault =
+          preferredDeviceError instanceof DOMException &&
+          ['NotFoundError', 'OverconstrainedError'].includes(preferredDeviceError.name);
+        if (!canRetryDefault) throw preferredDeviceError;
+        try {
+          sourceStream = await navigator.mediaDevices.getUserMedia({ audio: processingConstraints, video: false });
+        } catch (processedAudioError) {
+          if (!(processedAudioError instanceof DOMException) || processedAudioError.name !== 'OverconstrainedError') throw processedAudioError;
+          sourceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        }
+      }
+      if (!sourceStream.getAudioTracks().length) throw new DOMException('Микрофон не передал аудиодорожку', 'NotReadableError');
       localSourceStream.current = sourceStream;
-      // Send the browser's microphone track directly. MediaStreamDestination can
-      // produce a permanently silent sender when Web Audio is suspended even
-      // though screen-share tracks in the same peer connection keep working.
       localStream.current = sourceStream;
-      localAudioContext.current = context;
       localGain.current = null;
-      localVoiceMonitor.current?.();
-      localVoiceMonitor.current = startVoiceActivityMonitor(analyser, (speaking) => {
-        localSpeakingRef.current = speaking;
-        setLocalSpeaking(speaking);
-      });
-      await context.resume().catch(() => undefined);
+      // Voice activity is an enhancement only: unsupported/suspended Web Audio
+      // must never prevent the actual microphone track from joining the call.
+      try {
+        const context = localAudioContext.current?.state === 'closed' ? new AudioContext() : localAudioContext.current || new AudioContext();
+        const source = context.createMediaStreamSource(sourceStream);
+        const analyser = context.createAnalyser();
+        source.connect(analyser);
+        localAudioContext.current = context;
+        localVoiceMonitor.current?.();
+        localVoiceMonitor.current = startVoiceActivityMonitor(analyser, (speaking) => {
+          localSpeakingRef.current = speaking;
+          setLocalSpeaking(speaking);
+        });
+        await context.resume().catch(() => undefined);
+      } catch {
+        localVoiceMonitor.current?.();
+        localVoiceMonitor.current = null;
+      }
       const existingPeers = [...peers.current.keys()];
       peers.current.forEach(addMissingLocalTracks);
       realtime.send({ type: 'voice:join', conversationId });
@@ -554,8 +582,23 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setStoredCall(pendingCallKey, null);
       if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
     } catch (voiceError) {
-      updateState('error');
-      setError(voiceError instanceof Error ? voiceError.message : 'Нет доступа к микрофону');
+      sourceStream?.getTracks().forEach((track) => track.stop());
+      if (localStream.current === sourceStream) localStream.current = null;
+      if (localSourceStream.current === sourceStream) localSourceStream.current = null;
+      const errorName = voiceError instanceof DOMException ? voiceError.name : '';
+      const message =
+        errorName === 'NotAllowedError' || errorName === 'SecurityError'
+          ? 'Нет доступа к микрофону. Разрешите его в настройках браузера и нажмите «Повторить».'
+          : errorName === 'NotFoundError'
+            ? 'Микрофон не найден. Подключите устройство и нажмите «Повторить».'
+            : errorName === 'NotReadableError'
+              ? 'Микрофон занят другим приложением. Освободите его и нажмите «Повторить».'
+              : voiceError instanceof Error
+                ? voiceError.message
+                : 'Не удалось подключить микрофон. Нажмите «Повторить».';
+      setStoredCall(pendingCallKey, null);
+      updateState('available');
+      setError(message);
     }
   }, [addMissingLocalTracks, announceLocalState, conversationId, updateState]);
 

@@ -1087,8 +1087,8 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     );
   if (call.state === 'available')
     return (
-      <Button className="mova-return-call" variant="secondary" size="sm" aria-label="Вернуться в звонок" leadingIcon={<Phone size={16} />} onClick={call.accept}>
-        Вернуться
+      <Button className="mova-return-call" variant="secondary" size="sm" title={call.error || undefined} aria-label={call.error ? `Повторить подключение. ${call.error}` : 'Вернуться в звонок'} leadingIcon={<Phone size={16} />} onClick={call.accept}>
+        {call.error ? 'Повторить' : 'Вернуться'}
       </Button>
     );
   if (call.state !== 'active') return stageHost ? createPortal(<PendingCallStage state={call.state} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={call.state === 'ringing' || call.state === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
@@ -1255,9 +1255,9 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                 <MoreHorizontal size={21} />
                 <span>Ещё</span>
               </button>
-              <button type="button" className="is-hangup" onClick={call.leave} aria-label="Завершить звонок">
+              <button type="button" className="is-hangup" onClick={call.leave} aria-label="Выйти из звонка">
                 <PhoneOff size={22} />
-                <span>Завершить</span>
+                <span>Выйти</span>
               </button>
             </div>
             {screenMenuOpen && localScreen && (
@@ -1539,6 +1539,7 @@ function CallTileLabel({ label, muted, deafened, screen }: { label: string; mute
 export function RealMessages({ conversation, currentUser, messages, loading = false, typingUserIds = [], onSend, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; loading?: boolean; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -1631,6 +1632,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     const content = value.trim();
     if ((!content && !attachment) || sending) return;
     setSending(true);
+    setSendError('');
     announceTyping(false);
     try {
       if (editingMessage) {
@@ -1644,6 +1646,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
       setValue('');
       setAttachment(undefined);
       setEmojiOpen(false);
+    } catch (sendFailure) {
+      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
     } finally {
       setSending(false);
     }
@@ -1725,6 +1729,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     setSearchQuery('');
     setValue('');
     setAttachment(undefined);
+    setAttachmentError('');
+    setSendError('');
     setReplyingTo(null);
     setEditingMessage(null);
     setMuted(localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
@@ -2272,6 +2278,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           <Send size={18} />
         </button>
         {attachmentError && <span className="mova-attachment-error">{attachmentError}</span>}
+        {sendError && <span className="mova-send-error" role="alert">{sendError}</span>}
       </form>
       {imagePreview &&
         createPortal(

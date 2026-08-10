@@ -27,7 +27,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = 'primary', size = 'md', loading, leadingIcon, children, disabled, className = '', ...props },
+  { variant = 'primary', size = 'md', loading, leadingIcon, children, disabled, className = '', type = 'button', ...props },
   ref,
 ) {
   return (
@@ -36,6 +36,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={`mova-button mova-button--${variant} mova-button--${size} ${className}`}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
+      type={type}
       {...props}
     >
       {loading ? <LoaderCircle className="mova-spin" size={17} aria-hidden /> : leadingIcon}
@@ -50,11 +51,11 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
 }
 
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { label, size = 'md', children, className = '', ...props },
+  { label, size = 'md', children, className = '', type = 'button', ...props },
   ref,
 ) {
   return (
-    <button ref={ref} className={`mova-icon-button mova-icon-button--${size} ${className}`} aria-label={label} {...props}>
+    <button ref={ref} type={type} className={`mova-icon-button mova-icon-button--${size} ${className}`} aria-label={label} {...props}>
       {children}
     </button>
   );

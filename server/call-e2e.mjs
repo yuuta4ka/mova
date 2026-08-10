@@ -37,7 +37,7 @@ try {
   const suffix = Date.now();
   const first = await api('/api/register', 'POST', { name: 'Звонящий', email: `caller.${suffix}@mova.test`, password: 'strongpass1' });
   const second = await api('/api/register', 'POST', { name: 'Принимающий', email: `callee.${suffix}@mova.test`, password: 'strongpass2' });
-  await api('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
+  const conversation = await api('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
 
   const browserCandidates = [process.env.MOVA_BROWSER_PATH, chromium.executablePath(), '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/chromium'].filter(Boolean);
   let executablePath;
@@ -62,6 +62,15 @@ try {
   const caller = await openUser(first.token);
   const callee = await openUser(second.token);
 
+  const initialMessage = `До звонка ${suffix}`;
+  await caller.page.getByPlaceholder('Напишите сообщение…').fill(initialMessage);
+  await caller.page.getByRole('button', { name: 'Отправить' }).click();
+  await callee.page.locator('.mova-real-message').getByText(initialMessage, { exact: true }).waitFor({ timeout: 5_000 });
+
+  await caller.page.evaluate(() => {
+    localStorage.setItem('mova-audio-settings', JSON.stringify({ inputDeviceId: 'missing-device', outputDeviceId: 'default' }));
+  });
+
   await caller.page.getByRole('button', { name: 'Позвонить' }).click();
   try { await callee.page.getByRole('button', { name: 'Принять', exact: true }).click({ timeout: 5_000 }); }
   catch (error) { console.error(JSON.stringify({ callerFrames: caller.frames, calleeFrames: callee.frames }, null, 2)); throw error; }
@@ -71,7 +80,41 @@ try {
     callee.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
   ]);
 
-  console.log(JSON.stringify({ connected: true, callerAudio: true, calleeAudio: true }));
+  await caller.page.getByRole('button', { name: 'Выйти из звонка' }).click();
+  await caller.page.getByRole('button', { name: 'Вернуться в звонок' }).waitFor({ timeout: 5_000 });
+  await callee.page.locator('.mova-call-stage').waitFor({ state: 'visible' });
+
+  const messageWhileCallContinues = `Звонок продолжается ${suffix}`;
+  await caller.page.getByPlaceholder('Напишите сообщение…').fill(messageWhileCallContinues);
+  await caller.page.getByRole('button', { name: 'Отправить' }).click();
+  await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
+  await callee.page.locator('.mova-real-message').getByText(messageWhileCallContinues, { exact: true }).waitFor({ timeout: 5_000 });
+
+  await caller.page.getByRole('button', { name: 'Вернуться в звонок' }).click();
+  await Promise.all([
+    caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
+    callee.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
+  ]);
+
+  await caller.page.getByRole('button', { name: 'Выйти из звонка' }).click();
+  await caller.page.evaluate(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      throw new DOMException('Permission denied by regression test', 'NotAllowedError');
+    };
+  });
+  await caller.page.getByRole('button', { name: 'Вернуться в звонок' }).click();
+  await caller.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
+
+  const messageAfterMicFailure = `После ошибки микрофона ${suffix}`;
+  await caller.page.getByPlaceholder('Напишите сообщение…').fill(messageAfterMicFailure);
+  await caller.page.getByRole('button', { name: 'Отправить' }).click();
+  await callee.page.locator('.mova-real-message').getByText(messageAfterMicFailure, { exact: true }).waitFor({ timeout: 5_000 });
+
+  await callee.page.getByRole('button', { name: 'Выйти из звонка' }).click();
+  await caller.page.getByRole('button', { name: 'Позвонить' }).waitFor({ timeout: 5_000 });
+
+  const storedMessages = await api(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
+  console.log(JSON.stringify({ connected: true, callerAudio: true, calleeAudio: true, returnedToCall: true, micFailureDoesNotBlockChat: true, messagesSent: storedMessages.messages.length }));
   await caller.context.close();
   await callee.context.close();
 } finally {
