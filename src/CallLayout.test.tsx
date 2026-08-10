@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RealMessages } from './RealApp';
-import type { AppConversation, AppUser } from './lib/api';
+import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
 const callMedia = vi.hoisted(() => ({ screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn() }));
 
@@ -19,6 +19,7 @@ vi.mock('./hooks/useVoiceCall', () => ({
 const currentUser: AppUser = { id: 'me', name: 'Юта', email: 'me@mova.test', handle: '@yuuta', color: '#74DCCB', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
 const friend: AppUser = { id: 'friend', name: 'Друг', email: 'friend@mova.test', handle: '@friend', color: '#9B83F4', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
 const conversation: AppConversation = { id: 'chat', kind: 'direct', title: 'Друг', members: [currentUser, friend], lastMessage: null, createdAt: '2026-08-10T00:00:00.000Z' };
+const incomingMessage = (id: string): AppMessage => ({ id, conversationId: conversation.id, authorId: friend.id, author: friend, content: `Сообщение ${id}`, createdAt: `2026-08-10T00:00:0${id}.000Z`, readBy: [] });
 
 beforeEach(() => {
   callMedia.screenStream = null;
@@ -66,6 +67,26 @@ describe('call layout', () => {
 
     expect(resizer).toHaveAttribute('aria-valuenow', '520');
     expect(window.localStorage.getItem('mova-call-chat-width')).toBe('520');
+  });
+
+  it('shows unread call messages and leaves closing to the chat header', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    await screen.findByRole('button', { name: 'Открыть чат' });
+    rerender(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incomingMessage('1'), incomingMessage('2')]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    const openButton = await screen.findByRole('button', { name: 'Открыть чат, непрочитанных сообщений: 2' });
+    expect(openButton.querySelector('.mova-call-chat-unread')).toHaveTextContent('2');
+    await user.click(openButton);
+
+    expect(screen.queryByText('Скрыть чат')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Открыть чат/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Закрыть чат' })).toBeInTheDocument();
+    expect(document.querySelector('.mova-call-chat-header')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Закрыть чат' }));
+    expect(await screen.findByRole('button', { name: 'Открыть чат' })).toBeInTheDocument();
   });
 
   it('renders expanded screen sharing above the entire application', async () => {

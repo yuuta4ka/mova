@@ -41,7 +41,8 @@
 .mova-open-chat.is-in-call .mova-call-stage>header strong{font-size:17px}
 .mova-open-chat.is-in-call .mova-call-stage>header small{font-size:10px}
 .mova-call-chat-toggle{position:absolute;right:0;top:5px;display:flex;align-items:center;gap:8px;height:42px;padding:0 14px;color:#b8bbc4;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.07);border-radius:14px;font:inherit;font-size:11px;cursor:pointer;transition:color 150ms,background 150ms,border-color 150ms}
-.mova-call-chat-toggle:hover,.mova-call-chat-toggle.is-active{color:#fff;background:#7560c8;border-color:#8c78d5}
+.mova-call-chat-toggle:hover{color:#fff;background:#7560c8;border-color:#8c78d5}
+.mova-call-chat-unread{display:grid;place-items:center;min-width:20px;height:20px;margin-left:1px;padding:0 6px;color:#fff;background:#ef4f61;border:2px solid #151821;border-radius:999px;font-size:10px;font-weight:800;line-height:1;box-shadow:0 3px 10px rgba(239,79,97,.35)}
 .mova-open-chat.is-in-call .mova-call-grid:not(.has-screen){grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));grid-auto-rows:minmax(250px,1fr);align-content:stretch;width:min(1220px,100%);margin:auto;padding:12px 0 18px}
 .mova-open-chat.is-in-call .mova-call-grid:has(>.mova-call-tile:only-child){grid-template-columns:minmax(0,760px)}
 .mova-open-chat.is-in-call .mova-call-tile{min-height:0;border-radius:22px}
@@ -64,6 +65,10 @@
 .mova-open-chat.is-call-chat-open>.mova-real-messages .mova-real-message{max-width:100%}
 .mova-open-chat.is-call-chat-open>.mova-real-messages .mova-real-message>div{max-width:82%}
 .mova-open-chat.is-call-chat-open>.mova-real-composer{grid-column:2;grid-row:3;min-width:0;margin:10px 12px 12px;background:#29292e}
+.mova-open-chat.is-call-chat-open>.mova-call-chat-header,.mova-open-chat.is-call-chat-open>.mova-real-messages,.mova-open-chat.is-call-chat-open>.mova-real-composer{animation:mova-call-chat-enter 240ms cubic-bezier(.2,.75,.25,1) both}
+.mova-open-chat.is-call-chat-open>.mova-call-chat-header{animation-duration:210ms}
+.mova-open-chat.is-call-chat-open>.mova-real-composer{animation-delay:35ms}
+@keyframes mova-call-chat-enter{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:translateX(0)}}
 .mova-open-chat.is-in-call>.mova-chat-search-panel,.mova-open-chat.is-in-call>.mova-chat-details,.mova-open-chat.is-in-call>.mova-contact-info{display:none}
 
 /* Drag handle for the conversation sidebar */
@@ -82,3 +87,5 @@ body>.mova-call-tile.is-expanded .mova-call-fullscreen{position:fixed;z-index:2;
 body>.mova-call-tile.is-expanded>.mova-call-label{position:fixed;left:22px;bottom:22px}
 
 @media(max-width:1100px){.mova-call-chat-toggle span{display:none}.mova-call-chat-toggle{width:42px;padding:0;justify-content:center;border-radius:50%}}
+@media(max-width:1100px){.mova-call-chat-unread{position:absolute;top:-6px;right:-6px;min-width:19px;height:19px;padding:0 5px;border-color:#10131a}}
+@media(prefers-reduced-motion:reduce){.mova-open-chat.is-call-chat-open>.mova-call-chat-header,.mova-open-chat.is-call-chat-open>.mova-real-messages,.mova-open-chat.is-call-chat-open>.mova-real-composer{animation:none}}

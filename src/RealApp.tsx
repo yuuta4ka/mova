@@ -105,7 +105,7 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
   return <div className={`mova-call-bar ${call.state}`}><span className="mova-call-pulse"><i /><Phone size={15} /></span><span><strong>{ringing ? 'Вызываем…' : call.state === 'connecting' ? 'Подключаем…' : call.state === 'error' ? 'Не удалось подключить' : 'Голосовой звонок'}</strong><small>{call.error || (ringing ? conversation.title : `${call.participants.length + 1} в разговоре`)}</small></span><IconButton label="Завершить звонок" className="mova-hangup" onClick={ringing ? call.decline : call.leave}><PhoneOff size={17} /></IconButton></div>;
 }
 
-function VoiceCallBar({ conversation, currentUser, chatOpen, onToggleChat, onCallStateChange, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; chatOpen: boolean; onToggleChat: () => void; onCallStateChange: (open: boolean) => void; onOpenSettings?: () => void }) {
+function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onToggleChat, onCallStateChange, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onCallStateChange: (open: boolean) => void; onOpenSettings?: () => void }) {
   const call = useVoiceCall(conversation.id, currentUser.id);
   const [stageHost, setStageHost] = useState<HTMLElement | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -139,10 +139,10 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, onToggleChat, onCal
     const cameraTiles = remoteTiles.filter((tile) => tile.kind === 'camera');
     const remoteWithCamera = new Set(cameraTiles.map((item) => item.userId));
     const hasScreen = Boolean(localScreen || screenTiles.length);
-    const participantTiles = <>{showSelf && (localCamera ? <CallVideoTile stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking} /> : !localScreen && <CallAvatarTile user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking} />)}{cameraTiles.map((tile) => { const user = conversation.members.find((member) => member.id === tile.userId); const voice = call.remoteVoiceStates[tile.userId]; return <CallVideoTile key={`${tile.userId}-${tile.streamId}`} stream={tile.stream} label={user?.name || 'Участник'} kind="camera" muted={voice?.muted} deafened={voice?.deafened} speaking={call.speakingUsers[tile.userId]} volume={user ? { label: `Громкость ${user.name}`, value: call.participantVolumes[tile.userId] ?? 100, onChange: (value) => call.setParticipantVolume(tile.userId, value) } : undefined} />; })}{showNoVideo && call.participants.filter((id) => !remoteWithCamera.has(id)).map((id) => { const user = conversation.members.find((member) => member.id === id); const voice = call.remoteVoiceStates[id]; return user ? <CallAvatarTile key={id} user={user} label={user.name} muted={voice?.muted} deafened={voice?.deafened} speaking={call.speakingUsers[id]} volume={{ label: `Громкость ${user.name}`, value: call.participantVolumes[id] ?? 100, onChange: (value) => call.setParticipantVolume(id, value) }} /> : null; })}</>;
+    const participantTiles = <>{showSelf && (localCamera ? <CallVideoTile stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking} /> : <CallAvatarTile user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking} />)}{cameraTiles.map((tile) => { const user = conversation.members.find((member) => member.id === tile.userId); const voice = call.remoteVoiceStates[tile.userId]; return <CallVideoTile key={`${tile.userId}-${tile.streamId}`} stream={tile.stream} label={user?.name || 'Участник'} kind="camera" muted={voice?.muted} deafened={voice?.deafened} speaking={call.speakingUsers[tile.userId]} volume={user ? { label: `Громкость ${user.name}`, value: call.participantVolumes[tile.userId] ?? 100, onChange: (value) => call.setParticipantVolume(tile.userId, value) } : undefined} />; })}{showNoVideo && call.participants.filter((id) => !remoteWithCamera.has(id)).map((id) => { const user = conversation.members.find((member) => member.id === id); const voice = call.remoteVoiceStates[id]; return user ? <CallAvatarTile key={id} user={user} label={user.name} muted={voice?.muted} deafened={voice?.deafened} speaking={call.speakingUsers[id]} volume={{ label: `Громкость ${user.name}`, value: call.participantVolumes[id] ?? 100, onChange: (value) => call.setParticipantVolume(id, value) }} /> : null; })}</>;
 
     return stageHost ? createPortal(<section className="mova-call-stage">
-      <header><span><strong>{conversation.title}</strong><small>Голосовой разговор</small></span><button type="button" className={`mova-call-chat-toggle ${chatOpen ? 'is-active' : ''}`} onClick={onToggleChat} aria-label={chatOpen ? 'Закрыть чат' : 'Открыть чат'} aria-pressed={chatOpen}><MessageCircle size={20} /><span>{chatOpen ? 'Скрыть чат' : 'Открыть чат'}</span></button></header>
+      <header><span><strong>{conversation.title}</strong><small>Голосовой разговор</small></span>{!chatOpen && <button type="button" className="mova-call-chat-toggle" onClick={onToggleChat} aria-label={unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}><MessageCircle size={20} /><span>Открыть чат</span>{unreadCount > 0 && <b className="mova-call-chat-unread" aria-hidden="true">{unreadCount > 99 ? '99+' : unreadCount}</b>}</button>}</header>
       {hasScreen ? <div className="mova-call-grid has-screen"><div className="mova-call-screen-area">{localScreen && <CallVideoTile stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} />}{screenTiles.map((tile) => { const user = conversation.members.find((member) => member.id === tile.userId); const voice = call.remoteVoiceStates[tile.userId]; return <CallVideoTile key={`${tile.userId}-${tile.streamId}`} stream={tile.stream} label={`${user?.name || 'Участник'} · экран`} kind="screen" muted={voice?.muted} deafened={voice?.deafened} volume={user ? { label: `Громкость демонстрации ${user.name}`, value: call.screenVolumes[tile.userId] ?? 100, onChange: (value) => call.setScreenVolume(tile.userId, value) } : undefined} />; })}</div><div className="mova-call-participants">{participantTiles}</div></div> : <div className="mova-call-grid">{participantTiles}</div>}
       <div className="mova-call-controls">
         <button type="button" className={call.muted ? 'is-off' : ''} onClick={call.toggleMute} aria-label={call.muted ? 'Включить микрофон' : 'Выключить микрофон'}>{call.muted ? <MicOff size={21} /> : <Mic size={21} />}<span>Микрофон</span></button>
@@ -263,6 +263,7 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onDe
   const [imagePreview, setImagePreview] = useState<MessageAttachment | null>(null);
   const [callOpen, setCallOpen] = useState(false);
   const [callChatOpen, setCallChatOpen] = useState(false);
+  const [callChatUnread, setCallChatUnread] = useState(0);
   const [callChatWidth, setCallChatWidth] = useState(() => { const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-call-chat-width'); const saved = stored === null ? NaN : Number(stored); return Number.isFinite(saved) ? Math.min(720, Math.max(320, saved)) : 420; });
   const fileInput = useRef<HTMLInputElement>(null);
   const threadRef = useRef<HTMLElement>(null);
@@ -271,6 +272,7 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onDe
   const previousMessageCount = useRef(0);
   const positionedAtBottom = useRef(false);
   const dragDepth = useRef(0);
+  const knownCallMessageIds = useRef(new Set(messages.map((message) => message.id)));
   const other = conversation.members.find((member) => member.id !== currentUser.id);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
   const matchingMessages = useMemo(() => normalizedSearch ? messages.filter((message) => message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)).reverse() : [], [messages, normalizedSearch]);
@@ -334,9 +336,17 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onDe
     setActiveMatchIndex(0);
   }, [normalizedSearch]);
   useEffect(() => {
-    if (!callOpen) setCallChatOpen(false);
+    if (!callOpen) { setCallChatOpen(false); setCallChatUnread(0); }
     else { setSearchOpen(false); setDetailsOpen(false); setProfileInfoOpen(false); }
   }, [callOpen]);
+  useEffect(() => {
+    const incoming = messages.filter((message) => !knownCallMessageIds.current.has(message.id) && message.authorId !== currentUser.id);
+    messages.forEach((message) => knownCallMessageIds.current.add(message.id));
+    if (callOpen && !callChatOpen && incoming.length) setCallChatUnread((count) => count + incoming.length);
+  }, [messages, currentUser.id, callOpen, callChatOpen]);
+  useEffect(() => {
+    if (callChatOpen) setCallChatUnread(0);
+  }, [callChatOpen]);
   useEffect(() => {
     setProfileInfoOpen(false);
   }, [conversation.id]);
@@ -402,7 +412,7 @@ export function RealMessages({ conversation, currentUser, messages, onSend, onDe
         <span><span className="mova-chat-identity__name"><strong>{conversation.title}</strong>{muted && <BellOff size={15} aria-label="Уведомления выключены" />}</span><small>{status}</small></span>
       </button>
       <div>
-        <VoiceCallBar conversation={conversation} currentUser={currentUser} chatOpen={callChatOpen} onToggleChat={() => setCallChatOpen((open) => !open)} onCallStateChange={setCallOpen} />
+        <VoiceCallBar conversation={conversation} currentUser={currentUser} chatOpen={callChatOpen} unreadCount={callChatUnread} onToggleChat={() => setCallChatOpen(true)} onCallStateChange={setCallOpen} />
         <IconButton label="Поиск" className={searchOpen ? 'is-active' : ''} onClick={() => { setSearchOpen((open) => !open); setDetailsOpen(false); setProfileInfoOpen(false); }}><Search size={18} /></IconButton>
         <IconButton label="Подробнее" className={detailsOpen ? 'is-active' : ''} onClick={() => { setDetailsOpen((open) => !open); setSearchOpen(false); setProfileInfoOpen(false); }}><MoreVertical size={24} /></IconButton>
       </div>

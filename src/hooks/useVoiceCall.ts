@@ -11,7 +11,6 @@ interface RemoteAudioEntry {
   streamId: string;
   mediaKind: RemoteMediaKind;
   element: HTMLAudioElement;
-  gain: GainNode | null;
   source: MediaStreamAudioSourceNode | null;
   stopMonitor: () => void;
 }
@@ -163,8 +162,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const applyRemoteVolume = useCallback((entry: RemoteAudioEntry, settings = loadAudioSettings()) => {
     const scoped = entry.mediaKind === 'screen' ? screenVolumesRef.current[entry.userId] ?? 100 : participantVolumesRef.current[entry.userId] ?? 100;
     const volume = Math.max(0, Math.min(4, settings.outputVolume / 100 * scoped / 100));
-    if (entry.gain) entry.gain.gain.value = deafenedRef.current ? 0 : volume;
-    entry.element.volume = entry.gain || deafenedRef.current ? 0 : Math.min(1, volume);
+    entry.element.volume = deafenedRef.current ? 0 : Math.min(1, volume);
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (entry.element as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
     if (setSinkId) void setSinkId.call(entry.element, sinkId).catch(() => undefined);
@@ -175,7 +173,6 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (!entry) return;
     entry.stopMonitor();
     entry.source?.disconnect();
-    entry.gain?.disconnect();
     entry.element.pause();
     entry.element.srcObject = null;
     entry.element.remove();
@@ -198,13 +195,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     document.body.append(element);
     const context = localAudioContext.current;
     let source: MediaStreamAudioSourceNode | null = null;
-    let gain: GainNode | null = null;
     let stopMonitor: () => void = () => undefined;
     const mediaKind: RemoteMediaKind = remoteMediaRef.current[userId]?.screen === stream.id ? 'screen' : 'voice';
-    if (context?.state === 'running') {
+    element.srcObject = stream;
+    if (context) {
       source = context.createMediaStreamSource(new MediaStream([event.track]));
-      gain = context.createGain();
-      source.connect(gain).connect(context.destination);
       if (mediaKind === 'voice') {
         const analyser = context.createAnalyser();
         source.connect(analyser);
@@ -212,15 +207,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           setSpeakingUsers((items) => speaking ? { ...items, [userId]: true } : Object.fromEntries(Object.entries(items).filter(([id]) => id !== userId)));
         });
       }
-    } else element.srcObject = stream;
+    }
 
-    const entry: RemoteAudioEntry = { userId, streamId: stream.id, mediaKind, element, gain, source, stopMonitor };
+    const entry: RemoteAudioEntry = { userId, streamId: stream.id, mediaKind, element, source, stopMonitor };
     remoteAudio.current.set(key, entry);
     applyRemoteVolume(entry);
-    const play = () => {
-      if (gain) return;
-      void element.play().then(() => setError((value) => value.startsWith('Браузер заблокировал звук') ? '' : value)).catch(() => setError('Браузер заблокировал звук. Нажмите в любом месте страницы, чтобы включить его.'));
-    };
+    const play = () => void element.play().then(() => setError((value) => value.startsWith('Браузер заблокировал звук') ? '' : value)).catch(() => setError('Браузер заблокировал звук. Нажмите в любом месте страницы, чтобы включить его.'));
     const retry = () => { void localAudioContext.current?.resume().catch(() => undefined); play(); };
     document.addEventListener('pointerdown', retry, { once: true });
     event.track.onended = () => {
@@ -231,13 +223,22 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     play();
   }, [applyRemoteVolume, removeRemoteAudio]);
 
+  const addMissingLocalTracks = useCallback((peer: RTCPeerConnection) => {
+    const senderTrackIds = new Set(peer.getSenders().map((sender) => sender.track?.id).filter(Boolean));
+    for (const stream of [localStream.current, cameraStreamRef.current, screenStreamRef.current]) {
+      if (!stream) continue;
+      for (const track of stream.getTracks()) if (!senderTrackIds.has(track.id)) {
+        peer.addTrack(track, stream);
+        senderTrackIds.add(track.id);
+      }
+    }
+  }, []);
+
   const createPeer = useCallback((userId: string) => {
     const existing = peers.current.get(userId);
     if (existing) return existing;
     const peer = new RTCPeerConnection({ iceServers: configuredIceServers.current });
-    localStream.current?.getTracks().forEach((track) => peer.addTrack(track, localStream.current!));
-    cameraStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, cameraStreamRef.current!));
-    screenStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, screenStreamRef.current!));
+    addMissingLocalTracks(peer);
     peer.onicecandidate = (event) => { if (event.candidate && conversationId) realtime.send({ type: 'voice:ice', conversationId, targetUserId: userId, candidate: event.candidate.toJSON() }); };
     peer.ontrack = (event) => attachRemoteTrack(userId, event);
     peer.onconnectionstatechange = () => {
@@ -248,7 +249,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     peers.current.set(userId, peer);
     setParticipants((items) => [...new Set([...items, userId])]);
     return peer;
-  }, [attachRemoteTrack, conversationId]);
+  }, [addMissingLocalTracks, attachRemoteTrack, conversationId]);
 
   const negotiatePeer = useCallback((userId: string, restartIce = false) => {
     const previous = negotiationQueues.current.get(userId) || Promise.resolve();
@@ -256,6 +257,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       const peer = peers.current.get(userId);
       if (!peer || !conversationId || peer.signalingState === 'closed') return;
       if (peer.signalingState !== 'stable') return;
+      addMissingLocalTracks(peer);
       makingOffer.current.set(userId, true);
       try {
         if (restartIce) peer.restartIce();
@@ -266,7 +268,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     });
     negotiationQueues.current.set(userId, next);
     return next;
-  }, [conversationId]);
+  }, [addMissingLocalTracks, conversationId]);
   negotiateRef.current = negotiatePeer;
 
   const announceLocalState = useCallback(() => {
@@ -308,14 +310,17 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       localVoiceMonitor.current?.();
       localVoiceMonitor.current = startVoiceActivityMonitor(analyser, setLocalSpeaking);
       await context.resume().catch(() => undefined);
+      const existingPeers = [...peers.current.keys()];
+      peers.current.forEach(addMissingLocalTracks);
       realtime.send({ type: 'voice:join', conversationId });
       updateState('active');
       setStoredCall(activeCallKey, conversationId); setStoredCall(pendingCallKey, null);
+      if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
     } catch (voiceError) {
       updateState('error');
       setError(voiceError instanceof Error ? voiceError.message : 'Нет доступа к микрофону');
     }
-  }, [announceLocalState, conversationId, updateState]);
+  }, [addMissingLocalTracks, announceLocalState, conversationId, updateState]);
 
   const leave = useCallback((notify = true, preserveStoredCall = false) => {
     const previousState = stateRef.current;
