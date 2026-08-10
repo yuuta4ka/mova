@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Signal, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { Avatar, Button, IconButton } from './components/Primitives';
@@ -8,6 +8,7 @@ import { AppleEmoji } from './components/AppleEmoji';
 import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioSettings } from './lib/audioSettings';
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
+import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } from './lib/accentSettings';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const readImage = (file?: File) =>
@@ -258,6 +259,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
   const [settings, setSettings] = useState<AudioSettings>(defaultAudioSettings);
   const [screenSettings, setScreenSettings] = useState<ScreenShareSettings>(defaultScreenShareSettings);
   const [backgroundColor, setBackgroundColor] = useState(defaultBackgroundColor);
+  const [accentColor, setAccentColor] = useState(defaultAccentColor);
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
   const [deviceError, setDeviceError] = useState('');
@@ -299,6 +301,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
       setSettings(loadAudioSettings());
       setScreenSettings(loadScreenShareSettings());
       setBackgroundColor(loadBackgroundColor());
+      setAccentColor(loadAccentColor());
       void refreshDevices(false);
     } else stopTest();
   }, [open, refreshDevices, stopTest]);
@@ -357,6 +360,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
     saveAudioSettings(settings);
     saveScreenShareSettings(screenSettings);
     saveBackgroundColor(backgroundColor);
+    saveAccentColor(accentColor);
     stopTest();
     onClose();
   };
@@ -389,7 +393,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
           <header>
             <div>
               <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : 'Голос и звук'}</h2>
-              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона приложения' : section === 'screen' ? 'Качество при включении демонстрации' : 'Устройства и обработка голоса'}</p>
+              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : 'Устройства и обработка голоса'}</p>
             </div>
             <IconButton label="Закрыть настройки" onClick={onClose}>
               <X size={18} />
@@ -413,7 +417,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
               </Button>
             </div>
           ) : section === 'appearance' ? (
-            <BackgroundDefaults color={backgroundColor} onChange={setBackgroundColor} />
+            <BackgroundDefaults color={backgroundColor} onChange={setBackgroundColor} accentColor={accentColor} onAccentChange={setAccentColor} />
           ) : section === 'screen' ? (
             <ScreenShareDefaults settings={screenSettings} onChange={setScreenSettings} />
           ) : (
@@ -514,11 +518,11 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
   );
 }
 
-function BackgroundDefaults({ color, onChange }: { color: string; onChange: (color: string) => void }) {
+function BackgroundDefaults({ color, onChange, accentColor, onAccentChange }: { color: string; onChange: (color: string) => void; accentColor: string; onAccentChange: (color: string) => void }) {
   return (
     <div className="mova-background-settings">
       <section>
-        <div className="mova-background-preview" style={{ '--mova-preview-color': color } as CSSProperties}>
+        <div className="mova-background-preview" style={{ '--mova-preview-color': color, '--mova-preview-accent': accentColor } as CSSProperties}>
           <i /><i /><span /><span />
         </div>
         <h3>Цвет фона</h3>
@@ -535,6 +539,21 @@ function BackgroundDefaults({ color, onChange }: { color: string; onChange: (col
           </label>
         </div>
         <Button variant="ghost" size="sm" onClick={() => onChange(defaultBackgroundColor)}>Вернуть стандартный цвет</Button>
+        <div className="mova-appearance-divider" />
+        <h3>Акцентный цвет</h3>
+        <p>Используется для ваших сообщений, активных элементов и кнопок.</p>
+        <div className="mova-accent-presets">
+          {accentPresets.map((preset) => (
+            <button key={preset} type="button" className={accentColor.toLowerCase() === preset ? 'is-active' : ''} style={{ backgroundColor: preset }} aria-label={`Акцент ${preset}`} aria-pressed={accentColor.toLowerCase() === preset} onClick={() => onAccentChange(preset)}>
+              {accentColor.toLowerCase() === preset && <Check size={16} />}
+            </button>
+          ))}
+          <label aria-label="Выбрать свой акцентный цвет">
+            <Palette size={17} />
+            <input type="color" value={accentColor} onChange={(event) => onAccentChange(event.target.value)} />
+          </label>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => onAccentChange(defaultAccentColor)}>Вернуть стандартный акцент</Button>
       </section>
     </div>
   );
@@ -1078,6 +1097,28 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     if (!call.screenStream) setScreenMenuOpen(false);
   }, [call.screenStream]);
   useEffect(() => {
+    if (!moreOpen && !screenMenuOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (moreOpen && target?.closest?.('.mova-call-more,[aria-label="Дополнительно"]')) return;
+      if (screenMenuOpen && target?.closest?.('.mova-screen-menu,[aria-label="Настроить демонстрацию"]')) return;
+      setMoreOpen(false);
+      setScreenMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMoreOpen(false);
+        setScreenMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [moreOpen, screenMenuOpen]);
+  useEffect(() => {
     onCallStateChange(call.state !== 'idle' && call.state !== 'available');
   }, [call.state, onCallStateChange]);
   useEffect(() => {
@@ -1126,11 +1167,13 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     const callConnected = peerDiagnostics.some((peer) => peer.connectionState === 'connected');
     const microphoneSending = peerDiagnostics.some((peer) => peer.outboundAudioBytes > 0);
     const microphoneReceiving = peerDiagnostics.some((peer) => peer.inboundAudioBytes > 0);
-    const networkQuality = peerDiagnostics.some((peer) => peer.quality === 'poor') ? 'poor' : peerDiagnostics.some((peer) => peer.quality === 'fair') ? 'fair' : 'good';
+    const networkQuality = !peerDiagnostics.length ? 'unknown' : peerDiagnostics.some((peer) => peer.quality === 'poor') ? 'poor' : peerDiagnostics.some((peer) => peer.quality === 'fair') ? 'fair' : 'good';
     const latency = peerDiagnostics.reduce<number | undefined>((maximum, peer) => (peer.roundTripTimeMs === undefined ? maximum : Math.max(maximum ?? 0, peer.roundTripTimeMs)), undefined);
+    const latencyLabel = latency === undefined ? 'Измеряем задержку…' : `Задержка ${latency} мс`;
+    const networkLabel = networkQuality === 'good' ? '4 полосы' : networkQuality === 'fair' ? '3 полосы' : networkQuality === 'poor' ? '1 полоса' : 'нет данных';
     const participantTiles = (
       <>
-        {showSelf && (localCamera ? <CallVideoTile stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking} /> : <CallAvatarTile user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking} />)}
+        {showSelf && (localCamera ? <CallVideoTile stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} /> : <CallAvatarTile user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} />)}
         {cameraTiles.map((tile) => {
           const user = callConversation.members.find((member) => member.id === tile.userId);
           const voice = call.remoteVoiceStates[tile.userId];
@@ -1188,10 +1231,14 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                 <strong>{callConversation.title}</strong>
                 <small>Голосовой разговор</small>
               </span>
-              <div className={`mova-network-quality is-${networkQuality}`} title="Задержка и качество медиасоединения">
-                <Signal size={16} />
-                <span>{latency === undefined ? '— мс' : `${latency} мс`}</span>
-                <b>{networkQuality === 'good' ? 'Хорошая сеть' : networkQuality === 'fair' ? 'Средняя сеть' : 'Слабая сеть'}</b>
+              <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${latencyLabel}`} title={`Качество соединения: ${networkLabel}`}>
+                <span className="mova-network-bars" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>{latencyLabel}</span>
               </div>
               {!chatOpen && (
                 <button type="button" className="mova-call-chat-toggle" onClick={onToggleChat} aria-label={unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}>
@@ -1318,23 +1365,6 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                   <span>{call.deafened ? 'Включить входящий звук' : 'Выключить входящий звук'}</span>
                   {call.deafened && <Check size={16} />}
                 </button>
-                <section className="mova-network-details" aria-label="Состояние сети">
-                  <strong>
-                    <Signal size={15} /> Состояние сети
-                  </strong>
-                  {peerDiagnostics.length ? (
-                    peerDiagnostics.map((peer, index) => (
-                      <span key={index} className={`is-${peer.quality}`}>
-                        <b>{peer.roundTripTimeMs ?? '—'} мс</b>
-                        <small>
-                          Потери {peer.packetLossPercent ?? 0}% · джиттер {peer.jitterMs ?? '—'} мс
-                        </small>
-                      </span>
-                    ))
-                  ) : (
-                    <small>Ожидаем данные соединения…</small>
-                  )}
-                </section>
                 <div />
                 <button
                   type="button"
@@ -1573,6 +1603,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const [attachmentError, setAttachmentError] = useState('');
   const [replyingTo, setReplyingTo] = useState<AppMessage | null>(null);
   const [editingMessage, setEditingMessage] = useState<AppMessage | null>(null);
+  const [messageMenu, setMessageMenu] = useState<{ message: AppMessage; x: number; y: number } | null>(null);
+  const [replyHighlightId, setReplyHighlightId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState(false);
   const [imagePreview, setImagePreview] = useState<MessageAttachment | null>(null);
   const [callOpen, setCallOpen] = useState(false);
@@ -1594,6 +1626,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const typingStopTimer = useRef<number | null>(null);
   const typingActive = useRef(false);
   const lastTypingSentAt = useRef(0);
+  const replyHighlightTimer = useRef<number | null>(null);
+  const replyScrollAnimation = useRef<number | null>(null);
   const knownCallMessageIds = useRef(new Set(messages.map((message) => message.id)));
   const other = conversation.members.find((member) => member.id !== currentUser.id);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
@@ -1639,6 +1673,99 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     },
     [conversation.id],
   );
+
+  useEffect(() => {
+    if (!messageMenu) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMessageMenu(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [messageMenu]);
+
+  const replyToMessage = (message: AppMessage) => {
+    setMessageMenu(null);
+    setReplyingTo(message);
+    setEditingMessage(null);
+    setValue('');
+    window.setTimeout(() => composerInput.current?.focus(), 0);
+  };
+  const editOwnMessage = (message: AppMessage) => {
+    setMessageMenu(null);
+    setEditingMessage(message);
+    setReplyingTo(null);
+    setAttachment(undefined);
+    setValue(message.content);
+    window.setTimeout(() => composerInput.current?.focus(), 0);
+  };
+
+  const jumpToMessage = useCallback((messageId: string) => {
+    const messageElement = messageElements.current.get(messageId);
+    const container = messagesContainer.current;
+    if (!messageElement || !container) return;
+    if (replyScrollAnimation.current !== null) window.cancelAnimationFrame(replyScrollAnimation.current);
+    if (replyHighlightTimer.current !== null) window.clearTimeout(replyHighlightTimer.current);
+    setReplyHighlightId(messageId);
+    replyHighlightTimer.current = window.setTimeout(() => {
+      setReplyHighlightId(null);
+      replyHighlightTimer.current = null;
+    }, 2_200);
+    const containerRect = container.getBoundingClientRect();
+    const messageRect = messageElement.getBoundingClientRect();
+    const start = container.scrollTop;
+    const target = Math.max(0, start + messageRect.top - containerRect.top - (container.clientHeight - messageRect.height) / 2);
+    const distance = target - start;
+    if (Math.abs(distance) < 2 || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      container.scrollTop = target;
+      return;
+    }
+    const startedAt = performance.now();
+    const animate = (timestamp: number) => {
+      const progress = Math.min(1, (timestamp - startedAt) / 190);
+      const eased = 1 - (1 - progress) ** 3;
+      container.scrollTop = start + distance * eased;
+      if (progress < 1) replyScrollAnimation.current = window.requestAnimationFrame(animate);
+      else replyScrollAnimation.current = null;
+    };
+    replyScrollAnimation.current = window.requestAnimationFrame(animate);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (replyHighlightTimer.current !== null) window.clearTimeout(replyHighlightTimer.current);
+      if (replyScrollAnimation.current !== null) window.cancelAnimationFrame(replyScrollAnimation.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!searchOpen && !detailsOpen && !profileInfoOpen && !emojiOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest) return;
+      if (searchOpen && target.closest('.mova-chat-search-panel,[aria-label="Поиск"]')) return;
+      if (detailsOpen && target.closest('.mova-chat-actions-menu,[aria-label="Подробнее"]')) return;
+      if (profileInfoOpen && target.closest('.mova-contact-info,.mova-chat-identity')) return;
+      if (emojiOpen && target.closest('.mova-emoji-picker,[aria-label="Эмодзи"]')) return;
+      setSearchOpen(false);
+      setDetailsOpen(false);
+      setProfileInfoOpen(false);
+      setEmojiOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setSearchOpen(false);
+      setDetailsOpen(false);
+      setProfileInfoOpen(false);
+      setEmojiOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [detailsOpen, emojiOpen, profileInfoOpen, searchOpen]);
 
   useEffect(() => {
     if (conversation.kind !== 'direct' || (other?.isOnline ?? other?.presence === 'online')) return;
@@ -2104,8 +2231,19 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                 if (element) messageElements.current.set(message.id, element);
                 else messageElements.current.delete(message.id);
               }}
-              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
+              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
               onClick={selectingMessages ? () => setSelectedMessages((items) => (selectedForAction ? items.filter((id) => id !== message.id) : [...items, message.id])) : undefined}
+              onContextMenu={(event) => {
+                if (selectingMessages) return;
+                event.preventDefault();
+                const width = 194;
+                const height = own && onEdit ? 100 : 54;
+                setMessageMenu({
+                  message,
+                  x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
+                  y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
+                });
+              }}
               key={message.id}
             >
               {selectingMessages && <span className="mova-message-selector">{selectedForAction && <Check size={14} />}</span>}
@@ -2117,16 +2255,14 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                     <button
                       type="button"
                       className="mova-message-reply"
-                      onClick={() =>
-                        messageElements.current.get(message.replyTo?.id || '')?.scrollIntoView({
-                          behavior: 'smooth',
-                          block: 'center',
-                        })
-                      }
+                      onClick={() => jumpToMessage(message.replyTo?.id || '')}
                       aria-label={`Перейти к сообщению ${message.replyTo.author.name}`}
                     >
-                      <strong><AppleEmoji text={message.replyTo.author.name} /></strong>
-                      <span><AppleEmoji text={message.replyTo.content || message.replyTo.attachmentName || 'Вложение'} /></span>
+                      {message.replyTo.attachment?.type.startsWith('image/') && <img src={message.replyTo.attachment.dataUrl} alt="" />}
+                      <span>
+                        <strong><AppleEmoji text={message.replyTo.author.name} /></strong>
+                        <small><AppleEmoji text={message.replyTo.content || message.replyTo.attachmentName || 'Вложение'} /></small>
+                      </span>
                     </button>
                   )}
                   {message.attachment &&
@@ -2163,39 +2299,6 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                   </time>
                   {own && <MessageStatus message={message} conversation={conversation} />}
                 </div>
-                {!selectingMessages && (
-                  <div className="mova-message-actions">
-                    <button
-                      type="button"
-                      aria-label="Ответить на сообщение"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setReplyingTo(message);
-                        setEditingMessage(null);
-                        setValue('');
-                        window.setTimeout(() => composerInput.current?.focus(), 0);
-                      }}
-                    >
-                      <Reply size={15} />
-                    </button>
-                    {own && onEdit && (
-                      <button
-                        type="button"
-                        aria-label="Редактировать сообщение"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setEditingMessage(message);
-                          setReplyingTo(null);
-                          setAttachment(undefined);
-                          setValue(message.content);
-                          window.setTimeout(() => composerInput.current?.focus(), 0);
-                        }}
-                      >
-                        <Pencil size={14} />
-                      </button>
-                    )}
-                  </div>
-                )}
               </div>
             </article>
           );
@@ -2220,12 +2323,15 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </div>
         )}
         {(replyingTo || editingMessage) && (
-          <div className="mova-composer-context">
+          <div className={`mova-composer-context${editingMessage ? ' is-editing' : ''}`}>
             {editingMessage ? <Pencil size={17} /> : <Reply size={17} />}
-            <span>
-              <strong>{editingMessage ? 'Редактирование сообщения' : `Ответ ${replyingTo?.author.name}`}</strong>
-              <small><AppleEmoji text={(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'} /></small>
-            </span>
+            <div className="mova-composer-context__preview">
+              {!editingMessage && replyingTo?.attachment?.type.startsWith('image/') && <img src={replyingTo.attachment.dataUrl} alt="" />}
+              <span>
+                <strong>{editingMessage ? 'Редактирование сообщения' : `В ответ ${replyingTo?.author.name}`}</strong>
+                <small><AppleEmoji text={(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'} /></small>
+              </span>
+            </div>
             <button
               type="button"
               aria-label={editingMessage ? 'Отменить редактирование' : 'Отменить ответ'}
@@ -2328,6 +2434,24 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </div>,
           document.body,
         )}
+      {messageMenu &&
+        createPortal(
+          <div className="mova-message-context-layer" onPointerDown={() => setMessageMenu(null)} onContextMenu={(event) => event.preventDefault()}>
+            <div className="mova-message-context-menu" role="menu" aria-label="Действия с сообщением" style={{ left: messageMenu.x, top: messageMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => replyToMessage(messageMenu.message)}>
+                <Reply size={16} />
+                <span>Ответить</span>
+              </button>
+              {messageMenu.message.authorId === currentUser.id && onEdit && (
+                <button type="button" role="menuitem" onClick={() => editOwnMessage(messageMenu.message)}>
+                  <Pencil size={15} />
+                  <span>Редактировать</span>
+                </button>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
     </section>
   );
 }
@@ -2347,6 +2471,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const [loading, setLoading] = useState(!isFresh(conversationCache.get(currentUser.id)) || !isFresh(userCache.get(currentUser.id)));
   const [messagesLoading, setMessagesLoading] = useState(() => Boolean(initialSelectedId && !isFresh(messageCache.get(messageCacheKey(currentUser.id, initialSelectedId)))));
   const [backgroundColor, setBackgroundColor] = useState(loadBackgroundColor);
+  const [accentColor, setAccentColor] = useState(loadAccentColor);
   const [createOpen, setCreateOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2423,13 +2548,32 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   useEffect(() => {
     const openSettings = () => setSettingsOpen(true);
     const updateBackground = (event: Event) => setBackgroundColor((event as CustomEvent<string>).detail || loadBackgroundColor());
+    const updateAccent = (event: Event) => setAccentColor((event as CustomEvent<string>).detail || loadAccentColor());
     window.addEventListener('mova-open-settings', openSettings);
     window.addEventListener('mova-background-color', updateBackground);
+    window.addEventListener('mova-accent-color', updateAccent);
     return () => {
       window.removeEventListener('mova-open-settings', openSettings);
       window.removeEventListener('mova-background-color', updateBackground);
+      window.removeEventListener('mova-accent-color', updateAccent);
     };
   }, []);
+  useEffect(() => {
+    document.documentElement.style.setProperty('--mova-accent-color', accentColor);
+  }, [accentColor]);
+  useEffect(() => {
+    if (!accountOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target as Element | null)?.closest?.('.mova-account-anchor')) setAccountOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && setAccountOpen(false);
+    document.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [accountOpen]);
   useEffect(
     () =>
       realtime.subscribe((event) => {
@@ -2687,7 +2831,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   };
   const visible = useMemo(() => conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [conversations, query]);
   return (
-    <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor } as CSSProperties}>
+    <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}${accountOpen ? ' is-account-menu-open' : ''}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor, '--mova-accent-color': accentColor } as CSSProperties}>
       <div className="mova-real-aurora" />
       <aside className="mova-real-sidebar mova-tg-sidebar">
         <div className="mova-tg-search-row">
@@ -2758,7 +2902,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
           aria-valuemax={SIDEBAR_MAX_WIDTH}
           aria-valuenow={Math.round(sidebarWidth)}
           aria-valuetext={sidebarCompact ? 'Компактное меню' : `${Math.round(sidebarWidth)} пикселей`}
-          tabIndex={0}
+          tabIndex={accountOpen ? -1 : 0}
           onPointerDown={startSidebarResize}
           onDoubleClick={() => {
             setSidebarWidth(360);

@@ -36,6 +36,9 @@ interface RemoteAudioEntry {
 
 const incomingRingtoneUrl = new URL('../../ringtone.mp3', import.meta.url).href;
 const outgoingRingtoneUrl = new URL('../../calling-sound.mp3', import.meta.url).href;
+const connectSoundUrl = new URL('../../connect.mp3', import.meta.url).href;
+const disconnectSoundUrl = new URL('../../disconnect.mp3', import.meta.url).href;
+const leaveSoundUrl = new URL('../../leave.mp3', import.meta.url).href;
 const activeCallKey = 'mova-active-call';
 const pendingCallKey = 'mova-pending-call';
 const participantVolumeKey = 'mova-call-participant-volumes';
@@ -84,6 +87,20 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
   }
 }
 
+function playCallSound(kind: 'connect' | 'disconnect' | 'leave') {
+  try {
+    const settings = loadAudioSettings();
+    const urls = { connect: connectSoundUrl, disconnect: disconnectSoundUrl, leave: leaveSoundUrl };
+    const audio = new Audio(urls[kind]);
+    audio.volume = Math.min(1, settings.outputVolume / 100);
+    const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
+    const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
+    const play = () => void audio.play().catch(() => undefined);
+    if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
+    else play();
+  } catch {}
+}
+
 function playControlTone(kind: 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'end') {
   try {
     const context = new AudioContext();
@@ -115,6 +132,8 @@ function startVoiceActivityMonitor(analyser: AnalyserNode, onChange: (speaking: 
   let animation = 0;
   let active = false;
   let lastVoiceAt = 0;
+  let noiseFloor = 0.006;
+  let voiceFrames = 0;
   const tick = (timestamp: number) => {
     analyser.getByteTimeDomainData(samples);
     let energy = 0;
@@ -123,8 +142,17 @@ function startVoiceActivityMonitor(analyser: AnalyserNode, onChange: (speaking: 
       energy += normalized * normalized;
     }
     const level = Math.sqrt(energy / samples.length);
-    if (level > 0.035) lastVoiceAt = timestamp;
-    const next = level > 0.035 || (active && timestamp - lastVoiceAt < 280);
+    // The analyser receives the processed MediaStreamTrack: echo cancellation,
+    // noise suppression and automatic gain are already applied by the browser.
+    // Track the remaining noise floor so steady background noise does not light
+    // the tile, while quiet speech that is actually transmitted still does.
+    if (!active) noiseFloor = noiseFloor * 0.985 + Math.min(level, 0.04) * 0.015;
+    const threshold = Math.max(0.012, noiseFloor * 2.4);
+    if (level > threshold) {
+      voiceFrames += 1;
+      if (voiceFrames >= 2) lastVoiceAt = timestamp;
+    } else voiceFrames = 0;
+    const next = voiceFrames >= 2 || (active && timestamp - lastVoiceAt < 180);
     if (next !== active) {
       active = next;
       onChange(next);
@@ -578,6 +606,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       peers.current.forEach(addMissingLocalTracks);
       realtime.send({ type: 'voice:join', conversationId });
       updateState('active');
+      playCallSound('connect');
       setStoredCall(activeCallKey, conversationId);
       setStoredCall(pendingCallKey, null);
       if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
@@ -606,7 +635,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     (notify = true, preserveStoredCall = false) => {
       const previousState = stateRef.current;
       if (conversationId) realtime.send({ type: 'voice:leave', conversationId });
-      if (!preserveStoredCall && previousState !== 'idle' && previousState !== 'error') playControlTone('end');
+      if (!preserveStoredCall && previousState !== 'idle' && previousState !== 'error') playCallSound('disconnect');
       peers.current.forEach((peer) => peer.close());
       peers.current.clear();
       previousPeerStats.current.clear();
@@ -797,8 +826,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                   deafened: event.deafened,
                 },
               }));
-            if (event.type === 'voice:joined') announceLocalState();
+            if (event.type === 'voice:joined') {
+              playCallSound('connect');
+              announceLocalState();
+            }
             if (event.type === 'voice:left') {
+              playCallSound('leave');
               peers.current.get(event.userId)?.close();
               peers.current.delete(event.userId);
               previousPeerStats.current.delete(event.userId);

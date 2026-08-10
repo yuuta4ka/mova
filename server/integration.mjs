@@ -242,7 +242,7 @@ try {
       latestPreview: conversationOverview.conversations[0].lastMessage.content,
       rtcIceServers: rtcConfig.iceServers.length,
       attachment: attachmentMessage.message.attachment.name,
-      reply: replyEvent.message.replyTo.id === attachmentMessage.message.id,
+      reply: replyEvent.message.replyTo.id === attachmentMessage.message.id && replyEvent.message.replyTo.attachment.name === 'mova-test.txt',
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),
       typing: typingStarted.active === true && typingStopped.active === false,
       typingDisconnect: typingStoppedOnDisconnect.active === false,

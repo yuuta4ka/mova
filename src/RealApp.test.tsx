@@ -266,12 +266,47 @@ describe('RealMessages replies and editing', () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming]} onSend={onSend} />);
 
-    await user.click(screen.getByRole('button', { name: 'Ответить на сообщение' }));
-    expect(screen.getByText('Ответ Друг')).toBeVisible();
+    fireEvent.contextMenu(screen.getByText('Исходный вопрос').closest('article')!);
+    await user.click(screen.getByRole('menuitem', { name: 'Ответить' }));
+    expect(screen.getByText('В ответ Друг')).toBeVisible();
     await user.type(screen.getByRole('textbox', { name: 'Сообщение в Друг' }), 'Мой ответ');
     await user.click(screen.getByRole('button', { name: 'Отправить' }));
 
     expect(onSend).toHaveBeenCalledWith('Мой ответ', undefined, 'incoming');
+  });
+
+  it('shows an image thumbnail in reply drafts and sent quotes', async () => {
+    const user = userEvent.setup();
+    const photoAttachment = { name: 'album.png', type: 'image/png', size: 120, dataUrl: 'data:image/png;base64,aW1hZ2U=' };
+    const photo: AppMessage = {
+      ...incoming,
+      id: 'photo',
+      content: 'Альбом',
+      attachment: photoAttachment,
+    };
+    const answer: AppMessage = {
+      ...own,
+      id: 'answer',
+      content: '123',
+      replyToId: photo.id,
+      replyTo: {
+        id: photo.id,
+        authorId: friend.id,
+        author: friend,
+        content: photo.content,
+        attachmentName: photoAttachment.name,
+        attachment: photoAttachment,
+      },
+    };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[photo, answer]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(container.querySelector('.mova-message-reply > img')).toHaveAttribute('src', photoAttachment.dataUrl);
+    await user.click(screen.getByRole('button', { name: 'Перейти к сообщению Друг' }));
+    expect(container.querySelector('article.mova-real-message')).toHaveClass('is-reply-target');
+    fireEvent.contextMenu(container.querySelector('article.mova-real-message')!);
+    await user.click(screen.getByRole('menuitem', { name: 'Ответить' }));
+    expect(container.querySelector('.mova-composer-context__preview > img')).toHaveAttribute('src', photoAttachment.dataUrl);
+    expect(screen.getByText('В ответ Друг')).toBeVisible();
   });
 
   it('edits an own message and marks rendered edits', async () => {
@@ -281,13 +316,26 @@ describe('RealMessages replies and editing', () => {
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[edited]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={onEdit} />);
 
     expect(screen.getByText('изменено')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Редактировать сообщение' }));
+    fireEvent.contextMenu(screen.getByText('Текст с опечаткой').closest('article')!);
+    await user.click(screen.getByRole('menuitem', { name: 'Редактировать' }));
     const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
     await user.clear(composer);
     await user.type(composer, 'Исправленный текст');
     await user.click(screen.getByRole('button', { name: 'Сохранить изменения' }));
 
     expect(onEdit).toHaveBeenCalledWith('own-editable', 'Исправленный текст');
+  });
+});
+
+describe('RealMessages popover menus', () => {
+  it('closes the details menu after clicking outside it', async () => {
+    const user = userEvent.setup();
+    renderChat();
+
+    await user.click(screen.getByRole('button', { name: 'Подробнее' }));
+    expect(screen.getByRole('menu')).toBeVisible();
+    fireEvent.pointerDown(screen.getByRole('textbox', { name: 'Сообщение в Друг' }));
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 });
 

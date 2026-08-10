@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RealMessages } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const callMedia = vi.hoisted(() => ({ screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), conversationIds: [] as string[] }));
+const callMedia = vi.hoisted(() => ({ screenStream: null as MediaStream | null, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, object> }));
 
 vi.mock('./hooks/useVoiceCall', () => ({
   useVoiceCall: (conversationId: string) => {
@@ -12,7 +12,7 @@ vi.mock('./hooks/useVoiceCall', () => ({
     return ({
     state: 'active', muted: false, deafened: false, participants: callMedia.participants, error: '', incomingFrom: null,
     cameraStream: null, screenStream: callMedia.screenStream, remoteVideoStreams: [], remoteMedia: {}, remoteVoiceStates: {}, localSpeaking: callMedia.localSpeaking, speakingUsers: {},
-    participantVolumes: {}, screenVolumes: {}, setParticipantVolume: callMedia.setParticipantVolume, setScreenVolume: vi.fn(),
+    participantVolumes: {}, screenVolumes: {}, diagnostics: callMedia.diagnostics, setParticipantVolume: callMedia.setParticipantVolume, setScreenVolume: vi.fn(),
     call: vi.fn(), accept: vi.fn(), decline: vi.fn(), leave: vi.fn(), toggleMute: vi.fn(), toggleDeafen: vi.fn(),
     toggleCamera: vi.fn(), toggleScreen: vi.fn(), shareScreen: vi.fn(), stopScreen: vi.fn(), updateScreenQuality: vi.fn(),
     });
@@ -28,6 +28,7 @@ beforeEach(() => {
   callMedia.screenStream = null;
   callMedia.localSpeaking = false;
   callMedia.participants = [];
+  callMedia.diagnostics = {};
   callMedia.setParticipantVolume.mockReset();
   callMedia.conversationIds = [];
   window.localStorage.clear();
@@ -47,10 +48,22 @@ describe('call layout', () => {
 
   it('highlights the participant while their microphone carries speech', async () => {
     callMedia.localSpeaking = true;
+    callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'good', roundTripTimeMs: 42 } };
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
     await waitFor(() => expect(container.querySelector('.mova-call-tile.is-speaking')).toBeInTheDocument());
     expect(container.querySelector('.mova-call-tile.is-speaking')).toHaveAttribute('data-speaking', 'true');
+  });
+
+  it('shows connection quality as bars with latency only', async () => {
+    callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'fair', roundTripTimeMs: 146 } };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(await screen.findByText('Задержка 146 мс')).toBeVisible();
+    const indicator = container.querySelector('.mova-network-quality');
+    expect(indicator).toHaveClass('is-fair');
+    expect(indicator?.querySelectorAll('.mova-network-bars > i')).toHaveLength(4);
+    expect(screen.queryByText(/Потери|джиттер|Хорошая сеть|Средняя сеть|Слабая сеть/)).not.toBeInTheDocument();
   });
 
   it('does not highlight a screen share when its owner speaks', async () => {

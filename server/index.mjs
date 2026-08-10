@@ -141,7 +141,12 @@ function messageDto(message) {
             id: replyMessage.id,
             authorId: replyMessage.authorId,
             content: replyMessage.content,
-            ...(replyMessage.attachment ? { attachmentName: replyMessage.attachment.name } : {}),
+            ...(replyMessage.attachment
+              ? {
+                  attachmentName: replyMessage.attachment.name,
+                  attachment: replyMessage.attachment,
+                }
+              : {}),
             author: publicUser(replyAuthor),
           },
         }

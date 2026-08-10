@@ -29,6 +29,7 @@ export interface MessageReply {
   authorId: string;
   content: string;
   attachmentName?: string;
+  attachment?: MessageAttachment;
   author: AppUser;
 }
 export interface AppMessage {
