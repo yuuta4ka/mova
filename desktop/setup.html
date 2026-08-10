@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Подключение Mova</title>
+    <style>
+      :root { color-scheme: dark; font-family: Manrope, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { min-height:100vh;margin:0;display:grid;place-items:center;padding:32px;color:#eef3f5;background:radial-gradient(800px 580px at 18% 12%,rgba(88,206,189,.16),transparent 65%),radial-gradient(700px 500px at 90% 90%,rgba(140,108,225,.13),transparent 65%),#080c12; }
+      main { width:min(480px,100%);padding:34px;background:rgba(18,25,34,.84);border:1px solid rgba(228,237,250,.1);border-radius:28px;box-shadow:0 30px 90px rgba(0,0,0,.42);backdrop-filter:blur(24px); }
+      .logo { display:grid;place-items:center;width:58px;height:58px;margin-bottom:22px;color:#10201f;background:linear-gradient(145deg,#97eade,#58cebd);border-radius:19px;font-size:24px;font-weight:900;box-shadow:0 0 35px rgba(93,226,211,.18); }
+      h1 { margin:0;font-size:29px;letter-spacing:-.045em; }
+      p { margin:10px 0 26px;color:#8d99a8;font-size:14px;line-height:1.55; }
+      label { display:grid;gap:8px;color:#b8c0ca;font-size:12px;font-weight:700; }
+      input { width:100%;height:50px;padding:0 14px;color:#f1f5f6;background:rgba(3,7,12,.48);border:1px solid rgba(228,237,250,.11);border-radius:14px;outline:0;font-size:14px; }
+      input:focus { border-color:rgba(93,226,211,.42);box-shadow:0 0 0 4px rgba(93,226,211,.08); }
+      button { width:100%;height:50px;margin-top:16px;color:#10201f;background:linear-gradient(145deg,#9cece0,#59cebd);border:0;border-radius:14px;font-weight:850;cursor:pointer; }
+      button:disabled { opacity:.6;cursor:wait; }
+      #error { min-height:18px;margin:11px 2px 0;color:#ff9aaa;font-size:12px; }
+      small { display:block;margin-top:18px;color:#667281;font-size:11px;line-height:1.5; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="logo">M</div>
+      <h1>Подключить Mova</h1>
+      <p>Введите публичный адрес вашей Mova на Amvera. Он сохранится только на этом компьютере.</p>
+      <form id="form">
+        <label>
+          Адрес сервера
+          <input id="url" type="url" inputmode="url" placeholder="https://mova.example.com" required autofocus />
+        </label>
+        <button id="submit" type="submit">Открыть Mova</button>
+        <div id="error" role="alert"></div>
+      </form>
+      <small>Адрес должен начинаться с https://. Позже его можно изменить через меню Mova.</small>
+    </main>
+    <script>
+      const form = document.querySelector('#form');
+      const input = document.querySelector('#url');
+      const button = document.querySelector('#submit');
+      const error = document.querySelector('#error');
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        error.textContent = '';
+        button.disabled = true;
+        try {
+          await window.movaDesktop.saveUrl(input.value);
+        } catch (reason) {
+          error.textContent = (reason?.message || 'Не удалось сохранить адрес.').replace(/^Error invoking remote method .*?: Error: /, '');
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

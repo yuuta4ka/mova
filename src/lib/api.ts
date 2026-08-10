@@ -18,7 +18,8 @@ export interface MessageAttachment {
   name: string;
   type: string;
   size: number;
-  dataUrl: string;
+  dataUrl?: string;
+  url?: string;
 }
 export interface MessageReadReceipt {
   userId: string;
@@ -66,10 +67,11 @@ export interface RtcConfig {
 }
 
 const tokenKey = 'mova-session';
+const sessionStore = () => (navigator.userAgent.includes('MovaDesktop/') ? localStorage : sessionStorage);
 export const session = {
-  get: () => sessionStorage.getItem(tokenKey),
-  set: (token: string) => sessionStorage.setItem(tokenKey, token),
-  clear: () => sessionStorage.removeItem(tokenKey),
+  get: () => sessionStore().getItem(tokenKey),
+  set: (token: string) => sessionStore().setItem(tokenKey, token),
+  clear: () => sessionStore().removeItem(tokenKey),
 };
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -85,6 +87,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || 'Не удалось выполнить запрос');
   return result;
+}
+
+async function uploadAttachment(attachment: MessageAttachment): Promise<MessageAttachment> {
+  if (attachment.url) return attachment;
+  if (!attachment.dataUrl) throw new Error('Не удалось подготовить файл');
+  const token = session.get();
+  const contents = await fetch(attachment.dataUrl).then((response) => response.blob());
+  const response = await fetch('/api/uploads', {
+    method: 'POST',
+    headers: {
+      'content-type': attachment.type || contents.type || 'application/octet-stream',
+      'x-mova-file-name': encodeURIComponent(attachment.name),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: contents,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Не удалось загрузить файл');
+  return result.attachment;
 }
 
 export const api = {
@@ -117,10 +138,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
   messages: (conversationId: string) => request<{ messages: AppMessage[] }>(`/api/conversations/${conversationId}/messages`),
-  sendMessage: (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string) =>
+  sendMessage: async (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string) =>
     request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content, attachment, replyToId }),
+      body: JSON.stringify({ content, attachment: attachment ? await uploadAttachment(attachment) : undefined, replyToId }),
     }),
   editMessage: (conversationId: string, messageId: string, content: string) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
   markConversationRead: (conversationId: string, throughMessageId: string) =>

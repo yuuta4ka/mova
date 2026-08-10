@@ -54,7 +54,7 @@ try {
       socket.on('framesent', ({ payload }) => frames.push(`sent:${String(payload)}`));
       socket.on('framereceived', ({ payload }) => { frames.push(`received:${String(payload)}`); if (String(payload).includes('"type":"ready"')) resolve(); });
     }));
-    await page.goto(base);
+    await page.goto(`${base}/app`);
     await page.getByRole('button', { name: 'Позвонить' }).waitFor();
     await Promise.race([realtimeReady, new Promise((_, reject) => setTimeout(() => reject(new Error('Realtime socket was not ready')), 5_000))]);
     return { context, page, frames };

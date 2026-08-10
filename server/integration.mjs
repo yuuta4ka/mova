@@ -42,6 +42,20 @@ const call = async (path, method = 'GET', data, token) => {
   if (!response.ok) throw new Error(JSON.stringify(result));
   return result;
 };
+const upload = async (name, type, contents, token) => {
+  const response = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers: {
+      'content-type': type,
+      'x-mova-file-name': encodeURIComponent(name),
+      authorization: `Bearer ${token}`,
+    },
+    body: contents,
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(JSON.stringify(result));
+  return result.attachment;
+};
 const openSocket = (token) =>
   new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
@@ -108,20 +122,19 @@ try {
   const conversation = await call('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
   const rtcConfig = await call('/api/rtc-config', 'GET', undefined, first.token);
   if (rtcConfig.iceServers.length !== 2 || rtcConfig.iceServers[1].username !== 'integration-user' || rtcConfig.iceServers[1].urls.length !== 2) throw new Error('Runtime TURN configuration was not returned');
+  const uploadedAttachment = await upload('mova-test.txt', 'text/plain', 'mova test', first.token);
   const attachmentMessage = await call(
     `/api/conversations/${conversation.conversation.id}/messages`,
     'POST',
     {
       content: 'Файл',
-      attachment: {
-        name: 'mova-test.txt',
-        type: 'text/plain',
-        size: 9,
-        dataUrl: 'data:text/plain;base64,bW92YSB0ZXN0',
-      },
+      attachment: uploadedAttachment,
     },
     first.token,
   );
+  const storedAttachmentResponse = await fetch(`${base}${attachmentMessage.message.attachment.url}`);
+  const storedAttachmentContents = await storedAttachmentResponse.text();
+  if (!storedAttachmentResponse.ok || storedAttachmentContents !== 'mova test' || attachmentMessage.message.attachment.dataUrl) throw new Error('Binary attachment was not stored outside the database');
   const firstSocket = await openSocket(first.token);
   const secondSocket = await openSocket(second.token);
   const presencePromise = waitFor(secondSocket, 'presence:update');
@@ -245,6 +258,7 @@ try {
       latestPreview: conversationOverview.conversations[0].lastMessage.content,
       rtcIceServers: rtcConfig.iceServers.length,
       attachment: attachmentMessage.message.attachment.name,
+      attachmentUrl: attachmentMessage.message.attachment.url.startsWith('/uploads/'),
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id && replyEvent.message.replyTo.attachment.name === 'mova-test.txt',
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),
       typing: typingStarted.active === true && typingStopped.active === false,

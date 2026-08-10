@@ -1,14 +1,18 @@
 import { createServer } from 'node:http';
-import { randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomBytes, scrypt, timingSafeEqual, createHmac } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
+import { openDatabase, resolveDataPaths } from './database.mjs';
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(serverRoot, '..');
 const publicRoot = resolve(projectRoot, 'dist');
-const databasePath = process.env.MOVA_DATABASE_PATH ? resolve(process.env.MOVA_DATABASE_PATH) : process.env.AMVERA ? '/data/db.json' : resolve(projectRoot, '.mova-data/db.json');
+const dataPaths = resolveDataPaths(projectRoot);
 const port = Number(process.env.PORT || process.env.MOVA_PORT || 8787);
 const host = process.env.HOST || '0.0.0.0';
 const secret = process.env.MOVA_SESSION_SECRET || 'mova-local-development-secret';
@@ -16,6 +20,12 @@ const clients = new Map();
 const voiceRooms = new Map();
 const activeCalls = new Map();
 const callCleanupTimers = new Map();
+const hashAsync = promisify(scrypt);
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+const metrics = { requests: 0, errors: 0, requestDurationMs: 0, rejected: 0, wsMessages: 0 };
+const rateLimits = new Map();
+let database;
 
 const defaultIceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
 function rtcIceServers() {
@@ -43,32 +53,10 @@ function rtcIceServers() {
     : defaultIceServers;
 }
 
-const emptyDatabase = {
-  users: [],
-  conversations: [],
-  memberships: [],
-  messages: [],
-};
-let database = emptyDatabase;
-
-async function loadDatabase() {
-  await mkdir(dirname(databasePath), { recursive: true });
-  try {
-    database = JSON.parse(await readFile(databasePath, 'utf8'));
-  } catch {
-    database = structuredClone(emptyDatabase);
-    await persist();
-  }
-}
-
-let writeQueue = Promise.resolve();
-function persist() {
-  writeQueue = writeQueue.then(() => writeFile(databasePath, JSON.stringify(database, null, 2)));
-  return writeQueue;
-}
-
 const id = (prefix) => `${prefix}_${randomBytes(10).toString('hex')}`;
-const publicUser = ({ passwordHash, ...user }) => {
+const publicUser = (storedUser) => {
+  if (!storedUser) return null;
+  const { passwordHash, ...user } = storedUser;
   const normalized = user.presence === 'dnd' && user.dndUntil && user.dndUntil !== 'forever' && new Date(user.dndUntil).getTime() <= Date.now() ? { ...user, presence: 'online', dndUntil: null } : user;
   const connected = Boolean(clients.get(user.id)?.size);
   return {
@@ -80,13 +68,15 @@ const normalizeEmail = (email) =>
   String(email || '')
     .trim()
     .toLowerCase();
-function hashPassword(password, salt = randomBytes(16).toString('hex')) {
-  return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
+async function hashPassword(password, salt = randomBytes(16).toString('hex')) {
+  return `${salt}:${Buffer.from(await hashAsync(password, salt, 64)).toString('hex')}`;
 }
-function verifyPassword(password, stored) {
+async function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(':');
-  const actual = scryptSync(password, salt, 64);
-  return timingSafeEqual(actual, Buffer.from(hash, 'hex'));
+  const actual = Buffer.from(await hashAsync(password, salt, 64));
+  const expected = Buffer.from(hash, 'hex');
+  if (actual.length !== expected.length) return false;
+  return timingSafeEqual(actual, expected);
 }
 function createToken(userId) {
   const payload = Buffer.from(JSON.stringify({ userId, exp: Date.now() + 1000 * 60 * 60 * 24 * 30 })).toString('base64url');
@@ -100,7 +90,7 @@ function tokenUser(token) {
     if (!timingSafeEqual(expected, Buffer.from(signature, 'base64url'))) return null;
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
     if (data.exp < Date.now()) return null;
-    return database.users.find((user) => user.id === data.userId) || null;
+    return database.getUserById(data.userId);
   } catch {
     return null;
   }
@@ -114,27 +104,58 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 async function body(request) {
-  let raw = '';
+  const chunks = [];
+  let length = 0;
   for await (const chunk of request) {
-    raw += chunk;
-    if (raw.length > 12_000_000) throw new Error('Payload too large');
+    length += chunk.length;
+    if (length > 12_000_000) throw Object.assign(new Error('Payload too large'), { statusCode: 413 });
+    chunks.push(chunk);
   }
-  return raw ? JSON.parse(raw) : {};
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw Object.assign(new Error('Некорректный JSON'), { statusCode: 400 });
+  }
+}
+async function binaryBody(request, maximum = 8_000_000) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    if (length > maximum) throw Object.assign(new Error('Файл должен быть меньше 8 МБ'), { statusCode: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+function allowRequest(key, maximum, intervalMs) {
+  const now = Date.now();
+  const current = rateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    rateLimits.set(key, { count: 1, resetAt: now + intervalMs });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= maximum;
+}
+function requestIp(request) {
+  return String(request.headers['x-forwarded-for'] || request.socket.remoteAddress || 'unknown').split(',')[0].trim();
 }
 function auth(request) {
   return tokenUser(request.headers.authorization?.replace(/^Bearer\s+/i, '') || '');
 }
 function isMember(userId, conversationId) {
-  return database.memberships.some((membership) => membership.userId === userId && membership.conversationId === conversationId);
+  return database.isMember(userId, conversationId);
 }
-function messageDto(message) {
-  const replyMessage = message.replyToId ? database.messages.find((item) => item.id === message.replyToId && item.conversationId === message.conversationId) : null;
-  const replyAuthor = replyMessage ? database.users.find((item) => item.id === replyMessage.authorId) : null;
+function messageDto(message, readStates = database.readStates(message.conversationId)) {
+  const replyMessage = message.replyToId ? database.getMessage(message.replyToId, message.conversationId) : null;
+  const replyAuthor = replyMessage ? database.getUserById(replyMessage.authorId) : null;
   return {
     ...message,
     sentAt: message.sentAt || message.createdAt,
-    readBy: Array.isArray(message.readBy) ? message.readBy : [],
-    author: publicUser(database.users.find((item) => item.id === message.authorId)),
+    readBy: readStates.filter((receipt) => receipt.userId !== message.authorId && receipt.readAt >= message.createdAt),
+    author: publicUser(database.getUserById(message.authorId)),
     ...(replyMessage && replyAuthor
       ? {
           replyTo: {
@@ -154,12 +175,8 @@ function messageDto(message) {
   };
 }
 function conversationDto(conversation, userId) {
-  const memberIds = database.memberships.filter((item) => item.conversationId === conversation.id).map((item) => item.userId);
-  const members = memberIds
-    .map((memberId) => database.users.find((user) => user.id === memberId))
-    .filter(Boolean)
-    .map(publicUser);
-  const storedLastMessage = database.messages.filter((message) => message.conversationId === conversation.id).at(-1) || null;
+  const members = database.members(conversation.id).map(publicUser);
+  const storedLastMessage = database.lastMessage(conversation.id);
   const lastMessage = storedLastMessage
     ? {
         ...storedLastMessage,
@@ -175,11 +192,17 @@ function conversationDto(conversation, userId) {
   };
 }
 function broadcastToConversation(conversationId, event, exceptUserId) {
-  const memberIds = database.memberships.filter((item) => item.conversationId === conversationId).map((item) => item.userId);
-  for (const userId of memberIds) if (userId !== exceptUserId) for (const socket of clients.get(userId) || []) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+  const payload = JSON.stringify(event);
+  for (const userId of database.memberIds(conversationId)) if (userId !== exceptUserId) for (const socket of clients.get(userId) || []) safeSocketSend(socket, payload);
 }
 function broadcastAll(event, exceptUserId) {
-  for (const [userId, sockets] of clients) if (userId !== exceptUserId) for (const socket of sockets) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+  const payload = JSON.stringify(event);
+  for (const [userId, sockets] of clients) if (userId !== exceptUserId) for (const socket of sockets) safeSocketSend(socket, payload);
+}
+function safeSocketSend(socket, payload) {
+  if (socket.readyState !== WebSocket.OPEN) return;
+  if (socket.bufferedAmount > 2_000_000) return socket.close(4008, 'Client too slow');
+  socket.send(payload);
 }
 function roomUserIds(conversationId) {
   return [...(voiceRooms.get(conversationId)?.keys() || [])];
@@ -192,7 +215,7 @@ function callStateFor(conversationId, socket) {
     status: active?.status || 'idle',
     ...(active
       ? {
-          from: publicUser(database.users.find((item) => item.id === active.fromUserId)),
+          from: publicUser(database.getUserById(active.fromUserId)),
           createdAt: new Date(active.createdAt).toISOString(),
           ...(active.startedAt ? { startedAt: new Date(active.startedAt).toISOString() } : {}),
         }
@@ -245,8 +268,7 @@ function finishCall(conversationId, fallbackUserId = '') {
     sentAt: createdAt,
     readBy: [],
   };
-  database.messages.push(message);
-  void persist();
+  database.insertMessage(message);
   broadcastToConversation(conversationId, { type: 'message:new', message: messageDto(message) });
 }
 function scheduleCallCleanup(conversationId, delay = 60_000) {
@@ -263,7 +285,12 @@ async function handleApi(request, response) {
   try {
     const url = new URL(request.url, 'http://localhost');
     if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
+    if (request.method === 'GET' && url.pathname === '/api/ready') {
+      database.sqlite.prepare('SELECT 1').get();
+      return json(response, 200, { ok: true, storage: 'sqlite', journalMode: 'wal' });
+    }
     if (request.method === 'POST' && url.pathname === '/api/register') {
+      if (!allowRequest(`register:${requestIp(request)}`, 5, 60_000)) throw Object.assign(new Error('Слишком много попыток регистрации'), { statusCode: 429 });
       const data = await body(request);
       const email = normalizeEmail(data.email);
       const name = String(data.name || '').trim();
@@ -272,7 +299,7 @@ async function handleApi(request, response) {
         return json(response, 400, {
           error: 'Укажите имя, корректную почту и пароль от 8 символов',
         });
-      if (database.users.some((user) => user.email === email))
+      if (database.getUserByEmail(email))
         return json(response, 409, {
           error: 'Пользователь с такой почтой уже существует',
         });
@@ -285,13 +312,13 @@ async function handleApi(request, response) {
       }`;
       let handle = baseHandle;
       let suffix = 1;
-      while (database.users.some((item) => item.handle === handle)) handle = `${baseHandle}${suffix++}`;
+      while (database.getUserByHandle(handle)) handle = `${baseHandle}${suffix++}`;
       const user = {
         id: id('usr'),
         name,
         email,
         handle,
-        color: colors[database.users.length % colors.length],
+        color: colors[database.count('users') % colors.length],
         presence: 'online',
         dndUntil: null,
         bio: '',
@@ -299,20 +326,25 @@ async function handleApi(request, response) {
         bannerDataUrl: '',
         activity: null,
         lastActiveAt: new Date().toISOString(),
-        passwordHash: hashPassword(password),
+        passwordHash: await hashPassword(password),
         createdAt: new Date().toISOString(),
       };
-      database.users.push(user);
-      await persist();
+      try {
+        database.insertUser(user);
+      } catch (error) {
+        if (String(error?.code || '').includes('CONSTRAINT')) return json(response, 409, { error: 'Пользователь с такой почтой или юзернеймом уже существует' });
+        throw error;
+      }
       return json(response, 201, {
         token: createToken(user.id),
         user: publicUser(user),
       });
     }
     if (request.method === 'POST' && url.pathname === '/api/login') {
+      if (!allowRequest(`login:${requestIp(request)}`, 10, 60_000)) throw Object.assign(new Error('Слишком много попыток входа'), { statusCode: 429 });
       const data = await body(request);
-      const user = database.users.find((item) => item.email === normalizeEmail(data.email));
-      if (!user || !verifyPassword(String(data.password || ''), user.passwordHash)) return json(response, 401, { error: 'Неверная почта или пароль' });
+      const user = database.getUserByEmail(normalizeEmail(data.email));
+      if (!user || !(await verifyPassword(String(data.password || ''), user.passwordHash))) return json(response, 401, { error: 'Неверная почта или пароль' });
       return json(response, 200, {
         token: createToken(user.id),
         user: publicUser(user),
@@ -320,11 +352,21 @@ async function handleApi(request, response) {
     }
     const user = auth(request);
     if (!user) return json(response, 401, { error: 'Требуется вход' });
+    if (request.method === 'POST' && url.pathname === '/api/uploads') {
+      if (!allowRequest(`upload:${user.id}`, 30, 60_000)) throw Object.assign(new Error('Слишком много загрузок'), { statusCode: 429 });
+      const type = String(request.headers['content-type'] || 'application/octet-stream').split(';')[0].slice(0, 120);
+      let name = 'Файл';
+      try {
+        name = decodeURIComponent(String(request.headers['x-mova-file-name'] || 'Файл')).slice(0, 180);
+      } catch {}
+      const attachment = await database.storeBuffer(await binaryBody(request), name, type, user.id);
+      return json(response, 201, { attachment });
+    }
     if (request.method === 'GET' && url.pathname === '/api/rtc-config') return json(response, 200, { iceServers: rtcIceServers() });
     if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user: publicUser(user) });
     if (request.method === 'GET' && url.pathname === '/api/users')
       return json(response, 200, {
-        users: database.users.filter((item) => item.id !== user.id).map(publicUser),
+        users: database.listUsers(user.id).map(publicUser),
       });
     if (request.method === 'PATCH' && url.pathname === '/api/profile') {
       const data = await body(request);
@@ -340,17 +382,20 @@ async function handleApi(request, response) {
         return json(response, 400, {
           error: 'Юзернейм начинается с @ и содержит 3–24 латинских символа',
         });
-      if (database.users.some((item) => item.id !== user.id && item.handle === handle)) return json(response, 409, { error: 'Этот юзернейм уже занят' });
-      const avatarDataUrl = String(data.avatarDataUrl || '');
-      const bannerDataUrl = String(data.bannerDataUrl || '');
-      if ((avatarDataUrl && !avatarDataUrl.startsWith('data:image/')) || avatarDataUrl.length > 700_000)
+      const handleOwner = database.getUserByHandle(handle);
+      if (handleOwner && handleOwner.id !== user.id) return json(response, 409, { error: 'Этот юзернейм уже занят' });
+      const rawAvatar = String(data.avatarDataUrl || '');
+      const rawBanner = String(data.bannerDataUrl || '');
+      if ((rawAvatar && !rawAvatar.startsWith('data:image/') && !rawAvatar.startsWith('/uploads/')) || rawAvatar.length > 8_000_000)
         return json(response, 400, {
           error: 'Аватар слишком большой или имеет неверный формат',
         });
-      if ((bannerDataUrl && !bannerDataUrl.startsWith('data:image/')) || bannerDataUrl.length > 1_800_000)
+      if ((rawBanner && !rawBanner.startsWith('data:image/') && !rawBanner.startsWith('/uploads/')) || rawBanner.length > 8_000_000)
         return json(response, 400, {
           error: 'Шапка слишком большая или имеет неверный формат',
         });
+      const avatarDataUrl = await database.normalizeProfileImage(rawAvatar, `${user.id}-avatar`, user.id);
+      const bannerDataUrl = await database.normalizeProfileImage(rawBanner, `${user.id}-banner`, user.id);
       Object.assign(user, {
         name,
         handle,
@@ -366,7 +411,7 @@ async function handleApi(request, response) {
             }
           : null,
       });
-      await persist();
+      database.updateUser(user);
       const dto = publicUser(user);
       broadcastAll({ type: 'profile:update', user: dto }, user.id);
       return json(response, 200, { user: dto });
@@ -378,14 +423,13 @@ async function handleApi(request, response) {
       user.presence = data.presence;
       user.dndUntil = data.presence === 'dnd' ? data.dndUntil || 'forever' : null;
       user.lastActiveAt = new Date().toISOString();
-      await persist();
+      database.updateUser(user);
       const dto = publicUser(user);
       broadcastAll({ type: 'presence:update', user: dto }, user.id);
       return json(response, 200, { user: dto });
     }
     if (request.method === 'GET' && url.pathname === '/api/conversations') {
-      const ids = database.memberships.filter((item) => item.userId === user.id).map((item) => item.conversationId);
-      const conversations = database.conversations.filter((item) => ids.includes(item.id)).map((item) => conversationDto(item, user.id));
+      const conversations = database.listConversations(user.id).map((item) => conversationDto(item, user.id));
       return json(response, 200, {
         conversations: conversations.sort(
           (left, right) => new Date(right.lastMessage?.createdAt || right.createdAt).getTime() - new Date(left.lastMessage?.createdAt || left.createdAt).getTime(),
@@ -394,17 +438,9 @@ async function handleApi(request, response) {
     }
     if (request.method === 'POST' && url.pathname === '/api/conversations') {
       const data = await body(request);
-      const requestedIds = [...new Set((data.memberIds || []).filter((memberId) => database.users.some((item) => item.id === memberId && item.id !== user.id)))];
+      const requestedIds = [...new Set((data.memberIds || []).filter((memberId) => database.getUserById(memberId) && memberId !== user.id))];
       if (data.kind === 'direct' && requestedIds.length === 1) {
-        const existing = database.conversations.find(
-          (conversation) =>
-            conversation.kind === 'direct' &&
-            database.memberships
-              .filter((item) => item.conversationId === conversation.id)
-              .map((item) => item.userId)
-              .sort()
-              .join() === [user.id, requestedIds[0]].sort().join(),
-        );
+        const existing = database.findDirectConversation(user.id, requestedIds[0]);
         if (existing)
           return json(response, 200, {
             conversation: conversationDto(existing, user.id),
@@ -424,14 +460,7 @@ async function handleApi(request, response) {
         createdBy: user.id,
         createdAt: new Date().toISOString(),
       };
-      database.conversations.push(conversation);
-      for (const userId of [user.id, ...requestedIds])
-        database.memberships.push({
-          conversationId: conversation.id,
-          userId,
-          joinedAt: new Date().toISOString(),
-        });
-      await persist();
+      database.createConversation(conversation, [user.id, ...requestedIds]);
       const dto = conversationDto(conversation, user.id);
       broadcastToConversation(conversation.id, {
         type: 'conversation:new',
@@ -443,20 +472,10 @@ async function handleApi(request, response) {
     if (readMatch && !isMember(user.id, readMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (readMatch && request.method === 'POST') {
       const data = await body(request);
-      const messages = database.messages.filter((message) => message.conversationId === readMatch[1]);
-      const throughIndex = messages.findIndex((message) => message.id === data.throughMessageId);
-      if (throughIndex < 0) return json(response, 404, { error: 'Сообщение не найдено' });
       const readAt = new Date().toISOString();
-      const messageIds = [];
-      for (const message of messages.slice(0, throughIndex + 1)) {
-        if (message.authorId === user.id) continue;
-        if (!Array.isArray(message.readBy)) message.readBy = [];
-        if (message.readBy.some((receipt) => receipt.userId === user.id)) continue;
-        message.readBy.push({ userId: user.id, readAt });
-        messageIds.push(message.id);
-      }
+      const messageIds = database.markRead(readMatch[1], user.id, String(data.throughMessageId || ''), readAt);
+      if (!messageIds) return json(response, 404, { error: 'Сообщение не найдено' });
       if (messageIds.length) {
-        await persist();
         broadcastToConversation(
           readMatch[1],
           {
@@ -478,33 +497,22 @@ async function handleApi(request, response) {
     }
     const messageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (messageMatch && !isMember(user.id, messageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
-    if (messageMatch && request.method === 'GET')
-      return json(response, 200, {
-        messages: database.messages
-          .filter((message) => message.conversationId === messageMatch[1])
-          .slice(-200)
-          .map(messageDto),
-      });
+    if (messageMatch && request.method === 'GET') {
+      const readStates = database.readStates(messageMatch[1]);
+      return json(response, 200, { messages: database.messages(messageMatch[1], 200).map((message) => messageDto(message, readStates)) });
+    }
     if (messageMatch && request.method === 'POST') {
+      if (!allowRequest(`message:${user.id}`, 120, 60_000)) throw Object.assign(new Error('Слишком много сообщений'), { statusCode: 429 });
       const data = await body(request);
       const content = String(data.content || '').trim();
       const rawAttachment = data.attachment;
-      const attachment =
-        rawAttachment && typeof rawAttachment === 'object'
-          ? {
-              name: String(rawAttachment.name || 'Файл').slice(0, 180),
-              type: String(rawAttachment.type || 'application/octet-stream').slice(0, 120),
-              size: Number(rawAttachment.size || 0),
-              dataUrl: String(rawAttachment.dataUrl || ''),
-            }
-          : undefined;
+      const attachment = rawAttachment && typeof rawAttachment === 'object' ? await database.normalizeAttachment(rawAttachment, user.id) : undefined;
       if ((!content && !attachment) || content.length > 4000)
         return json(response, 400, {
           error: 'Сообщение пустое или слишком длинное',
         });
-      if (attachment && (attachment.size > 8_000_000 || !attachment.dataUrl.startsWith('data:') || attachment.dataUrl.length > 11_000_000)) return json(response, 400, { error: 'Файл должен быть меньше 8 МБ' });
       const replyToId = String(data.replyToId || '');
-      if (replyToId && !database.messages.some((item) => item.id === replyToId && item.conversationId === messageMatch[1]))
+      if (replyToId && !database.getMessage(replyToId, messageMatch[1]))
         return json(response, 400, {
           error: 'Сообщение для ответа не найдено',
         });
@@ -520,8 +528,7 @@ async function handleApi(request, response) {
         sentAt: createdAt,
         readBy: [],
       };
-      database.messages.push(message);
-      await persist();
+      database.insertMessage(message);
       const dto = messageDto(message);
       broadcastToConversation(message.conversationId, {
         type: 'message:new',
@@ -532,7 +539,7 @@ async function handleApi(request, response) {
     const editMessageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/);
     if (editMessageMatch && !isMember(user.id, editMessageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (editMessageMatch && request.method === 'PATCH') {
-      const message = database.messages.find((item) => item.id === editMessageMatch[2] && item.conversationId === editMessageMatch[1]);
+      const message = database.getMessage(editMessageMatch[2], editMessageMatch[1]);
       if (!message) return json(response, 404, { error: 'Сообщение не найдено' });
       if (message.authorId !== user.id)
         return json(response, 403, {
@@ -546,7 +553,7 @@ async function handleApi(request, response) {
         });
       message.content = content;
       message.editedAt = new Date().toISOString();
-      await persist();
+      database.updateMessage(message);
       const dto = messageDto(message);
       broadcastToConversation(message.conversationId, {
         type: 'message:update',
@@ -556,8 +563,10 @@ async function handleApi(request, response) {
     }
     return json(response, 404, { error: 'Не найдено' });
   } catch (error) {
-    console.error(error);
-    return json(response, 500, { error: 'Внутренняя ошибка сервера' });
+    const status = Number(error?.statusCode) || 500;
+    if (status >= 500) console.error(error);
+    if (status === 429) metrics.rejected += 1;
+    return json(response, status, { error: status >= 500 ? 'Внутренняя ошибка сервера' : error.message });
   }
 }
 
@@ -574,9 +583,41 @@ const contentTypes = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
 };
+
+async function serveUpload(request, response, pathname) {
+  if (!['GET', 'HEAD'].includes(request.method || '')) return json(response, 405, { error: 'Метод не поддерживается' });
+  let fileName;
+  try {
+    fileName = decodeURIComponent(pathname.slice('/uploads/'.length));
+  } catch {
+    return json(response, 400, { error: 'Некорректный адрес' });
+  }
+  if (!fileName || fileName.includes('/') || fileName.includes('\\') || fileName.startsWith('.')) return json(response, 403, { error: 'Нет доступа' });
+  const filePath = resolve(dataPaths.uploadsPath, fileName);
+  if (!filePath.startsWith(`${resolve(dataPaths.uploadsPath)}${sep}`)) return json(response, 403, { error: 'Нет доступа' });
+  try {
+    const info = await stat(filePath);
+    const extension = extname(filePath).toLowerCase();
+    const inlineImage = ['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'].includes(extension);
+    response.writeHead(200, {
+      'content-type': inlineImage ? contentTypes[extension] : 'application/octet-stream',
+      'content-length': info.size,
+      'cache-control': 'public, max-age=31536000, immutable',
+      'x-content-type-options': 'nosniff',
+      'content-disposition': `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    });
+    if (request.method === 'HEAD') return response.end();
+    createReadStream(filePath).on('error', () => response.destroy()).pipe(response);
+  } catch {
+    return json(response, 404, { error: 'Файл не найден' });
+  }
+}
 
 async function serveFrontend(request, response) {
   if (!['GET', 'HEAD'].includes(request.method || '')) return json(response, 405, { error: 'Метод не поддерживается' });
@@ -614,6 +655,33 @@ async function serveFrontend(request, response) {
 
 function handleRequest(request, response) {
   const pathname = new URL(request.url, 'http://localhost').pathname;
+  const startedAt = performance.now();
+  metrics.requests += 1;
+  response.once('finish', () => {
+    metrics.requestDurationMs += performance.now() - startedAt;
+    if (response.statusCode >= 500) metrics.errors += 1;
+  });
+  if (pathname === '/metrics') {
+    const stats = database.stats();
+    const average = metrics.requests ? metrics.requestDurationMs / metrics.requests : 0;
+    response.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store' });
+    return response.end(
+      [
+        `mova_http_requests_total ${metrics.requests}`,
+        `mova_http_errors_total ${metrics.errors}`,
+        `mova_http_rejected_total ${metrics.rejected}`,
+        `mova_http_request_duration_average_ms ${average.toFixed(3)}`,
+        `mova_websocket_connections ${sockets?.clients?.size || 0}`,
+        `mova_websocket_messages_total ${metrics.wsMessages}`,
+        `mova_event_loop_delay_mean_ms ${(eventLoopDelay.mean / 1e6 || 0).toFixed(3)}`,
+        `mova_event_loop_delay_p99_ms ${(eventLoopDelay.percentile(99) / 1e6 || 0).toFixed(3)}`,
+        `mova_users ${stats.users}`,
+        `mova_conversations ${stats.conversations}`,
+        `mova_messages ${stats.messages}`,
+      ].join('\n') + '\n',
+    );
+  }
+  if (pathname.startsWith('/uploads/')) return serveUpload(request, response, pathname);
   return pathname.startsWith('/api/') ? handleApi(request, response) : serveFrontend(request, response);
 }
 
@@ -632,7 +700,7 @@ function leaveVoice(socket) {
     voiceRooms.delete(conversationId);
     finishCall(conversationId, socket.userId);
   } else if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(callStateFor(conversationId, socket)));
+    safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
   }
 }
 
@@ -645,18 +713,27 @@ function handleSocket(socket, request) {
   if (!clients.has(user.id)) clients.set(user.id, new Set());
   clients.get(user.id).add(socket);
   socket.typingConversationIds = new Set();
-  socket.send(JSON.stringify({ type: 'ready', user: publicUser(user) }));
+  safeSocketSend(socket, JSON.stringify({ type: 'ready', user: publicUser(user) }));
   socket.isAlive = true;
+  socket.rateWindowStartedAt = Date.now();
+  socket.rateWindowMessages = 0;
   socket.on('pong', () => {
     socket.isAlive = true;
   });
   if (firstConnection) broadcastAll({ type: 'presence:update', user: publicUser(user) }, user.id);
-  for (const conversationId of activeCalls.keys()) if (isMember(user.id, conversationId)) socket.send(JSON.stringify(callStateFor(conversationId, socket)));
+  for (const conversationId of activeCalls.keys()) if (isMember(user.id, conversationId)) safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
   socket.on('message', (raw) => {
     try {
+      metrics.wsMessages += 1;
+      if (Date.now() - socket.rateWindowStartedAt >= 10_000) {
+        socket.rateWindowStartedAt = Date.now();
+        socket.rateWindowMessages = 0;
+      }
+      socket.rateWindowMessages += 1;
+      if (socket.rateWindowMessages > 300) return socket.close(4008, 'Rate limit');
       const event = JSON.parse(raw.toString());
       if (event.type === 'heartbeat')
-        return socket.send(
+        return safeSocketSend(socket,
           JSON.stringify({
             type: 'heartbeat:ack',
             sentAt: Number(event.sentAt) || Date.now(),
@@ -678,7 +755,7 @@ function handleSocket(socket, request) {
           user.id,
         );
       }
-      if (event.type === 'call:sync') return socket.send(JSON.stringify(callStateFor(conversationId, socket)));
+      if (event.type === 'call:sync') return safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
       if (event.type === 'call:invite') {
         const createdAt = Date.now();
         activeCalls.set(conversationId, {
@@ -733,7 +810,7 @@ function handleSocket(socket, request) {
         const peers = [...room.keys()].filter((userId) => userId !== user.id);
         if (!room.has(user.id)) room.set(user.id, new Set());
         room.get(user.id).add(socket);
-        socket.send(JSON.stringify({ type: 'voice:peers', conversationId, peers }));
+        safeSocketSend(socket, JSON.stringify({ type: 'voice:peers', conversationId, peers }));
         return broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(user) }, user.id);
       }
       if (event.type === 'voice:leave') return leaveVoice(socket);
@@ -762,8 +839,13 @@ function handleSocket(socket, request) {
           },
           user.id,
         );
-      if (['voice:offer', 'voice:answer', 'voice:ice'].includes(event.type) && event.targetUserId) for (const targetSocket of clients.get(event.targetUserId) || []) if (targetSocket.readyState === WebSocket.OPEN) targetSocket.send(JSON.stringify({ ...event, fromUserId: user.id }));
-    } catch {}
+      if (['voice:offer', 'voice:answer', 'voice:ice'].includes(event.type) && event.targetUserId) {
+        const payload = JSON.stringify({ ...event, fromUserId: user.id });
+        for (const targetSocket of clients.get(event.targetUserId) || []) safeSocketSend(targetSocket, payload);
+      }
+    } catch (error) {
+      console.warn('Rejected WebSocket event:', error.message);
+    }
   });
   socket.on('close', () => {
     leaveVoice(socket);
@@ -775,17 +857,22 @@ function handleSocket(socket, request) {
     if (clients.get(user.id)?.size === 0) {
       clients.delete(user.id);
       user.lastActiveAt = new Date().toISOString();
-      void persist();
+      database.updateUser(user);
       broadcastAll({ type: 'presence:update', user: publicUser(user) }, user.id);
     }
   });
 }
 
-await loadDatabase();
+database = await openDatabase(dataPaths);
+await database.cleanupOrphanUploads();
+const uploadCleanupTimer = setInterval(() => void database.cleanupOrphanUploads().catch((error) => console.error('Upload cleanup failed:', error)), 6 * 60 * 60_000);
+uploadCleanupTimer.unref();
 const server = createServer(handleRequest);
-const sockets = new WebSocketServer({ noServer: true });
+const sockets = new WebSocketServer({ noServer: true, maxPayload: 256_000, perMessageDeflate: false });
 sockets.on('connection', handleSocket);
 const socketHeartbeat = setInterval(() => {
+  const now = Date.now();
+  for (const [key, item] of rateLimits) if (item.resetAt <= now) rateLimits.delete(key);
   for (const socket of sockets.clients) {
     if (socket.isAlive === false) {
       socket.terminate();
@@ -800,4 +887,27 @@ server.on('upgrade', (request, socket, head) => {
   if (!request.url?.startsWith('/ws')) return socket.destroy();
   sockets.handleUpgrade(request, socket, head, (webSocket) => sockets.emit('connection', webSocket, request));
 });
-server.listen(port, host, () => console.log(`Mova ready at http://${host}:${port}; data: ${databasePath}`));
+server.requestTimeout = 30_000;
+server.headersTimeout = 15_000;
+server.keepAliveTimeout = 5_000;
+server.listen(port, host, () => console.log(`Mova ready at http://${host}:${port}; data: ${dataPaths.sqlitePath}; uploads: ${dataPaths.uploadsPath}`));
+
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal}: shutting down`);
+  clearInterval(socketHeartbeat);
+  clearInterval(uploadCleanupTimer);
+  for (const timer of callCleanupTimers.values()) clearTimeout(timer);
+  for (const socket of sockets.clients) socket.close(1001, 'Server shutdown');
+  sockets.close();
+  server.close(() => {
+    eventLoopDelay.disable();
+    database.close();
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));

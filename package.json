@@ -1,24 +1,38 @@
 {
   "name": "mova-ui-kit",
+  "productName": "Mova",
+  "description": "Десктопный клиент мессенджера Mova",
+  "author": "Mova",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "desktop/main.mjs",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c magenta,cyan \"npm run dev:server\" \"npm run dev:client\"",
+    "dev": "concurrently -k -n api,web -c magenta,cyan \"pnpm run dev:server\" \"pnpm run dev:client\"",
     "dev:client": "vite",
     "dev:server": "node --watch server/index.mjs",
     "start": "node server/index.mjs",
     "build": "tsc -b && vite build",
     "test": "vitest run",
-    "test:integration": "node server/integration.mjs",
+    "test:integration": "node server/migration.mjs && node server/integration.mjs",
     "test:call": "node server/call-e2e.mjs",
     "test:watch": "vitest",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "desktop:dev": "concurrently -k -n mova,electron -c cyan,magenta \"pnpm dev\" \"wait-on http-get://127.0.0.1:5173/api/health && electron .\"",
+    "desktop:pack": "electron-builder --dir",
+    "desktop:build": "electron-builder",
+    "desktop:build:mac": "electron-builder --mac dmg zip",
+    "desktop:build:win": "electron-builder --win nsis --x64",
+    "desktop:build:linux": "electron-builder --linux AppImage deb"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "latest",
     "emoji-js": "^3.9.0",
+    "electron-updater": "^6.6.2",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -37,11 +51,70 @@
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
     "concurrently": "latest",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
     "jsdom": "latest",
     "playwright": "latest",
     "storybook": "latest",
     "typescript": "latest",
     "vite": "latest",
-    "vitest": "latest"
+    "vitest": "latest",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "app.mova.desktop",
+    "productName": "Mova",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "icon": "desktop/assets/icon.icns",
+      "hardenedRuntime": true,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Mova использует микрофон для голосовых звонков.",
+        "NSCameraUsageDescription": "Mova использует камеру для видеозвонков.",
+        "NSDesktopCaptureUsageDescription": "Mova использует запись экрана для демонстрации собеседникам."
+      },
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "title": "Mova ${version}"
+    },
+    "win": {
+      "icon": "desktop/assets/icon.png",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "icon": "desktop/assets/icon.png",
+      "category": "Network",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "yuuta4ka",
+      "repo": "mova"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuuta4ka/mova.git"
   }
 }

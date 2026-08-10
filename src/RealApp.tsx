@@ -9,16 +9,10 @@ import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioS
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
 import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } from './lib/accentSettings';
+import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
-const readImage = (file?: File) =>
-  new Promise<string>((resolve, reject) => {
-    if (!file) return resolve('');
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
 const activityTime = (startedAt?: string) => {
   if (!startedAt) return '';
   const minutes = Math.max(1, Math.floor((Date.now() - new Date(startedAt).getTime()) / 60000));
@@ -146,6 +140,18 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
       });
   }, [open, user]);
   if (!open) return null;
+  const selectProfileImage = async (file: File | undefined, field: 'avatarDataUrl' | 'bannerDataUrl') => {
+    if (!file) return;
+    if (file.size > 30_000_000) return setError('Фотография должна быть меньше 30 МБ');
+    setError('');
+    try {
+      const options = field === 'avatarDataUrl' ? { maxDimension: 1024, maxBytes: 650_000, quality: 0.94, skipBelowBytes: 120_000 } : { maxDimension: 2560, maxBytes: 1_600_000, quality: 0.94, skipBelowBytes: 180_000 };
+      const prepared = await prepareImageDataUrl(file, options);
+      setForm((current) => ({ ...current, [field]: prepared.dataUrl }));
+    } catch (imageError) {
+      setError(imageError instanceof Error ? imageError.message : 'Не удалось обработать фотографию');
+    }
+  };
   const save = async () => {
     setLoading(true);
     setError('');
@@ -191,12 +197,7 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
               <input
                 type="file"
                 accept="image/*"
-                onChange={async (event) =>
-                  setForm({
-                    ...form,
-                    bannerDataUrl: await readImage(event.target.files?.[0]),
-                  })
-                }
+                onChange={(event) => void selectProfileImage(event.target.files?.[0], 'bannerDataUrl')}
               />
             </label>
           </div>
@@ -207,12 +208,7 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
               <input
                 type="file"
                 accept="image/*"
-                onChange={async (event) =>
-                  setForm({
-                    ...form,
-                    avatarDataUrl: await readImage(event.target.files?.[0]),
-                  })
-                }
+                onChange={(event) => void selectProfileImage(event.target.files?.[0], 'avatarDataUrl')}
               />
             </label>
           </div>
@@ -1857,14 +1853,16 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const chooseFile = async (file?: File) => {
     if (!file) return;
     setAttachmentError('');
-    if (file.size > 8_000_000) return setAttachmentError('Файл должен быть меньше 8 МБ');
+    if (file.size > (file.type.startsWith('image/') ? 30_000_000 : 8_000_000)) return setAttachmentError(file.type.startsWith('image/') ? 'Фотография должна быть меньше 30 МБ' : 'Файл должен быть меньше 8 МБ');
     try {
       const clipboardName = `Изображение ${new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }).replace(':', '-')}.png`;
+      const prepared = file.type.startsWith('image/') ? await prepareImageDataUrl(file) : { file, dataUrl: await fileToDataUrl(file) };
+      if (prepared.file.size > 8_000_000) return setAttachmentError('После обработки файл всё ещё больше 8 МБ');
       setAttachment({
-        name: file.name || clipboardName,
-        type: file.type || 'application/octet-stream',
-        size: file.size,
-        dataUrl: await readImage(file),
+        name: prepared.file.name || clipboardName,
+        type: prepared.file.type || 'application/octet-stream',
+        size: prepared.file.size,
+        dataUrl: prepared.dataUrl,
       });
     } catch {
       setAttachmentError('Не удалось прочитать файл');
@@ -2334,7 +2332,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                       onClick={() => jumpToMessage(message.replyTo?.id || '')}
                       aria-label={`Перейти к сообщению ${message.replyTo.author.name}`}
                     >
-                      {message.replyTo.attachment?.type.startsWith('image/') && <img src={message.replyTo.attachment.dataUrl} alt="" />}
+                      {message.replyTo.attachment?.type.startsWith('image/') && <img src={attachmentSource(message.replyTo.attachment)} alt="" />}
                       <span>
                         <strong><AppleEmoji text={message.replyTo.author.name} /></strong>
                         <small><AppleEmoji text={message.replyTo.content || message.replyTo.attachmentName || 'Вложение'} /></small>
@@ -2345,7 +2343,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                     (message.attachment.type.startsWith('image/') ? (
                       <button type="button" className="mova-message-image" onClick={() => setImagePreview(message.attachment || null)} aria-label={`Открыть изображение ${message.attachment.name}`}>
                         <CachedImage
-                          src={message.attachment.dataUrl}
+                          src={attachmentSource(message.attachment)}
                           alt={message.attachment.name}
                           onLoad={() => {
                             if (!positionedAtBottom.current) return;
@@ -2357,7 +2355,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                         />
                       </button>
                     ) : (
-                      <a className="mova-message-file" href={message.attachment.dataUrl} download={message.attachment.name}>
+                      <a className="mova-message-file" href={attachmentSource(message.attachment)} download={message.attachment.name}>
                         <FileText size={20} />
                         <span>
                           <strong>{message.attachment.name}</strong>
@@ -2402,7 +2400,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           <div className={`mova-composer-context${editingMessage ? ' is-editing' : ''}`}>
             {editingMessage ? <Pencil size={17} /> : <Reply size={17} />}
             <div className="mova-composer-context__preview">
-              {!editingMessage && replyingTo?.attachment?.type.startsWith('image/') && <img src={replyingTo.attachment.dataUrl} alt="" />}
+              {!editingMessage && replyingTo?.attachment?.type.startsWith('image/') && <img src={attachmentSource(replyingTo.attachment)} alt="" />}
               <span>
                 <strong>{editingMessage ? 'Редактирование сообщения' : `В ответ ${replyingTo?.author.name}`}</strong>
                 <small><AppleEmoji text={(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'} /></small>
@@ -2423,7 +2421,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
         )}
         {attachment && (
           <div className="mova-attachment-draft">
-            {attachment.type.startsWith('image/') ? <img src={attachment.dataUrl} alt="" /> : <FileText size={16} />}
+            {attachment.type.startsWith('image/') ? <img src={attachmentSource(attachment)} alt="" /> : <FileText size={16} />}
             <span>{attachment.name}</span>
             <button type="button" aria-label="Убрать вложение" onClick={() => setAttachment(undefined)}>
               <X size={14} />
@@ -2499,14 +2497,14 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           <div className="mova-image-viewer" role="dialog" aria-modal="true" aria-label={`Просмотр изображения ${imagePreview.name}`} onMouseDown={(event) => event.target === event.currentTarget && setImagePreview(null)}>
             <div className="mova-image-viewer__toolbar">
               <span>{imagePreview.name}</span>
-              <a href={imagePreview.dataUrl} download={imagePreview.name} aria-label="Скачать изображение">
+              <a href={attachmentSource(imagePreview)} download={imagePreview.name} aria-label="Скачать изображение">
                 <Download size={19} />
               </a>
               <button type="button" aria-label="Закрыть изображение" onClick={() => setImagePreview(null)}>
                 <X size={21} />
               </button>
             </div>
-            <img src={imagePreview.dataUrl} alt={imagePreview.name} />
+            <img src={attachmentSource(imagePreview)} alt={imagePreview.name} />
           </div>,
           document.body,
         )}
@@ -2566,6 +2564,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const markingReadThrough = useRef<string | null>(null);
   const typingExpiryTimers = useRef(new Map<string, number>());
   const overviewSyncInFlight = useRef<Promise<void> | null>(null);
+  const realtimeReadyCount = useRef(0);
   currentUserRef.current = currentUser;
   selectedIdRef.current = selectedId;
   const updateTypingUser = useCallback((conversationId: string, userId: string, active: boolean) => {
@@ -2762,7 +2761,10 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       if (event.type === 'call:invite') selectConversation(event.conversationId);
       if (event.type === 'call:state' && event.status !== 'idle' && (sessionStorage.getItem('mova-active-call') === event.conversationId || sessionStorage.getItem('mova-pending-call') === event.conversationId || event.status === 'ringing')) selectConversation(event.conversationId);
       if (event.type === 'conversation:new') void reloadConversations(true);
-      if (event.type === 'ready') void syncOverview();
+      if (event.type === 'ready') {
+        realtimeReadyCount.current += 1;
+        if (realtimeReadyCount.current > 1) void syncOverview();
+      }
       if (event.type === 'profile:update' || event.type === 'presence:update') {
         setUsers((items) => {
           const next = items.map((user) => (user.id === event.user.id ? event.user : user));
@@ -2783,7 +2785,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     const refreshOverview = () => {
       if (document.visibilityState === 'visible') void syncOverview();
     };
-    const refreshTimer = window.setInterval(refreshOverview, 30_000);
+    const refreshTimer = window.setInterval(refreshOverview, 5 * 60_000);
     window.addEventListener('focus', refreshOverview);
     window.addEventListener('online', refreshOverview);
     document.addEventListener('visibilitychange', refreshOverview);
