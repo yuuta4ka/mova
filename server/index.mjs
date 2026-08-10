@@ -341,8 +341,11 @@ async function handleApi(request, response) {
     }
     if (request.method === 'GET' && url.pathname === '/api/conversations') {
       const ids = database.memberships.filter((item) => item.userId === user.id).map((item) => item.conversationId);
+      const conversations = database.conversations.filter((item) => ids.includes(item.id)).map((item) => conversationDto(item, user.id));
       return json(response, 200, {
-        conversations: database.conversations.filter((item) => ids.includes(item.id)).map((item) => conversationDto(item, user.id)),
+        conversations: conversations.sort(
+          (left, right) => new Date(right.lastMessage?.createdAt || right.createdAt).getTime() - new Date(left.lastMessage?.createdAt || left.createdAt).getTime(),
+        ),
       });
     }
     if (request.method === 'POST' && url.pathname === '/api/conversations') {

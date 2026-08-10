@@ -124,12 +124,17 @@ try {
   );
   const firstSocket = await openSocket(first.token);
   const secondSocket = await openSocket(second.token);
+  const presencePromise = waitFor(secondSocket, 'presence:update');
+  const livePresence = await call('/api/presence', 'POST', { presence: 'idle' }, first.token);
+  const presenceEvent = await presencePromise;
   const replyPromise = waitFor(secondSocket, 'message:new');
   const replyMessage = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Ответ на файл', replyToId: attachmentMessage.message.id }, first.token);
   const replyEvent = await replyPromise;
   const editPromise = waitFor(secondSocket, 'message:update');
   const editedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${replyMessage.message.id}`, 'PATCH', { content: 'Исправленный ответ' }, first.token);
   const editEvent = await editPromise;
+  const conversationOverview = await call('/api/conversations', 'GET', undefined, second.token);
+  if (conversationOverview.conversations[0]?.lastMessage?.content !== 'Исправленный ответ') throw new Error('Conversation preview did not return the latest edited message');
   const heartbeatPromise = waitFor(firstSocket, 'heartbeat:ack');
   firstSocket.send(JSON.stringify({ type: 'heartbeat', sentAt: Date.now() }));
   await heartbeatPromise;
@@ -233,6 +238,8 @@ try {
       profile: profile.user.handle,
       activity: profile.user.activity.name,
       presence: presence.user.presence,
+      livePresence: livePresence.user.presence === 'idle' && presenceEvent.user.id === first.user.id && presenceEvent.user.isOnline === true,
+      latestPreview: conversationOverview.conversations[0].lastMessage.content,
       rtcIceServers: rtcConfig.iceServers.length,
       attachment: attachmentMessage.message.attachment.name,
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id,

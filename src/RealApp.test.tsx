@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { formatPresenceStatus, PendingCallStage, RealMessages } from './RealApp';
+import { formatPresenceStatus, PendingCallStage, RealMessages, sortConversationsByActivity, updateConversationLastMessage } from './RealApp';
 import { realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 
 const currentUser: AppUser = {
@@ -68,6 +68,35 @@ describe('presence status', () => {
         now,
       ),
     ).toBe('был(а) 2 дня назад');
+  });
+});
+
+describe('conversation overview updates', () => {
+  const olderConversation: AppConversation = { ...conversation, id: 'older', createdAt: '2026-08-10T09:00:00.000Z' };
+  const newerConversation: AppConversation = { ...conversation, id: 'newer', createdAt: '2026-08-10T10:00:00.000Z' };
+  const latestMessage: AppMessage = {
+    id: 'latest',
+    conversationId: 'older',
+    authorId: friend.id,
+    content: 'Новое сообщение',
+    createdAt: '2026-08-10T11:00:00.000Z',
+    author: friend,
+  };
+
+  it('updates the last-message preview and raises its conversation', () => {
+    const result = updateConversationLastMessage([newerConversation, olderConversation], latestMessage);
+    expect(result.map((item) => item.id)).toEqual(['older', 'newer']);
+    expect(result[0].lastMessage?.content).toBe('Новое сообщение');
+  });
+
+  it('does not replace a preview when an older message is edited', () => {
+    const current = updateConversationLastMessage([olderConversation], latestMessage);
+    const olderEdit = { ...latestMessage, id: 'older-message', content: 'Исправлено' };
+    expect(updateConversationLastMessage(current, olderEdit, true)[0].lastMessage?.content).toBe('Новое сообщение');
+  });
+
+  it('sorts conversations by message activity', () => {
+    expect(sortConversationsByActivity([olderConversation, newerConversation]).map((item) => item.id)).toEqual(['newer', 'older']);
   });
 });
 

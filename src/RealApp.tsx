@@ -86,6 +86,18 @@ const userCache = new Map<string, ClientCache<AppUser[]>>();
 const messageCache = new Map<string, ClientCache<AppMessage[]>>();
 const isFresh = <T,>(entry?: ClientCache<T>) => Boolean(entry && Date.now() - entry.updatedAt < CLIENT_CACHE_TTL);
 const messageCacheKey = (userId: string, conversationId: string) => `${userId}:${conversationId}`;
+const conversationActivityAt = (conversation: AppConversation) => new Date(conversation.lastMessage?.createdAt || conversation.createdAt).getTime();
+export const sortConversationsByActivity = (items: AppConversation[]) => [...items].sort((left, right) => conversationActivityAt(right) - conversationActivityAt(left));
+export const updateConversationLastMessage = (items: AppConversation[], message: AppMessage, onlyIfCurrent = false) => {
+  const { author: _author, ...lastMessage } = message;
+  return sortConversationsByActivity(
+    items.map((conversation) =>
+      conversation.id === message.conversationId && (!onlyIfCurrent || conversation.lastMessage?.id === message.id)
+        ? { ...conversation, lastMessage }
+        : conversation,
+    ),
+  );
+};
 const preferredConversation = (items: AppConversation[]) => {
   const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
   return (preferred && items.some((item) => item.id === preferred) ? preferred : items[0]?.id) || null;
@@ -2352,6 +2364,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const lastActivity = useRef(Date.now());
   const markingReadThrough = useRef<string | null>(null);
   const typingExpiryTimers = useRef(new Map<string, number>());
+  const overviewSyncInFlight = useRef<Promise<void> | null>(null);
   currentUserRef.current = currentUser;
   selectedIdRef.current = selectedId;
   const updateTypingUser = useCallback((conversationId: string, userId: string, active: boolean) => {
@@ -2441,12 +2454,36 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       return;
     }
     const result = await api.conversations();
-    conversationCache.set(currentUser.id, { value: result.conversations, updatedAt: Date.now() });
-    setConversations(result.conversations);
+    const nextConversations = sortConversationsByActivity(result.conversations);
+    conversationCache.set(currentUser.id, { value: nextConversations, updatedAt: Date.now() });
+    setConversations(nextConversations);
     setSelectedId((current) => {
       const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
-      return current && result.conversations.some((item) => item.id === current) ? current : preferred && result.conversations.some((item) => item.id === preferred) ? preferred : result.conversations[0]?.id || null;
+      return current && nextConversations.some((item) => item.id === current) ? current : preferred && nextConversations.some((item) => item.id === preferred) ? preferred : nextConversations[0]?.id || null;
     });
+  }, [currentUser.id]);
+  const syncOverview = useCallback(() => {
+    if (overviewSyncInFlight.current) return overviewSyncInFlight.current;
+    const sync = Promise.all([api.conversations(), api.users()])
+      .then(([conversationResult, userResult]) => {
+        const nextConversations = sortConversationsByActivity(conversationResult.conversations);
+        const updatedAt = Date.now();
+        conversationCache.set(currentUser.id, { value: nextConversations, updatedAt });
+        userCache.set(currentUser.id, { value: userResult.users, updatedAt });
+        setConversations(nextConversations);
+        setUsers(userResult.users);
+        setSelectedId((selectedConversationId) =>
+          selectedConversationId && nextConversations.some((item) => item.id === selectedConversationId)
+            ? selectedConversationId
+            : preferredConversation(nextConversations),
+        );
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (overviewSyncInFlight.current === sync) overviewSyncInFlight.current = null;
+      });
+    overviewSyncInFlight.current = sync;
+    return sync;
   }, [currentUser.id]);
   useEffect(() => {
     const loadUsers = async () => {
@@ -2467,8 +2504,7 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         if (!cached.some((item) => item.id === event.message.id)) messageCache.set(cacheKey, { value: [...cached, event.message], updatedAt: cachedEntry ? Date.now() : 0 });
         setMessages((items) => (event.message.conversationId === selectedIdRef.current && !items.some((item) => item.id === event.message.id) ? [...items, event.message] : items));
         setConversations((items) => {
-          const { author: _author, ...lastMessage } = event.message;
-          const next = items.map((conversation) => (conversation.id === event.message.conversationId ? { ...conversation, lastMessage } : conversation));
+          const next = updateConversationLastMessage(items, event.message);
           conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
           return next;
         });
@@ -2478,6 +2514,11 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         const cachedEntry = messageCache.get(cacheKey);
         if (cachedEntry) messageCache.set(cacheKey, { value: cachedEntry.value.map((message) => (message.id === event.message.id ? event.message : message)), updatedAt: Date.now() });
         if (event.message.conversationId === selectedIdRef.current) setMessages((items) => items.map((message) => (message.id === event.message.id ? event.message : message)));
+        setConversations((items) => {
+          const next = updateConversationLastMessage(items, event.message, true);
+          conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+          return next;
+        });
       }
       if (event.type === 'typing' && event.userId !== currentUserRef.current.id) updateTypingUser(event.conversationId, event.userId, event.active);
       if (event.type === 'message:read' && event.conversationId === selectedIdRef.current) {
@@ -2496,24 +2537,42 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       if (event.type === 'call:invite') selectConversation(event.conversationId);
       if (event.type === 'call:state' && event.status !== 'idle' && (sessionStorage.getItem('mova-active-call') === event.conversationId || sessionStorage.getItem('mova-pending-call') === event.conversationId || event.status === 'ringing')) selectConversation(event.conversationId);
       if (event.type === 'conversation:new') void reloadConversations(true);
+      if (event.type === 'ready') void syncOverview();
       if (event.type === 'profile:update' || event.type === 'presence:update') {
-        setUsers((items) => items.map((user) => (user.id === event.user.id ? event.user : user)));
-        setConversations((items) =>
-          items.map((conversation) => ({
+        setUsers((items) => {
+          const next = items.map((user) => (user.id === event.user.id ? event.user : user));
+          userCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+          return next;
+        });
+        setConversations((items) => {
+          const next = items.map((conversation) => ({
             ...conversation,
             members: conversation.members.map((member) => (member.id === event.user.id ? event.user : member)),
             title: conversation.kind === 'direct' && event.user.id !== currentUser.id ? event.user.name : conversation.title,
-          })),
-        );
+          }));
+          conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+          return next;
+        });
       }
     });
+    const refreshOverview = () => {
+      if (document.visibilityState === 'visible') void syncOverview();
+    };
+    const refreshTimer = window.setInterval(refreshOverview, 30_000);
+    window.addEventListener('focus', refreshOverview);
+    window.addEventListener('online', refreshOverview);
+    document.addEventListener('visibilitychange', refreshOverview);
     return () => {
       unsubscribe();
+      window.clearInterval(refreshTimer);
+      window.removeEventListener('focus', refreshOverview);
+      window.removeEventListener('online', refreshOverview);
+      document.removeEventListener('visibilitychange', refreshOverview);
       typingExpiryTimers.current.forEach((timer) => window.clearTimeout(timer));
       typingExpiryTimers.current.clear();
       realtime.close();
     };
-  }, [reloadConversations, selectConversation, currentUser.id, updateTypingUser]);
+  }, [reloadConversations, selectConversation, currentUser.id, syncOverview, updateTypingUser]);
   useEffect(() => {
     const markActive = () => {
       lastActivity.current = Date.now();
@@ -2606,6 +2665,11 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       messageCache.set(messageCacheKey(currentUser.id, selectedId), { value: next, updatedAt: Date.now() });
       return next;
     });
+    setConversations((items) => {
+      const next = updateConversationLastMessage(items, result.message);
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
   };
   const edit = async (messageId: string, content: string) => {
     if (!selectedId) return;
@@ -2613,6 +2677,11 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     setMessages((items) => {
       const next = items.map((message) => (message.id === result.message.id ? result.message : message));
       messageCache.set(messageCacheKey(currentUser.id, selectedId), { value: next, updatedAt: Date.now() });
+      return next;
+    });
+    setConversations((items) => {
+      const next = updateConversationLastMessage(items, result.message, true);
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
       return next;
     });
   };
