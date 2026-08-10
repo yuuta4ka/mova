@@ -18,6 +18,8 @@ const host = process.env.HOST || '0.0.0.0';
 const secret = process.env.MOVA_SESSION_SECRET || 'mova-local-development-secret';
 const clients = new Map();
 const voiceRooms = new Map();
+const activeCalls = new Map();
+const callCleanupTimers = new Map();
 
 const emptyDatabase = { users: [], conversations: [], memberships: [], messages: [] };
 let database = emptyDatabase;
@@ -36,8 +38,9 @@ function persist() {
 
 const id = (prefix) => `${prefix}_${randomBytes(10).toString('hex')}`;
 const publicUser = ({ passwordHash, ...user }) => {
-  if (user.presence === 'dnd' && user.dndUntil && user.dndUntil !== 'forever' && new Date(user.dndUntil).getTime() <= Date.now()) return { ...user, presence: 'online', dndUntil: null };
-  return user;
+  const normalized = user.presence === 'dnd' && user.dndUntil && user.dndUntil !== 'forever' && new Date(user.dndUntil).getTime() <= Date.now() ? { ...user, presence: 'online', dndUntil: null } : user;
+  const connected = Boolean(clients.get(user.id)?.size);
+  return { ...normalized, isOnline: normalized.presence !== 'invisible' && connected };
 };
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 function hashPassword(password, salt = randomBytes(16).toString('hex')) { return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`; }
@@ -64,6 +67,22 @@ function broadcastToConversation(conversationId, event, exceptUserId) {
   for (const userId of memberIds) if (userId !== exceptUserId) for (const socket of clients.get(userId) || []) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
 }
 function broadcastAll(event, exceptUserId) { for (const [userId, sockets] of clients) if (userId !== exceptUserId) for (const socket of sockets) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event)); }
+function roomUserIds(conversationId) { return [...(voiceRooms.get(conversationId)?.keys() || [])]; }
+function callStateFor(conversationId, socket) {
+  const active = activeCalls.get(conversationId);
+  return { type: 'call:state', conversationId, status: active?.status || 'idle', ...(active ? { from: publicUser(database.users.find((item) => item.id === active.fromUserId)) } : {}), participants: roomUserIds(conversationId), joined: socket.voiceConversationId === conversationId };
+}
+function clearCallCleanup(conversationId) { const timer = callCleanupTimers.get(conversationId); if (timer) clearTimeout(timer); callCleanupTimers.delete(conversationId); }
+function scheduleCallCleanup(conversationId, delay = 60_000) {
+  clearCallCleanup(conversationId);
+  const timer = setTimeout(() => {
+    callCleanupTimers.delete(conversationId);
+    if (voiceRooms.get(conversationId)?.size || !activeCalls.has(conversationId)) return;
+    const call = activeCalls.get(conversationId); activeCalls.delete(conversationId);
+    broadcastToConversation(conversationId, { type: 'call:end', conversationId, fromUserId: call?.fromUserId || '' });
+  }, delay);
+  callCleanupTimers.set(conversationId, timer);
+}
 
 async function handleApi(request, response) {
   try {
@@ -195,28 +214,61 @@ function handleRequest(request, response) {
 
 function leaveVoice(socket) {
   if (!socket.voiceConversationId || !socket.userId) return;
-  const room = voiceRooms.get(socket.voiceConversationId); room?.delete(socket.userId); if (room?.size === 0) voiceRooms.delete(socket.voiceConversationId);
-  broadcastToConversation(socket.voiceConversationId, { type: 'voice:left', conversationId: socket.voiceConversationId, userId: socket.userId }, socket.userId); socket.voiceConversationId = null;
+  const conversationId = socket.voiceConversationId;
+  const room = voiceRooms.get(conversationId); const userSockets = room?.get(socket.userId); userSockets?.delete(socket);
+  if (userSockets?.size === 0) { room.delete(socket.userId); broadcastToConversation(conversationId, { type: 'voice:left', conversationId, userId: socket.userId }, socket.userId); }
+  if (room?.size === 0) { voiceRooms.delete(conversationId); scheduleCallCleanup(conversationId); }
+  socket.voiceConversationId = null;
 }
 
 function handleSocket(socket, request) {
   const url = new URL(request.url, 'http://localhost'); const user = tokenUser(url.searchParams.get('token') || ''); if (!user) return socket.close(4001, 'Unauthorized');
+  const firstConnection = !clients.get(user.id)?.size;
   socket.userId = user.id; if (!clients.has(user.id)) clients.set(user.id, new Set()); clients.get(user.id).add(socket);
   socket.send(JSON.stringify({ type: 'ready', user: publicUser(user) }));
+  if (firstConnection) broadcastAll({ type: 'presence:update', user: publicUser(user) }, user.id);
+  for (const conversationId of activeCalls.keys()) if (isMember(user.id, conversationId)) socket.send(JSON.stringify(callStateFor(conversationId, socket)));
   socket.on('message', (raw) => { try {
     const event = JSON.parse(raw.toString()); const conversationId = event.conversationId; if (!conversationId || !isMember(user.id, conversationId)) return;
     if (event.type === 'typing') return broadcastToConversation(conversationId, { type: 'typing', conversationId, userId: user.id, active: Boolean(event.active) }, user.id);
-    if (event.type === 'call:invite') return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(user) }, user.id);
-    if (event.type === 'call:accept') return broadcastToConversation(conversationId, { type: 'call:accept', conversationId, fromUserId: user.id }, user.id);
-    if (event.type === 'call:decline') return broadcastToConversation(conversationId, { type: 'call:decline', conversationId, fromUserId: user.id }, user.id);
-    if (event.type === 'call:end') return broadcastToConversation(conversationId, { type: 'call:end', conversationId, fromUserId: user.id }, user.id);
-    if (event.type === 'voice:join') { leaveVoice(socket); socket.voiceConversationId = conversationId; if (!voiceRooms.has(conversationId)) voiceRooms.set(conversationId, new Set()); const room = voiceRooms.get(conversationId); const peers = [...room]; room.add(user.id); socket.send(JSON.stringify({ type: 'voice:peers', conversationId, peers })); return broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(user) }, user.id); }
+    if (event.type === 'call:sync') return socket.send(JSON.stringify(callStateFor(conversationId, socket)));
+    if (event.type === 'call:invite') {
+      activeCalls.set(conversationId, { fromUserId: user.id, status: 'ringing', createdAt: Date.now() }); scheduleCallCleanup(conversationId, 45_000);
+      return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(user) }, user.id);
+    }
+    if (event.type === 'call:accept') {
+      const active = activeCalls.get(conversationId) || { fromUserId: user.id, createdAt: Date.now() }; active.status = 'active'; activeCalls.set(conversationId, active); scheduleCallCleanup(conversationId);
+      return broadcastToConversation(conversationId, { type: 'call:accept', conversationId, fromUserId: user.id }, user.id);
+    }
+    if (event.type === 'call:decline') {
+      const active = activeCalls.get(conversationId); if (active?.status === 'ringing') { activeCalls.delete(conversationId); clearCallCleanup(conversationId); }
+      return broadcastToConversation(conversationId, { type: 'call:decline', conversationId, fromUserId: user.id }, user.id);
+    }
+    if (event.type === 'call:end') { activeCalls.delete(conversationId); clearCallCleanup(conversationId); return broadcastToConversation(conversationId, { type: 'call:end', conversationId, fromUserId: user.id }, user.id); }
+    if (event.type === 'voice:join') {
+      leaveVoice(socket); socket.voiceConversationId = conversationId; clearCallCleanup(conversationId);
+      if (!activeCalls.has(conversationId)) activeCalls.set(conversationId, { fromUserId: user.id, status: 'active', createdAt: Date.now() });
+      if (!voiceRooms.has(conversationId)) voiceRooms.set(conversationId, new Map());
+      const room = voiceRooms.get(conversationId); const peers = [...room.keys()].filter((userId) => userId !== user.id);
+      if (!room.has(user.id)) room.set(user.id, new Set()); room.get(user.id).add(socket);
+      socket.send(JSON.stringify({ type: 'voice:peers', conversationId, peers }));
+      return broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(user) }, user.id);
+    }
     if (event.type === 'voice:leave') return leaveVoice(socket);
     if (event.type === 'voice:media' && ['camera', 'screen'].includes(event.mediaKind)) return broadcastToConversation(conversationId, { type: 'voice:media', conversationId, fromUserId: user.id, mediaKind: event.mediaKind, enabled: Boolean(event.enabled), streamId: String(event.streamId || '') }, user.id);
     if (event.type === 'voice:state') return broadcastToConversation(conversationId, { type: 'voice:state', conversationId, fromUserId: user.id, muted: Boolean(event.muted), deafened: Boolean(event.deafened) }, user.id);
     if (['voice:offer', 'voice:answer', 'voice:ice'].includes(event.type) && event.targetUserId) for (const targetSocket of clients.get(event.targetUserId) || []) if (targetSocket.readyState === WebSocket.OPEN) targetSocket.send(JSON.stringify({ ...event, fromUserId: user.id }));
   } catch {} });
-  socket.on('close', () => { leaveVoice(socket); clients.get(user.id)?.delete(socket); if (clients.get(user.id)?.size === 0) clients.delete(user.id); });
+  socket.on('close', () => {
+    leaveVoice(socket);
+    clients.get(user.id)?.delete(socket);
+    if (clients.get(user.id)?.size === 0) {
+      clients.delete(user.id);
+      user.lastActiveAt = new Date().toISOString();
+      void persist();
+      broadcastAll({ type: 'presence:update', user: publicUser(user) }, user.id);
+    }
+  });
 }
 
 await loadDatabase();

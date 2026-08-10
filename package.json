@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c magenta,cyan \"pnpm dev:server\" \"pnpm dev:client\"",
+    "dev": "concurrently -k -n api,web -c magenta,cyan \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite",
     "dev:server": "node --watch server/index.mjs",
     "start": "node server/index.mjs",

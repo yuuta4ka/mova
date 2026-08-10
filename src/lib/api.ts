@@ -1,4 +1,4 @@
-export interface AppUser { id: string; name: string; email: string; handle: string; color: string; presence: 'online' | 'idle' | 'dnd' | 'invisible'; dndUntil?: string | null; bio?: string; avatarDataUrl?: string; bannerDataUrl?: string; activity?: { name: string; startedAt: string } | null; lastActiveAt?: string; createdAt: string }
+export interface AppUser { id: string; name: string; email: string; handle: string; color: string; presence: 'online' | 'idle' | 'dnd' | 'invisible'; isOnline?: boolean; dndUntil?: string | null; bio?: string; avatarDataUrl?: string; bannerDataUrl?: string; activity?: { name: string; startedAt: string } | null; lastActiveAt?: string; createdAt: string }
 export interface MessageAttachment { name: string; type: string; size: number; dataUrl: string }
 export interface MessageReadReceipt { userId: string; readAt: string }
 export interface AppMessage { id: string; conversationId: string; authorId: string; content: string; attachment?: MessageAttachment; createdAt: string; sentAt?: string; readBy?: MessageReadReceipt[]; author: AppUser }
@@ -43,6 +43,7 @@ export type RealtimeEvent =
   | { type: 'call:invite'; conversationId: string; from: AppUser }
   | { type: 'call:accept' | 'call:decline'; conversationId: string; fromUserId: string }
   | { type: 'call:end'; conversationId: string; fromUserId: string }
+  | { type: 'call:state'; conversationId: string; status: 'idle' | 'ringing' | 'active'; from?: AppUser; participants: string[]; joined: boolean }
   | { type: 'voice:peers'; conversationId: string; peers: string[] }
   | { type: 'voice:joined'; conversationId: string; user: AppUser }
   | { type: 'voice:left'; conversationId: string; userId: string }
@@ -54,16 +55,47 @@ export type RealtimeEvent =
 export class RealtimeClient {
   socket: WebSocket | null = null;
   listeners = new Set<(event: RealtimeEvent) => void>();
+  private reconnectTimer: number | null = null;
+  private reconnectAttempts = 0;
+  private closedByUser = false;
+  private pending: string[] = [];
   connect() {
     const token = session.get(); if (!token || this.socket?.readyState === WebSocket.OPEN || this.socket?.readyState === WebSocket.CONNECTING) return;
+    this.closedByUser = false;
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`); this.socket = socket;
-    socket.onmessage = (message) => { const event = JSON.parse(message.data) as RealtimeEvent; this.listeners.forEach((listener) => listener(event)); };
-    socket.onclose = () => { if (this.socket === socket) this.socket = null; };
+    socket.onopen = () => {
+      if (this.socket !== socket) return;
+      this.reconnectAttempts = 0;
+      const pending = this.pending.splice(0);
+      pending.forEach((message) => socket.send(message));
+    };
+    socket.onmessage = (message) => { try { const event = JSON.parse(message.data) as RealtimeEvent; this.listeners.forEach((listener) => listener(event)); } catch {} };
+    socket.onclose = () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      if (this.closedByUser || !session.get()) return;
+      const delay = Math.min(8_000, 500 * 2 ** this.reconnectAttempts++);
+      this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
+    };
   }
-  send(event: object) { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event)); }
+  send(event: object) {
+    const message = JSON.stringify(event);
+    if (this.socket?.readyState === WebSocket.OPEN) return this.socket.send(message);
+    this.pending.push(message);
+    if (this.pending.length > 200) this.pending.splice(0, this.pending.length - 200);
+    this.connect();
+  }
   subscribe(listener: (event: RealtimeEvent) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
-  close() { const socket = this.socket; this.socket = null; socket?.close(); }
+  close() {
+    this.closedByUser = true;
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.pending = [];
+    const socket = this.socket; this.socket = null; socket?.close();
+  }
 }
 
 export const realtime = new RealtimeClient();

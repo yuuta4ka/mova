@@ -1,12 +1,24 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { PendingCallStage, RealMessages } from './RealApp';
+import { formatPresenceStatus, PendingCallStage, RealMessages } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
 const currentUser: AppUser = { id: 'me', name: 'Юта', email: 'me@mova.test', handle: '@yuuta', color: '#74DCCB', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
 const friend: AppUser = { id: 'friend', name: 'Друг', email: 'friend@mova.test', handle: '@friend', color: '#9B83F4', presence: 'online', createdAt: '2026-08-10T00:00:00.000Z' };
 const conversation: AppConversation = { id: 'chat', kind: 'direct', title: 'Друг', members: [currentUser, friend], lastMessage: null, createdAt: '2026-08-10T00:00:00.000Z' };
+
+describe('presence status', () => {
+  const now = new Date('2026-08-10T12:00:00.000Z').getTime();
+  it('uses the live connection state instead of a stale presence value', () => {
+    expect(formatPresenceStatus({ ...friend, presence: 'online', isOnline: false, lastActiveAt: '2026-08-10T11:55:00.000Z' }, now)).toBe('был(а) 5 минут назад');
+    expect(formatPresenceStatus({ ...friend, isOnline: true }, now)).toBe('в сети');
+  });
+  it('formats hours and days with Russian plural forms', () => {
+    expect(formatPresenceStatus({ ...friend, isOnline: false, lastActiveAt: '2026-08-10T09:00:00.000Z' }, now)).toBe('был(а) 3 часа назад');
+    expect(formatPresenceStatus({ ...friend, isOnline: false, lastActiveAt: '2026-08-08T12:00:00.000Z' }, now)).toBe('был(а) 2 дня назад');
+  });
+});
 
 function renderChat(messages: AppMessage[] = []) {
   return render(<RealMessages conversation={conversation} currentUser={currentUser} messages={messages} onSend={vi.fn().mockResolvedValue(undefined)} />);

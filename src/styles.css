@@ -64,7 +64,8 @@ button:focus-visible { outline: none; box-shadow: var(--mova-focus); }
 .mova-textarea { min-height: 96px; resize: vertical; padding: 12px 13px; color: var(--mova-text); background: rgba(4,7,12,.45); border: 1px solid var(--mova-line); border-radius: 12px; }
 
 .mova-avatar { position: relative; display: inline-grid; place-items: center; flex: none; color: #0d1017; font-weight: 800; letter-spacing: -.04em; border-radius: 36%; user-select: none; }
-.mova-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.mova-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.mova-avatar.has-image { aspect-ratio: 1; border-radius: 50%; }
 .mova-avatar--xs { width: 24px; height: 24px; font-size: 9px; border-radius: 9px; }
 .mova-avatar--sm { width: 34px; height: 34px; font-size: 11px; border-radius: 12px; }
 .mova-avatar--md { width: 42px; height: 42px; font-size: 13px; border-radius: 14px; }
@@ -93,6 +94,21 @@ button:focus-visible { outline: none; box-shadow: var(--mova-focus); }
 .mova-modal { width: min(480px, 100%); overflow: hidden; background: var(--mova-surface-raised); border: 1px solid var(--mova-line); border-radius: 18px; box-shadow: var(--mova-shadow); }.mova-modal > header, .mova-modal > footer { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; }.mova-modal > header { border-bottom: 1px solid var(--mova-line); }.mova-modal > header h2 { margin: 0; font-size: 18px; }.mova-modal__body { padding: 20px; color: var(--mova-muted); }.mova-modal > footer { justify-content: flex-end; gap: 9px; background: rgba(0,0,0,.12); }
 .mova-toasts { position: fixed; z-index: 120; right: 22px; bottom: 22px; display: grid; gap: 8px; }.mova-toast { display: flex; align-items: center; gap: 9px; padding: 12px 14px; background: #252d3d; border: 1px solid var(--mova-line); border-radius: 12px; box-shadow: var(--mova-shadow); font-size: 12px; }.mova-toast--success svg { color: var(--mova-success); }.mova-toast--danger svg { color: var(--mova-danger); }
 .mova-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+/* Keep uploaded profile photos circular and above the banner in the account menu. */
+.mova-account-profile > .mova-avatar {
+  z-index: 1;
+  flex: 0 0 54px;
+  width: 54px;
+  height: 54px;
+  min-width: 54px;
+  min-height: 54px;
+  max-width: 54px;
+  max-height: 54px;
+  aspect-ratio: 1;
+  align-self: center;
+  border-radius: 50%;
+}
 
 .mova-app-shell { display: grid; grid-template-columns: 76px 270px minmax(570px, 1fr) 240px; width: 100%; height: 100dvh; min-height: 680px; overflow: hidden; background: var(--mova-canvas); }
 .mova-space-rail { position: relative; z-index: 5; display: flex; flex-direction: column; align-items: center; background: #0a0d13; border-right: 1px solid var(--mova-line); }

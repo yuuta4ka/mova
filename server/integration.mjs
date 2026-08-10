@@ -12,6 +12,7 @@ const server = spawn(process.execPath, ['server/index.mjs'], { cwd: new URL('..'
 const waitForServer = async () => { for (let attempt = 0; attempt < 30; attempt += 1) { try { if ((await fetch(`${base}/api/health`)).ok) return; } catch {} await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('Integration server did not start'); };
 const call = async (path, method = 'GET', data, token) => { const response = await fetch(`${base}${path}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: data ? JSON.stringify(data) : undefined }); const result = await response.json(); if (!response.ok) throw new Error(JSON.stringify(result)); return result; };
 const openSocket = (token) => new Promise((resolve, reject) => { const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`); socket.once('open', () => resolve(socket)); socket.once('error', reject); });
+const openSocketWaitingFor = (token, type) => new Promise((resolve, reject) => { const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`); const timer = setTimeout(() => { socket.close(); reject(new Error(`Timeout waiting for ${type} on reconnect`)); }, 2500); socket.on('message', (raw) => { const event = JSON.parse(raw); if (event.type === type) { clearTimeout(timer); resolve({ socket, event }); } }); socket.once('error', reject); });
 const waitFor = (socket, type) => new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${type}`)), 2500); const listener = (raw) => { const event = JSON.parse(raw); if (event.type === type) { clearTimeout(timer); socket.off('message', listener); resolve(event); } }; socket.on('message', listener); });
 
 try {
@@ -34,9 +35,12 @@ try {
   secondSocket.send(JSON.stringify({ type: 'voice:join', conversationId: conversation.conversation.id })); const peers = await waitFor(secondSocket, 'voice:peers');
   const mediaPromise = waitFor(secondSocket, 'voice:media'); firstSocket.send(JSON.stringify({ type: 'voice:media', conversationId: conversation.conversation.id, mediaKind: 'camera', enabled: true, streamId: 'test-camera-stream' })); const media = await mediaPromise;
   const statePromise = waitFor(secondSocket, 'voice:state'); firstSocket.send(JSON.stringify({ type: 'voice:state', conversationId: conversation.conversation.id, muted: true, deafened: true })); const voiceState = await statePromise;
-  const endPromise = waitFor(secondSocket, 'call:end'); firstSocket.send(JSON.stringify({ type: 'call:end', conversationId: conversation.conversation.id })); const ended = await endPromise;
-  firstSocket.close(); secondSocket.close();
-  console.log(JSON.stringify({ profile: profile.user.handle, activity: profile.user.activity.name, presence: presence.user.presence, attachment: attachmentMessage.message.attachment.name, sentAt: Boolean(attachmentMessage.message.sentAt), readBy: messagesAfterRead.messages[0].readBy[0].userId === second.user.id, readEvent: readReceipt.messageIds.includes(attachmentMessage.message.id), incomingFrom: incoming.from.name, voicePeers: peers.peers.length, media: `${media.mediaKind}:${media.enabled}`, voiceState: `${voiceState.muted}:${voiceState.deafened}`, endedBy: ended.fromUserId }));
+  firstSocket.close();
+  const recovered = await openSocketWaitingFor(first.token, 'call:state');
+  recovered.socket.send(JSON.stringify({ type: 'voice:join', conversationId: conversation.conversation.id })); const recoveredPeers = await waitFor(recovered.socket, 'voice:peers');
+  const endPromise = waitFor(secondSocket, 'call:end'); recovered.socket.send(JSON.stringify({ type: 'call:end', conversationId: conversation.conversation.id })); const ended = await endPromise;
+  recovered.socket.close(); secondSocket.close();
+  console.log(JSON.stringify({ profile: profile.user.handle, activity: profile.user.activity.name, presence: presence.user.presence, attachment: attachmentMessage.message.attachment.name, sentAt: Boolean(attachmentMessage.message.sentAt), readBy: messagesAfterRead.messages[0].readBy[0].userId === second.user.id, readEvent: readReceipt.messageIds.includes(attachmentMessage.message.id), incomingFrom: incoming.from.name, voicePeers: peers.peers.length, media: `${media.mediaKind}:${media.enabled}`, voiceState: `${voiceState.muted}:${voiceState.deafened}`, recoveredCall: `${recovered.event.status}:${recoveredPeers.peers.length}`, endedBy: ended.fromUserId }));
 } finally {
   server.kill('SIGTERM');
   await rm(testDirectory, { recursive: true, force: true });
