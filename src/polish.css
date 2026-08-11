@@ -18,11 +18,11 @@
 
 html, body, button, input, textarea, select { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+button:focus-visible, a:focus-visible {
   outline: 2px solid color-mix(in srgb,var(--mova-accent-color,#8774e1) 76%,white);
   outline-offset: 2px;
 }
-.mova-create-name input:focus-visible,.mova-create-search input:focus-visible,.mova-tg-search input:focus-visible,.mova-real-composer textarea:focus-visible { outline:0; }
+.mova-create-name input:focus-visible,.mova-create-search input:focus-visible,.mova-tg-search input:focus-visible { outline:0; }
 
 /* Landing */
 html.mova-landing-document body { background: #0b0d12; }
@@ -131,105 +131,19 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-tg-app .mova-real-messages { padding:26px clamp(20px,5vw,72px); background-color:color-mix(in srgb,var(--mova-background-color,#20293c) 72%,#0d121b); background-image:none; }
 .mova-tg-app .mova-real-thread-intro { margin:10px auto 34px; }
 .mova-tg-app .mova-real-thread-intro p { color:#b6bac3; background:rgba(9,11,16,.3); font-size:13px; }
-.mova-tg-app .mova-real-message { left:0; margin-bottom:9px; }
+.mova-tg-app .mova-real-message { left:0; margin-bottom:11px; }
 .mova-tg-app .mova-real-message>div { max-width:min(78%,680px); }
 .mova-tg-app .mova-real-message>div>strong { font-size:13px; }
 .mova-tg-app .mova-real-bubble { gap:6px; padding:8px 11px; background:#202229; border:1px solid rgba(255,255,255,.025); border-radius:17px 17px 17px 4px; box-shadow:0 3px 12px rgba(0,0,0,.11); }
 .mova-tg-app .mova-real-message.is-own .mova-real-bubble { border:0; border-radius:17px 17px 4px 17px; }
 .mova-tg-app .mova-real-bubble p { font-size:16px; line-height:22px; }
 .mova-tg-app .mova-real-bubble time { font-size:11px; line-height:14px; }
-.mova-tg-app .mova-real-composer { width:calc(100% - 24px); min-height:58px; margin:10px 0 12px; padding:6px; background:rgba(26,28,34,.98); border:1px solid var(--mova-ui-line); border-radius:19px; box-shadow:0 12px 34px rgba(0,0,0,.18); }
-.mova-tg-app .mova-real-composer:focus-within { background:#1d1f26; }
-.mova-tg-app .mova-real-composer textarea { min-height:44px; padding:10px 3px; font-size:16px; line-height:22px; }
-.mova-tg-app .mova-real-composer>.mova-icon-button,.mova-tg-app .mova-real-composer>button:last-of-type { width:44px; height:44px; flex-basis:44px; }
 .mova-tg-app .mova-real-welcome { background:color-mix(in srgb,var(--mova-background-color,#20293c) 70%,#10141d); }
 .mova-tg-app .mova-real-welcome>div { padding:30px 34px; background:rgba(18,20,27,.76); border:1px solid var(--mova-ui-line); border-radius:22px; box-shadow:0 18px 50px rgba(0,0,0,.2); }
 .mova-tg-app .mova-real-welcome h1 { font-size:25px; }
 .mova-tg-app .mova-real-welcome p { color:var(--mova-ui-muted); font-size:14px; }
 
-/* Popovers and dialogs */
-.mova-real-modal-backdrop { padding:24px; background:rgba(5,6,9,.72); backdrop-filter:blur(14px); }
-.mova-account-menu,.mova-chat-actions-menu,.mova-message-context-menu,.mova-emoji-picker { color:var(--mova-ui-text); background:#1b1d24; border:1px solid var(--mova-ui-line-strong); border-radius:18px; box-shadow:var(--mova-ui-shadow); backdrop-filter:blur(18px); }
-.mova-account-menu { width:310px; padding:8px; }
-.mova-account-menu>button { min-height:43px; padding-inline:11px; border-radius:11px; font-size:14px; }
-.mova-account-profile { padding:10px; }
-.mova-account-profile strong { font-size:16px; }
-.mova-account-profile small,.mova-current-activity small { font-size:12px; }
-.mova-current-activity { margin:4px; padding:11px; border-radius:12px; }
-.mova-account-menu__divider { margin:7px 5px; }
-.mova-create-modal,.mova-profile-editor { color:var(--mova-ui-text); background:#1b1d24; border:1px solid var(--mova-ui-line-strong); border-radius:24px; box-shadow:var(--mova-ui-shadow); backdrop-filter:none; }
-.mova-create-modal { width:min(560px,100%); padding:24px; }
-.mova-create-modal h2,.mova-profile-editor h2 { font-size:24px; letter-spacing:-.035em; }
-.mova-create-modal header p,.mova-profile-editor header p { color:var(--mova-ui-muted); font-size:13px; }
-.mova-create-tabs { gap:8px; padding:5px; background:#13151a; border:1px solid rgba(255,255,255,.045); border-radius:15px; }
-.mova-create-tabs button { min-height:56px; border-radius:11px; }
-.mova-create-tabs strong { font-size:14px; }
-.mova-create-tabs small { font-size:11px; }
-.mova-create-name,.mova-create-search { min-height:50px; background:#13151a; border-color:rgba(255,255,255,.06); border-radius:13px; }
-.mova-create-name input,.mova-create-search input { font-size:14px; }
-.mova-create-members>span { padding:7px 8px 9px; color:#8d929d; background:#1b1d24; font-size:11px; }
-.mova-create-members>button { height:62px; border-radius:13px; }
-.mova-create-members>button:hover { background:#24262e; }
-.mova-create-members>button.is-active { background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 16%,#24262e); }
-.mova-create-members strong { font-size:15px; }
-.mova-create-members small,.mova-create-modal>footer>span { font-size:12px; }
-.mova-contact-info { background:#17191f; border-left:1px solid var(--mova-ui-line); }
-.mova-contact-info__profile,.mova-contact-info__card { border-color:var(--mova-ui-line); border-radius:18px; }
-.mova-chat-actions-menu>button,.mova-message-context-menu>button { min-height:42px; font-size:13px; border-radius:10px; }
-
-/* Settings */
-.mova-settings { grid-template-columns:220px minmax(0,1fr); width:min(980px,100%); height:min(760px,92dvh); color:var(--mova-ui-text); background:#1a1c23; border-color:var(--mova-ui-line-strong); border-radius:24px; box-shadow:var(--mova-ui-shadow); }
-.mova-settings>aside { gap:5px; padding:20px 12px; background:#14161b; border-color:var(--mova-ui-line); }
-.mova-settings>aside>div { gap:11px; padding:2px 10px 20px; }
-.mova-settings>aside>div>img { width:36px; height:36px; }
-.mova-settings>aside>div>strong { font-size:15px; }
-.mova-settings>aside>button { gap:10px; height:44px; padding:0 12px; color:#9da1ab; border-radius:12px; font-size:14px; }
-.mova-settings>aside>button.is-active { background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 23%,#24262e); box-shadow:inset 3px 0 0 var(--mova-accent-color,#8774e1); }
-.mova-settings>main { padding:28px 30px; }
-.mova-settings h2 { font-size:27px; }
-.mova-settings>main>header p { margin-top:6px; color:var(--mova-ui-muted); font-size:13px; }
-.mova-settings>main>footer { gap:9px; padding-top:18px; }
-.mova-audio-settings { gap:14px; margin-top:22px; }
-.mova-audio-settings>section,.mova-background-settings>section { gap:15px; padding:20px; background:#22242c; border-color:var(--mova-ui-line); border-radius:18px; }
-.mova-audio-settings h3,.mova-background-settings h3 { font-size:16px; }
-.mova-audio-settings section>label>span { font-size:13px; }
-.mova-audio-settings select { height:48px; padding-inline:13px; background:#17191f; border-radius:12px; font-size:14px; }
-.mova-audio-settings section>small { color:#858a95; font-size:12px; }
-.mova-range-setting b { font-size:12px; }
-.mova-toggle-setting strong { font-size:14px; }
-.mova-toggle-setting small { margin-top:4px; font-size:12px; line-height:1.4; }
-.mova-toggle-setting>i { width:44px; height:25px; }
-.mova-toggle-setting>i::after { width:19px; height:19px; }
-.mova-toggle-setting input:checked+i::after { transform:translateX(19px); }
-.mova-settings-profile { margin-top:24px; }
-.mova-settings-profile__banner { height:180px; border-radius:19px; }
-.mova-settings-profile>.mova-avatar { width:100px; height:100px; margin-top:-50px; border-color:#1a1c23; }
-.mova-settings-profile h3 { margin-top:12px; font-size:22px; }
-.mova-settings-profile>span { font-size:13px; }
-.mova-settings-profile>p,.mova-screen-defaults>section>p,.mova-background-settings p { color:var(--mova-ui-muted); font-size:13px; line-height:1.55; }
-
-/* Calls */
-.mova-tg-app>.mova-open-chat.is-in-call { background:#090b10; border:1px solid rgba(255,255,255,.05); border-radius:20px; }
-.mova-open-chat.is-in-call>.mova-call-host>.mova-call-stage { background:radial-gradient(circle at 50% 34%,#171b24 0,#090b10 70%); }
-.mova-open-chat.is-in-call .mova-call-stage>header strong { font-size:18px; font-weight:700; }
-.mova-open-chat.is-in-call .mova-call-stage>header>span>small { color:#8b909b; font-size:12px; }
-.mova-open-chat.is-in-call .mova-call-tile { background:#171a21; border-color:rgba(255,255,255,.07); border-radius:16px; box-shadow:0 12px 30px rgba(0,0,0,.18); }
-.mova-open-chat.is-in-call .mova-call-tile.is-speaking { border-color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 70%,white); box-shadow:0 0 0 2px color-mix(in srgb,var(--mova-accent-color,#8774e1) 25%,transparent); }
-.mova-open-chat.is-in-call .mova-call-controls { min-height:64px; padding:10px 10px 6px; background:rgba(26,28,35,.92); border-color:var(--mova-ui-line-strong); box-shadow:0 18px 52px rgba(0,0,0,.44); }
-.mova-open-chat.is-in-call .mova-call-control-icon { border-color:rgba(255,255,255,.07); }
-.mova-active-call-banner { border-color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 28%,transparent); box-shadow:0 10px 28px rgba(0,0,0,.15); }
-.mova-call-pending { background:radial-gradient(circle at 50% 32%,#181c26 0,#0b0d12 70%); }
-
-/* Motion is short, purposeful and consistent across surfaces. */
-.mova-tg-sidebar .mova-real-chat-list>button,.mova-tg-compose,.mova-button,.mova-icon-button,.mova-settings>aside>button,.mova-create-tabs button {
-  transition:color 150ms ease,background 150ms ease,border-color 150ms ease,box-shadow 180ms ease,transform 150ms ease;
-}
-.mova-tg-compose:hover,.mova-button:hover { transform:translateY(-1px); }
-.mova-tg-compose:active,.mova-button:active,.mova-icon-button:active { transform:scale(.96); }
-.mova-real-modal-backdrop { animation:mova-polish-fade 160ms ease both; }
-.mova-real-modal-backdrop>section { animation:mova-polish-dialog 220ms cubic-bezier(.2,.8,.25,1) both; }
-@keyframes mova-polish-fade { from { opacity:0 } }
-@keyframes mova-polish-dialog { from { opacity:0; transform:translateY(10px) scale(.985) } }
+/* Common controls, popovers and dialogs are owned by common-ui.css. */
 
 /* Responsive messenger: Discord-like compact rail keeps navigation available. */
 @media(max-width:900px) {
@@ -258,7 +172,6 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-tg-app .mova-real-thread__header>span strong { font-size:15px; }
   .mova-tg-app .mova-real-messages { padding:20px 12px; }
   .mova-tg-app .mova-real-message>div { max-width:88%; }
-  .mova-tg-app .mova-real-composer { width:calc(100% - 12px); margin:6px 0 max(6px,env(safe-area-inset-bottom)); border-radius:17px; }
   .mova-real-modal-backdrop { padding:10px; }
   .mova-settings { grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr); height:min(780px,calc(100dvh - 20px)); }
   .mova-settings>aside { flex-direction:row; align-items:center; overflow-x:auto; padding:10px; border-right:0; border-bottom:1px solid var(--mova-ui-line); }
@@ -303,9 +216,6 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-settings h2 { font-size:23px; }
   .mova-audio-settings>section,.mova-background-settings>section { padding:16px; }
   .mova-tg-app .mova-real-thread__header>div>.mova-icon-button { display:none; }
-  .mova-tg-app .mova-real-composer { align-items:center; min-height:56px; padding:5px; overflow:visible; }
-  .mova-tg-app .mova-real-composer textarea { width:0; min-width:0; min-height:44px; max-height:min(120px,28dvh); padding:11px 2px; overflow-x:hidden; line-height:22px; }
-  .mova-tg-app .mova-real-composer>.mova-icon-button,.mova-tg-app .mova-real-composer>button:last-of-type { width:42px; height:42px; flex-basis:42px; }
   .mova-tg-app .mova-real-messages { overscroll-behavior:contain; }
 }
 

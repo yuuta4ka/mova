@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, Download, EyeOff, FileText, Gamepad2, HeadphoneOff, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneOff, Plus, Reply, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, FileText, Gamepad2, HeadphoneOff, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
-import { Avatar, Button, IconButton } from './components/Primitives';
-import { AppleEmoji } from './components/AppleEmoji';
+import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, useToast } from './components/Primitives';
+import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
+import { EmojiPicker } from './components/EmojiPicker';
+import { buildMediaGallery, MediaViewer } from './components/MediaViewer';
 import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioSettings } from './lib/audioSettings';
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
 import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } from './lib/accentSettings';
 import { requestMessageNotificationPermission, showMessageNotification } from './lib/messageNotifications';
 import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
+import { getMessageStructure } from './lib/messageGrouping';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
@@ -72,6 +75,74 @@ function MessageListSkeleton() {
   return <div className="mova-message-skeleton" aria-label="Загружаем сообщения">{Array.from({ length: 6 }, (_, index) => <i className={index % 3 === 1 ? 'is-own' : ''} key={index}><b /><span /></i>)}</div>;
 }
 
+const messageUrlPattern = /https?:\/\/[^\s<>"']+/giu;
+const urlTrailingPunctuation = /[.,!?;:…]/u;
+const messageUrlDisplayMaxLength = 48;
+const trimUrlPunctuation = (candidate: string) => {
+  let url = candidate;
+  let trailing = '';
+  while (url && urlTrailingPunctuation.test(url.at(-1) || '')) {
+    trailing = `${url.at(-1)}${trailing}`;
+    url = url.slice(0, -1);
+  }
+  for (const [opening, closing] of [
+    ['(', ')'],
+    ['[', ']'],
+    ['{', '}'],
+  ]) {
+    while (url.endsWith(closing) && url.split(closing).length > url.split(opening).length) {
+      trailing = `${closing}${trailing}`;
+      url = url.slice(0, -1);
+    }
+  }
+  return { url, trailing };
+};
+const displayMessageUrl = (url: string) => {
+  const parsed = new URL(url);
+  const hostname = parsed.host.replace(/^www\./iu, '');
+  const path = parsed.pathname === '/' ? '' : parsed.pathname;
+  const complete = `${hostname}${path}${parsed.search}${parsed.hash}`;
+  if (complete.length <= messageUrlDisplayMaxLength) return complete;
+
+  const suffix = parsed.search ? '?…' : parsed.hash ? '#…' : '…';
+  const availablePathLength = messageUrlDisplayMaxLength - hostname.length - suffix.length;
+  if (availablePathLength <= 0) return `${hostname}${suffix}`;
+  if (path.length <= availablePathLength) return `${hostname}${path}${suffix}`;
+  const pathEllipsis = parsed.search || parsed.hash ? '…' : '';
+  return `${hostname}${path.slice(0, Math.max(0, availablePathLength - pathEllipsis.length))}${pathEllipsis}${suffix}`;
+};
+
+function MessageText({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(messageUrlPattern)) {
+    const start = match.index;
+    const candidate = match[0];
+    if (start > cursor) parts.push(<AppleEmoji text={text.slice(cursor, start)} key={`text-${cursor}`} />);
+    const { url, trailing } = trimUrlPunctuation(candidate);
+    let linkable = false;
+    try {
+      const parsed = new URL(url);
+      linkable = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      linkable = false;
+    }
+    if (linkable) {
+      parts.push(
+        <a className="mova-message-link" href={url} target="_blank" rel="noopener noreferrer" title={url} key={`link-${start}`}>
+          {displayMessageUrl(url)}
+        </a>,
+      );
+      if (trailing) parts.push(<AppleEmoji text={trailing} key={`trailing-${start}`} />);
+    } else {
+      parts.push(<AppleEmoji text={candidate} key={`text-${start}`} />);
+    }
+    cursor = start + candidate.length;
+  }
+  if (cursor < text.length) parts.push(<AppleEmoji text={text.slice(cursor)} key={`text-${cursor}`} />);
+  return <>{parts}</>;
+}
+
 interface ClientCache<T> {
   value: T;
   updatedAt: number;
@@ -94,7 +165,7 @@ export const updateConversationLastMessage = (items: AppConversation[], message:
     ),
   );
 };
-const reconcileClientMessage = (items: AppMessage[], message: AppMessage) => {
+export const reconcileClientMessage = (items: AppMessage[], message: AppMessage) => {
   const matchingClientId = message.clientId ? items.findIndex((item) => item.clientId === message.clientId) : -1;
   if (matchingClientId >= 0) return items.map((item, index) => (index === matchingClientId ? message : item));
   if (items.some((item) => item.id === message.id)) return items.map((item) => (item.id === message.id ? message : item));
@@ -111,17 +182,42 @@ const clearClientCache = () => {
   loadedImageSources.clear();
 };
 
-function MessageStatus({ message, conversation }: { message: AppMessage; conversation: AppConversation }) {
+function MessageStatus({ message, conversation, onRetry, retrying = false }: { message: AppMessage; conversation: AppConversation; onRetry?: () => void; retrying?: boolean }) {
   if (message.deliveryState === 'sending')
     return (
-      <span className="mova-message-status is-sending" role="img" aria-label="Отправляется" title="Отправляется">
-        <Clock size={13} aria-hidden="true" />
+      <span className="mova-message-status-slot">
+        <span className="mova-message-status is-sending" role="img" aria-label="Отправляется" title="Отправляется">
+          <Clock size={13} aria-hidden="true" />
+        </span>
+      </span>
+    );
+  if (message.deliveryState === 'failed' && onRetry)
+    return (
+      <span className="mova-message-status-slot has-retry">
+        <span className="mova-message-status is-failed" role="img" aria-label="Не отправлено" title="Не отправлено">
+          <X size={12} aria-hidden="true" />
+        </span>
+        <button
+          type="button"
+          className="mova-message-retry"
+          aria-label="Повторить"
+          title="Повторить отправку"
+          disabled={retrying}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRetry();
+          }}
+        >
+          <RotateCcw size={12} aria-hidden="true" />
+        </button>
       </span>
     );
   if (message.deliveryState === 'failed')
     return (
-      <span className="mova-message-status is-failed" role="img" aria-label="Не отправлено" title="Не отправлено">
-        <X size={13} aria-hidden="true" />
+      <span className="mova-message-status-slot">
+        <span className="mova-message-status is-failed" role="img" aria-label="Не отправлено" title="Не отправлено">
+          <X size={12} aria-hidden="true" />
+        </span>
       </span>
     );
   if (!message.sentAt) return null;
@@ -130,81 +226,94 @@ function MessageStatus({ message, conversation }: { message: AppMessage; convers
   const allRead = recipients.length > 0 && readCount === recipients.length;
   const label = allRead ? (recipients.length === 1 ? 'Прочитано' : 'Прочитано всеми') : readCount ? `Прочитано: ${readCount} из ${recipients.length}` : 'Отправлено';
   return (
-    <span className={`mova-message-status ${allRead ? 'is-read' : readCount ? 'is-partially-read' : 'is-sent'}`} role="img" aria-label={label} title={label}>
-      {readCount ? <CheckCheck size={13} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}
+    <span className="mova-message-status-slot">
+      <span className={`mova-message-status ${allRead ? 'is-read' : readCount ? 'is-partially-read' : 'is-sent'}`} role="img" aria-label={label} title={label}>
+        {readCount ? <CheckCheck size={13} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}
+      </span>
     </span>
   );
 }
 
-function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: boolean; onClose: () => void; onSaved: (user: AppUser) => void }) {
+const editableHandle = (handle: string) => handle.replace(/^@+/, '');
+const profileBioLimit = 240;
+const profileBioMinHeight = 96;
+const profileBioMaxHeight = 224;
+const readableProfileError = (message: string) => {
+  if (message === 'Юзернейм начинается с @ и содержит 3–24 латинских символа')
+    return 'Имя пользователя должно содержать 3–24 латинских символа, цифры, точку или подчёркивание.';
+  if (message === 'Этот юзернейм уже занят') return 'Это имя пользователя уже занято';
+  return message;
+};
+
+export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: boolean; onClose: () => void; onSaved: (user: AppUser) => void }) {
   const [form, setForm] = useState({
     name: user.name,
-    handle: user.handle,
+    handle: editableHandle(user.handle),
     bio: user.bio || '',
     avatarDataUrl: user.avatarDataUrl || '',
     bannerDataUrl: user.bannerDataUrl || '',
-    activityName: user.activity?.name || '',
   });
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const bioRef = useRef<HTMLTextAreaElement>(null);
+  const toast = useToast();
+  const showError = (message: string) => toast.push(readableProfileError(message), 'danger');
+  const resizeBio = useCallback((textarea: HTMLTextAreaElement | null) => {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const contentHeight = Math.max(profileBioMinHeight, textarea.scrollHeight);
+    textarea.style.height = `${Math.min(contentHeight, profileBioMaxHeight)}px`;
+    textarea.style.overflowY = contentHeight > profileBioMaxHeight ? 'auto' : 'hidden';
+  }, []);
   useEffect(() => {
-    if (open)
+    if (open) {
       setForm({
         name: user.name,
-        handle: user.handle,
+        handle: editableHandle(user.handle),
         bio: user.bio || '',
         avatarDataUrl: user.avatarDataUrl || '',
         bannerDataUrl: user.bannerDataUrl || '',
-        activityName: user.activity?.name || '',
       });
+    }
   }, [open, user]);
-  if (!open) return null;
+  useEffect(() => resizeBio(bioRef.current), [form.bio, open, resizeBio]);
   const selectProfileImage = async (file: File | undefined, field: 'avatarDataUrl' | 'bannerDataUrl') => {
     if (!file) return;
-    if (file.size > 30_000_000) return setError('Фотография должна быть меньше 30 МБ');
-    setError('');
+    if (file.size > 30_000_000) return showError('Фотография должна быть меньше 30 МБ');
     try {
       const options = field === 'avatarDataUrl' ? { maxDimension: 1024, maxBytes: 650_000, quality: 0.94, skipBelowBytes: 120_000 } : { maxDimension: 2560, maxBytes: 1_600_000, quality: 0.94, skipBelowBytes: 180_000 };
       const prepared = await prepareImageDataUrl(file, options);
       setForm((current) => ({ ...current, [field]: prepared.dataUrl }));
     } catch (imageError) {
-      setError(imageError instanceof Error ? imageError.message : 'Не удалось обработать фотографию');
+      showError(imageError instanceof Error ? imageError.message : 'Не удалось обработать фотографию');
     }
   };
   const save = async () => {
     setLoading(true);
-    setError('');
     try {
       const result = await api.updateProfile({
         name: form.name,
-        handle: form.handle.startsWith('@') ? form.handle : `@${form.handle}`,
+        handle: `@${form.handle}`,
         bio: form.bio,
         avatarDataUrl: form.avatarDataUrl,
         bannerDataUrl: form.bannerDataUrl,
-        activity: form.activityName.trim()
-          ? {
-              name: form.activityName.trim(),
-              startedAt: user.activity?.name === form.activityName.trim() ? user.activity.startedAt : new Date().toISOString(),
-            }
-          : null,
+        activity: user.activity || null,
       });
       onSaved(result.user);
       onClose();
     } catch (profileError) {
-      setError(profileError instanceof Error ? profileError.message : 'Не удалось сохранить профиль');
+      showError(profileError instanceof Error ? profileError.message : 'Не удалось сохранить профиль');
     } finally {
       setLoading(false);
     }
   };
   return (
-    <div className="mova-real-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="mova-glass-card mova-profile-editor" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+    <DialogSurface open={open} onClose={onClose} className="mova-glass-card mova-profile-editor" labelledBy="profile-title">
         <header>
           <div>
-            <h2 id="profile-title">Ваш профиль</h2>
+            <h2 id="profile-title">Редактировать профиль</h2>
             <p>Так вас видят другие пользователи Mova</p>
           </div>
-          <IconButton label="Закрыть" onClick={onClose}>
+          <IconButton data-dialog-close label="Закрыть" onClick={onClose}>
             <X size={18} />
           </IconButton>
         </header>
@@ -221,7 +330,7 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
             </label>
           </div>
           <div className="mova-profile-avatar-edit">
-            <Avatar name={form.name || user.name} src={form.avatarDataUrl} color={user.color} size="xl" status={avatarStatus(user.presence)} />
+            <Avatar name={form.name || user.name} src={form.avatarDataUrl} color={user.color} size="xl" />
             <label aria-label="Изменить аватар">
               <Pencil size={14} />
               <input
@@ -231,31 +340,45 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
               />
             </label>
           </div>
+          <div className="mova-profile-preview__identity">
+            <strong><AppleEmoji text={form.name || user.name} /></strong>
+            <span>@{form.handle || 'username'}</span>
+          </div>
         </div>
         <div className="mova-profile-form">
           <label>
-            <span>Отображаемое имя</span>
-            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Как к вам обращаться" />
+            <span>Имя</span>
+            <span className="mova-control-shell"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Как к вам обращаться" /></span>
           </label>
           <label>
-            <span>Уникальный юзернейм</span>
-            <input value={form.handle} onChange={(event) => setForm({ ...form, handle: event.target.value.toLowerCase() })} placeholder="@username" />
-            <small>По нему вас можно найти. Начинается с @.</small>
-          </label>
-          <label className="is-wide">
-            <span>О себе</span>
-            <textarea value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} placeholder="Пара слов о себе" maxLength={240} />
-          </label>
-          <label className="is-wide">
-            <span>Текущая активность</span>
-            <div className="mova-activity-input">
-              <Gamepad2 size={17} />
-              <input value={form.activityName} onChange={(event) => setForm({ ...form, activityName: event.target.value })} placeholder="Например, играет в Minecraft" />
+            <span>Имя пользователя</span>
+            <div className="mova-profile-username-field mova-control-shell">
+              <span aria-hidden="true">@</span>
+              <input aria-label="Имя пользователя" value={form.handle} onChange={(event) => setForm({ ...form, handle: editableHandle(event.target.value).toLowerCase() })} placeholder="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
             </div>
-            <small>В веб-версии активность указывается вручную.</small>
+          </label>
+          <label className="is-wide">
+            <span className="mova-profile-bio-heading">
+              <span>О себе</span>
+              <span className={`mova-profile-bio-counter${form.bio.length >= profileBioLimit * 0.8 ? ' is-near-limit' : ''}${form.bio.length >= profileBioLimit ? ' is-at-limit' : ''}`} aria-live="polite">
+                {form.bio.length} / {profileBioLimit}{form.bio.length >= profileBioLimit ? ' · лимит' : ''}
+              </span>
+            </span>
+            <span className="mova-control-shell mova-control-shell--textarea"><textarea
+              ref={bioRef}
+              className="mova-profile-bio"
+              aria-label="О себе"
+              value={form.bio}
+              onChange={(event) => {
+                const bio = event.target.value.slice(0, profileBioLimit);
+                setForm({ ...form, bio });
+                resizeBio(event.currentTarget);
+              }}
+              placeholder="Пара слов о себе"
+              maxLength={profileBioLimit}
+            /></span>
           </label>
         </div>
-        {error && <div className="mova-auth-error">{error}</div>}
         <footer>
           <Button variant="ghost" onClick={onClose}>
             Отмена
@@ -264,8 +387,7 @@ function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: 
             Сохранить профиль
           </Button>
         </footer>
-      </section>
-    </div>
+    </DialogSurface>
   );
 }
 
@@ -321,7 +443,6 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
     } else stopTest();
   }, [open, refreshDevices, stopTest]);
   useEffect(() => () => stopTest(), [stopTest]);
-  if (!open) return null;
   const startTest = async () => {
     if (testing) return stopTest();
     try {
@@ -380,8 +501,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
     onClose();
   };
   return (
-    <div className="mova-real-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="mova-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <DialogSurface open={open} onClose={onClose} className="mova-settings" labelledBy="settings-title">
         <aside>
           <div>
             <img src="/mova-logo.png" alt="" />
@@ -410,7 +530,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
               <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : 'Голос и звук'}</h2>
               <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : 'Устройства и обработка голоса'}</p>
             </div>
-            <IconButton label="Закрыть настройки" onClick={onClose}>
+            <IconButton data-dialog-close label="Закрыть настройки" onClick={onClose}>
               <X size={18} />
             </IconButton>
           </header>
@@ -529,8 +649,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
             <Button onClick={save}>Сохранить настройки</Button>
           </footer>
         </main>
-      </section>
-    </div>
+    </DialogSurface>
   );
 }
 
@@ -645,7 +764,6 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
     const timer = window.setInterval(() => setActivityTick((value) => value + 1), 60_000);
     return () => window.clearInterval(timer);
   }, [open, user.activity]);
-  if (!open) return null;
   const setPresence = async (presence: AppUser['presence'], duration?: number | 'forever') => {
     const dndUntil = presence === 'dnd' ? (duration === 'forever' || !duration ? 'forever' : new Date(Date.now() + duration).toISOString()) : null;
     const result = await api.updatePresence(presence, dndUntil);
@@ -661,7 +779,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
     ['Навсегда', 'forever'],
   ];
   return (
-    <div className="mova-account-menu mova-glass-card">
+    <PopoverSurface open={open} className="mova-account-menu mova-glass-card" ariaLabel="Меню аккаунта">
       <div className="mova-account-profile">
         {user.bannerDataUrl && <div style={{ backgroundImage: `url(${user.bannerDataUrl})` }} />}
         <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="lg" status={avatarStatus(user.presence)} />
@@ -680,17 +798,17 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
         </div>
       )}
       <button type="button" onClick={() => void setPresence('online')}>
-        <i className="online" />
+        <StatusIndicator status="online" inline />
         <span>В сети</span>
         {user.presence === 'online' && <Check size={14} />}
       </button>
       <button type="button" onClick={() => void setPresence('idle')}>
-        <i className="idle" />
+        <StatusIndicator status="idle" inline />
         <span>Отошёл</span>
         {user.presence === 'idle' && <Check size={14} />}
       </button>
       <button type="button" onClick={() => setDndOpen(!dndOpen)}>
-        <i className="dnd" />
+        <StatusIndicator status="dnd" inline />
         <span>Не беспокоить</span>
         <ChevronDown size={14} />
       </button>
@@ -705,7 +823,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
         </div>
       )}
       <button type="button" onClick={() => void setPresence('invisible')}>
-        <EyeOff size={15} />
+        <StatusIndicator status="invisible" inline />
         <span>Невидимый</span>
         {user.presence === 'invisible' && <Check size={14} />}
       </button>
@@ -734,7 +852,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
         <LogOut size={15} />
         <span>Выйти</span>
       </button>
-    </div>
+    </PopoverSurface>
   );
 }
 
@@ -825,13 +943,6 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
       setError('');
     }
   }, [open]);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [open, onClose]);
-  if (!open) return null;
   const create = async () => {
     setLoading(true);
     setError('');
@@ -852,14 +963,13 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
   const visibleUsers = users.filter((user) => `${user.name} ${user.handle}`.toLocaleLowerCase().includes(memberQuery.toLocaleLowerCase()));
   const selectedUsers = selected.map((id) => users.find((user) => user.id === id)).filter((user): user is AppUser => Boolean(user));
   return (
-    <div className="mova-real-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="mova-glass-card mova-create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+    <DialogSurface open={open} onClose={onClose} className="mova-glass-card mova-create-modal" labelledBy="create-title" initialFocus="first">
         <header>
           <div>
             <h2 id="create-title">Новый чат</h2>
             <p>{kind === 'direct' ? 'Выберите человека — и можно начинать' : 'Название и участники в одном окне'}</p>
           </div>
-          <IconButton label="Закрыть" onClick={onClose}>
+          <IconButton data-dialog-close label="Закрыть" onClick={onClose}>
             <X size={19} />
           </IconButton>
         </header>
@@ -882,15 +992,15 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
         </div>
         <div className="mova-create-fields">
           {kind === 'group' && (
-            <label className="mova-create-name">
+            <label className="mova-create-name mova-control-shell">
               <Users size={17} />
-              <input autoFocus value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="Название группы" />
+              <input data-dialog-initial autoFocus value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="Название группы" />
               <small>{title.trim().length}/80</small>
             </label>
           )}
-          <label className="mova-create-search">
+          <label className="mova-create-search mova-control-shell">
             <Search size={17} />
-            <input autoFocus={kind === 'direct'} value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Имя или @username" />
+            <input data-dialog-initial={kind === 'direct' || undefined} autoFocus={kind === 'direct'} value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Имя или @username" />
             {memberQuery && <button type="button" aria-label="Очистить поиск" onClick={() => setMemberQuery('')}><X size={14} /></button>}
           </label>
         </div>
@@ -935,8 +1045,7 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
             {kind === 'group' ? 'Создать' : 'Открыть чат'}
           </Button>
         </footer>
-      </section>
-    </div>
+    </DialogSurface>
   );
 }
 
@@ -1107,12 +1216,18 @@ function CallControlButton({ label, active = false, off = false, danger = false,
       aria-label={label}
       title={label}
       data-tooltip={label}
+      data-control-state={danger ? 'danger' : off ? 'off' : active ? 'active' : 'default'}
+      aria-pressed={danger ? undefined : active}
     >
       <span className="mova-call-control-icon" aria-hidden="true">{children}</span>
       {badge ? <b className="mova-call-chat-unread" aria-hidden="true">{badge}</b> : null}
     </button>
   );
 }
+
+const screenAudioWarningPrefix = 'Экран демонстрируется без звука.';
+const screenAudioToastText = 'Демонстрация без звука. Включите «Поделиться аудио» при выборе экрана.';
+const isScreenAudioWarning = (error: string) => error.startsWith(screenAudioWarningPrefix);
 
 function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onToggleChat, onCallStateChange, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onCallStateChange: (open: boolean) => void; onOpenSettings?: () => void }) {
   const [callConversation, setCallConversation] = useState(conversation);
@@ -1123,9 +1238,22 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
   const [screenMenuOpen, setScreenMenuOpen] = useState(false);
   const [showSelf, setShowSelf] = useState(true);
   const [showNoVideo, setShowNoVideo] = useState(true);
+  const [participantRailVisible, setParticipantRailVisible] = useState(true);
+  const [screenAudioToast, setScreenAudioToast] = useState('');
+  const [screenAudioToastVisible, setScreenAudioToastVisible] = useState(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(() => loadScreenShareSettings());
   const [activeSeconds, setActiveSeconds] = useState(0);
   const startWithCamera = useRef(false);
+  const screenAudioToastSession = useRef<MediaStream | null>(null);
+  const screenAudioToastShown = useRef(false);
+  const screenAudioToastHideTimer = useRef<number | null>(null);
+  const screenAudioToastRemoveTimer = useRef<number | null>(null);
+  const clearScreenAudioToastTimers = useCallback(() => {
+    if (screenAudioToastHideTimer.current !== null) window.clearTimeout(screenAudioToastHideTimer.current);
+    if (screenAudioToastRemoveTimer.current !== null) window.clearTimeout(screenAudioToastRemoveTimer.current);
+    screenAudioToastHideTimer.current = null;
+    screenAudioToastRemoveTimer.current = null;
+  }, []);
   useEffect(() => {
     if (call.state === 'idle' && callConversation.id !== conversation.id) setCallConversation(conversation);
   }, [call.state, callConversation.id, conversation]);
@@ -1141,6 +1269,37 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
   useEffect(() => {
     if (!call.screenStream) setScreenMenuOpen(false);
   }, [call.screenStream]);
+  useEffect(() => {
+    const stream = call.screenStream;
+    if (!stream) {
+      clearScreenAudioToastTimers();
+      screenAudioToastSession.current = null;
+      screenAudioToastShown.current = false;
+      setScreenAudioToastVisible(false);
+      setScreenAudioToast('');
+      return;
+    }
+    if (screenAudioToastSession.current !== stream) {
+      clearScreenAudioToastTimers();
+      screenAudioToastSession.current = stream;
+      screenAudioToastShown.current = false;
+      setScreenAudioToastVisible(false);
+      setScreenAudioToast('');
+    }
+    if (!isScreenAudioWarning(call.error) || screenAudioToastShown.current) return;
+    screenAudioToastShown.current = true;
+    setScreenAudioToast(screenAudioToastText);
+    setScreenAudioToastVisible(true);
+    screenAudioToastHideTimer.current = window.setTimeout(() => {
+      setScreenAudioToastVisible(false);
+      screenAudioToastHideTimer.current = null;
+      screenAudioToastRemoveTimer.current = window.setTimeout(() => {
+        setScreenAudioToast('');
+        screenAudioToastRemoveTimer.current = null;
+      }, 190);
+    }, 6_000);
+  }, [call.error, call.screenStream, clearScreenAudioToastTimers]);
+  useEffect(() => () => clearScreenAudioToastTimers(), [clearScreenAudioToastTimers]);
   useEffect(() => {
     if (!moreOpen && !screenMenuOpen) return;
     const closeOutside = (event: PointerEvent) => {
@@ -1205,7 +1364,6 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     return bannerHost
       ? createPortal(
           <section className="mova-active-call-banner" aria-label={`Активный звонок с ${callConversation.title}`}>
-            <span className="mova-active-call-banner__icon" aria-hidden="true"><Phone size={19} /></span>
             <span className="mova-active-call-banner__details">
               <strong><AppleEmoji text={callConversation.title} /></strong>
               <small><i aria-hidden="true" />Звонок идёт · {formatCallDuration(activeSeconds)}</small>
@@ -1317,7 +1475,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
               </span>
             </header>
             {hasScreen ? (
-              <div className="mova-call-grid has-screen">
+              <div className={`mova-call-grid has-screen${participantRailVisible ? '' : ' is-rail-collapsed'}`} data-call-layout="screen-share" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length} data-participant-rail={participantRailVisible ? 'visible' : 'hidden'}>
                 <div className="mova-call-screen-area">
                   {localScreen && <CallVideoTile stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} />}
                   {screenTiles.map((tile) => {
@@ -1344,10 +1502,21 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                     );
                   })}
                 </div>
-                <div className="mova-call-participants">{participantTiles}</div>
+                <div className={`mova-call-participant-rail${participantRailVisible ? '' : ' is-collapsed'}`}>
+                  <button
+                    type="button"
+                    className="mova-call-participant-rail-toggle"
+                    aria-label={participantRailVisible ? 'Скрыть участников' : 'Показать участников'}
+                    aria-expanded={participantRailVisible}
+                    onClick={() => setParticipantRailVisible((visible) => !visible)}
+                  >
+                    {participantRailVisible ? <ChevronDown size={17} /> : <ChevronUp size={17} />}
+                  </button>
+                  <div className="mova-call-participants" aria-hidden={!participantRailVisible}>{participantTiles}</div>
+                </div>
               </div>
             ) : (
-              <div className="mova-call-grid is-participants">
+              <div className="mova-call-grid is-participants" data-call-layout="participants" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length}>
                 <div className="mova-call-primary-participant">{participantTiles[0]}</div>
                 {remoteParticipantTiles.length > 1 && <div className="mova-call-secondary-participants">{remoteParticipantTiles.slice(1)}</div>}
                 {selfTile && remoteParticipantTiles.length > 0 && <div className="mova-call-self-view">{selfTile}</div>}
@@ -1375,15 +1544,14 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
               >
                 <MonitorUp size={22} />
               </CallControlButton>
-              {!chatOpen && (
-                <CallControlButton
-                  label={unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}
-                  badge={unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined}
-                  onClick={onToggleChat}
-                >
-                  <MessageCircle size={22} />
-                </CallControlButton>
-              )}
+              <CallControlButton
+                label={chatOpen ? 'Закрыть чат' : unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}
+                active={chatOpen}
+                badge={!chatOpen && unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined}
+                onClick={onToggleChat}
+              >
+                <MessageCircle size={22} />
+              </CallControlButton>
               <CallControlButton
                 label="Дополнительно"
                 active={moreOpen}
@@ -1451,7 +1619,12 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                 </button>
               </div>
             )}
-            {call.error && <div className="mova-call-error">{call.error}</div>}
+            {call.error && !isScreenAudioWarning(call.error) && <div className="mova-call-error">{call.error}</div>}
+            {screenAudioToast && (
+              <div className={`mova-call-toast${screenAudioToastVisible ? ' is-visible' : ' is-hiding'}`} role="status" aria-live="polite">
+                {screenAudioToast}
+              </div>
+            )}
           </section>,
           stageHost,
         )
@@ -1598,15 +1771,88 @@ function CallVolumeMenu({ control, point, onClose }: { control: CallVolumeContro
     document.body,
   );
 }
-function CallTileShell({ className, label, muted, deafened, screen = false, speaking = false, expandable = true, expanded, onExpandedChange, volume, children }: { className: string; label: string; muted?: boolean; deafened?: boolean; screen?: boolean; speaking?: boolean; expandable?: boolean; expanded: boolean; onExpandedChange: (expanded: boolean) => void; volume?: CallVolumeControl; children: ReactNode }) {
+const screenAspectRatioFallback = 16 / 10;
+const validMediaAspectRatio = (value: number) => Number.isFinite(value) && value >= 0.2 && value <= 5;
+const streamAspectRatio = (stream: MediaStream) => {
+  const settings = stream.getVideoTracks()[0]?.getSettings();
+  const ratio = Number(settings?.aspectRatio) || (Number(settings?.width) / Number(settings?.height));
+  return validMediaAspectRatio(ratio) ? ratio : screenAspectRatioFallback;
+};
+function CallTileShell({ className, label, muted, deafened, screen = false, speaking = false, expandable = true, expanded, onExpandedChange, volume, mediaAspectRatio, children }: { className: string; label: string; muted?: boolean; deafened?: boolean; screen?: boolean; speaking?: boolean; expandable?: boolean; expanded: boolean; onExpandedChange: (expanded: boolean) => void; volume?: CallVolumeControl; mediaAspectRatio?: number; children: ReactNode }) {
   const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null);
+  const [expandedUiVisible, setExpandedUiVisible] = useState(true);
+  const [expandedClosing, setExpandedClosing] = useState(false);
+  const autohideTimer = useRef<number | null>(null);
+  const expandedCloseTimer = useRef<number | null>(null);
   const mobileCallLayout = typeof window !== 'undefined' && (window.matchMedia?.('(max-width: 760px)').matches ?? false);
+  const coarsePointer = typeof window !== 'undefined' && (window.matchMedia?.('(pointer: coarse)').matches ?? false);
+  const reducedMotion = typeof window !== 'undefined' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
+  const clearAutohide = useCallback(() => {
+    if (autohideTimer.current !== null) window.clearTimeout(autohideTimer.current);
+    autohideTimer.current = null;
+  }, []);
+  const clearExpandedClose = useCallback(() => {
+    if (expandedCloseTimer.current !== null) window.clearTimeout(expandedCloseTimer.current);
+    expandedCloseTimer.current = null;
+  }, []);
+  const requestExpandedChange = useCallback((nextExpanded: boolean) => {
+    clearExpandedClose();
+    if (!nextExpanded && expanded && !reducedMotion) {
+      setExpandedClosing(true);
+      expandedCloseTimer.current = window.setTimeout(() => {
+        setExpandedClosing(false);
+        onExpandedChange(false);
+        expandedCloseTimer.current = null;
+      }, 190);
+      return;
+    }
+    setExpandedClosing(false);
+    onExpandedChange(nextExpanded);
+  }, [clearExpandedClose, expanded, onExpandedChange, reducedMotion]);
+  const scheduleAutohide = useCallback(() => {
+    clearAutohide();
+    if (!expanded || expandedClosing || coarsePointer) return;
+    autohideTimer.current = window.setTimeout(() => {
+      const openMenu = document.querySelector('.mova-call-more,.mova-screen-menu,.mova-call-volume-menu');
+      const interactiveSurfaces = Array.from(document.querySelectorAll('.mova-call-controls,.mova-call-more,.mova-screen-menu,.mova-call-volume-menu,.mova-call-chat-header,.mova-real-composer'));
+      if (openMenu || interactiveSurfaces.some((surface) => surface.contains(document.activeElement) || surface.matches(':hover'))) {
+        scheduleAutohide();
+        return;
+      }
+      setExpandedUiVisible(false);
+      autohideTimer.current = null;
+    }, 2_800);
+  }, [clearAutohide, coarsePointer, expanded, expandedClosing]);
+  const revealExpandedUi = useCallback(() => {
+    if (!expanded) return;
+    setExpandedUiVisible(true);
+    scheduleAutohide();
+  }, [expanded, scheduleAutohide]);
   useEffect(() => {
     if (!expanded) return;
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && onExpandedChange(false);
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [expanded, onExpandedChange]);
+    setExpandedUiVisible(true);
+    scheduleAutohide();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') requestExpandedChange(false);
+      else revealExpandedUi();
+    };
+    const handlePointerMove = () => revealExpandedUi();
+    const handlePointerDown = (event: PointerEvent) => {
+      if ((event.target as Element).closest('.mova-call-controls,.mova-call-more,.mova-screen-menu,.mova-call-volume-menu,.mova-call-chat-header,.mova-real-composer')) revealExpandedUi();
+    };
+    window.addEventListener('keydown', handleKey);
+    if (!coarsePointer) {
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerdown', handlePointerDown);
+    }
+    return () => {
+      clearAutohide();
+      window.removeEventListener('keydown', handleKey);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [clearAutohide, coarsePointer, expanded, requestExpandedChange, revealExpandedUi, scheduleAutohide]);
+  useEffect(() => () => clearExpandedClose(), [clearExpandedClose]);
   const fullscreenLabel = expanded ? 'Закрыть полноэкранный режим' : screen ? 'Открыть демонстрацию на весь экран' : `Открыть ${label} на весь экран`;
   const openMenu = (event: ReactMouseEvent<HTMLElement>) => {
     if (!volume) return;
@@ -1614,10 +1860,39 @@ function CallTileShell({ className, label, muted, deafened, screen = false, spea
     setMenuPoint({ x: event.clientX, y: event.clientY });
   };
   const tile = (
-    <article className={`mova-call-tile ${className} ${speaking && !muted ? 'is-speaking' : ''} ${expanded ? 'is-expanded' : ''}`} data-speaking={speaking && !muted ? 'true' : undefined} data-self-view={className.includes('is-self') ? 'true' : undefined} onDoubleClick={() => expandable && onExpandedChange(!expanded)} onContextMenu={openMenu}>
+    <article
+      className={`mova-call-tile ${className} ${speaking && !muted ? 'is-speaking' : ''} ${expanded ? `is-expanded ${expandedUiVisible ? 'is-ui-visible' : 'is-ui-hidden'}${expandedClosing ? ' is-exiting' : ''}` : ''}`}
+      style={screen && mediaAspectRatio ? { '--mova-call-source-ratio': mediaAspectRatio } as CSSProperties : undefined}
+      role={screen ? 'button' : undefined}
+      tabIndex={screen ? 0 : undefined}
+      aria-label={screen ? fullscreenLabel : undefined}
+      data-speaking={speaking && !muted ? 'true' : undefined}
+      data-self-view={className.includes('is-self') ? 'true' : undefined}
+      data-source-aspect-ratio={screen && mediaAspectRatio ? String(mediaAspectRatio) : undefined}
+      data-expanded-ui={expanded ? (expandedUiVisible ? 'visible' : 'hidden') : undefined}
+      data-expanded-motion={expanded ? (reducedMotion ? 'reduced' : 'animated') : undefined}
+      onClick={(event) => {
+        if (!screen || !expandable || (event.target as Element).closest('button')) return;
+        requestExpandedChange(!expanded);
+      }}
+      onDoubleClick={() => !screen && expandable && requestExpandedChange(!expanded)}
+      onKeyDown={(event) => {
+        if (screen && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          requestExpandedChange(!expanded);
+        }
+      }}
+      onContextMenu={openMenu}
+      onFocusCapture={revealExpandedUi}
+      onPointerDown={(event) => {
+        if (screen || !expanded || (!coarsePointer && event.pointerType !== 'touch') || (event.target as Element).closest('button')) return;
+        clearAutohide();
+        setExpandedUiVisible((visible) => !visible);
+      }}
+    >
       {children}
-      {expandable && (
-        <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => onExpandedChange(!expanded)}>
+      {expandable && !screen && (
+        <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => requestExpandedChange(!expanded)}>
           {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
         </button>
       )}
@@ -1630,15 +1905,23 @@ function CallTileShell({ className, label, muted, deafened, screen = false, spea
 function CallVideoTile({ stream, label, kind, mirrored = false, muted, deafened, speaking = false, selfView = false, volume }: { stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [expanded, setExpanded] = useState(false);
+  const [sourceAspectRatio, setSourceAspectRatio] = useState(() => kind === 'screen' ? streamAspectRatio(stream) : undefined);
+  const syncSourceAspectRatio = useCallback(() => {
+    if (kind !== 'screen') return;
+    const video = videoRef.current;
+    const ratio = video && video.videoWidth > 0 && video.videoHeight > 0 ? video.videoWidth / video.videoHeight : streamAspectRatio(stream);
+    setSourceAspectRatio(validMediaAspectRatio(ratio) ? ratio : screenAspectRatioFallback);
+  }, [kind, stream]);
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
       void videoRef.current.play().catch(() => undefined);
     }
-  }, [stream, expanded]);
+    syncSourceAspectRatio();
+  }, [stream, expanded, syncSourceAspectRatio]);
   return (
-    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} speaking={speaking} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
-      <video ref={videoRef} autoPlay playsInline muted className={mirrored ? 'is-mirrored' : ''} />
+    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} speaking={speaking} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
+      <video ref={videoRef} autoPlay playsInline muted className={mirrored ? 'is-mirrored' : ''} onLoadedMetadata={syncSourceAspectRatio} onResize={syncSourceAspectRatio} />
     </CallTileShell>
   );
 }
@@ -1660,7 +1943,7 @@ function CallTileLabel({ label, muted, deafened, screen }: { label: string; mute
   );
 }
 
-export function RealMessages({ conversation, currentUser, messages, loading = false, typingUserIds = [], onSend, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; loading?: boolean; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
+export function RealMessages({ conversation, currentUser, messages, loading = false, historyError = false, typingUserIds = [], onSend, onRetry, onRetryHistory, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; loading?: boolean; historyError?: boolean; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onRetry?: (message: AppMessage) => Promise<void>; onRetryHistory?: () => void; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -1668,6 +1951,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [profileInfoOpen, setProfileInfoOpen] = useState(false);
   const [, setPresenceTick] = useState(0);
   const [muted, setMuted] = useState(() => localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
@@ -1677,12 +1961,14 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [attachment, setAttachment] = useState<MessageAttachment | undefined>();
   const [attachmentError, setAttachmentError] = useState('');
+  const retryingMessagesRef = useRef(new Set<string>());
+  const [retryingMessageIds, setRetryingMessageIds] = useState<Set<string>>(() => new Set());
   const [replyingTo, setReplyingTo] = useState<AppMessage | null>(null);
   const [editingMessage, setEditingMessage] = useState<AppMessage | null>(null);
   const [messageMenu, setMessageMenu] = useState<{ message: AppMessage; x: number; y: number } | null>(null);
   const [replyHighlightId, setReplyHighlightId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState(false);
-  const [imagePreview, setImagePreview] = useState<MessageAttachment | null>(null);
+  const [imagePreviewId, setImagePreviewId] = useState<string | null>(null);
   const [callOpen, setCallOpen] = useState(false);
   const [callChatOpen, setCallChatOpen] = useState(false);
   const [callChatUnread, setCallChatUnread] = useState(0);
@@ -1693,6 +1979,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   });
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
+  const emojiButton = useRef<HTMLButtonElement>(null);
+  const composerSelection = useRef({ start: 0, end: 0 });
   const threadRef = useRef<HTMLElement>(null);
   const messagesContainer = useRef<HTMLDivElement>(null);
   const messageElements = useRef(new Map<string, HTMLElement>());
@@ -1706,6 +1994,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const replyScrollAnimation = useRef<number | null>(null);
   const knownCallMessageIds = useRef(new Set(messages.map((message) => message.id)));
   const other = conversation.members.find((member) => member.id !== currentUser.id);
+  const messageStructure = useMemo(() => getMessageStructure(messages), [messages]);
+  const mediaGallery = useMemo(() => buildMediaGallery(messages), [messages]);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
   const matchingMessages = useMemo(() => (normalizedSearch ? messages.filter((message) => message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)).reverse() : []), [messages, normalizedSearch]);
   const activeMatchId = matchingMessages[activeMatchIndex]?.id || matchingMessages[0]?.id;
@@ -1759,7 +2049,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [messageMenu]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const input = composerInput.current;
     if (!input) return;
     input.style.height = '0px';
@@ -1767,6 +2057,37 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     input.style.height = `${height}px`;
     input.style.overflowY = input.scrollHeight > 120 ? 'auto' : 'hidden';
   }, [value, editingMessage]);
+
+  const rememberComposerSelection = () => {
+    const input = composerInput.current;
+    if (!input) return;
+    composerSelection.current = {
+      start: input.selectionStart ?? value.length,
+      end: input.selectionEnd ?? value.length,
+    };
+  };
+
+  const closeEmojiPicker = (restoreFocus = false) => {
+    setEmojiOpen(false);
+    if (restoreFocus) window.setTimeout(() => emojiButton.current?.focus(), 0);
+  };
+
+  const insertEmoji = (selectedEmoji: string) => {
+    const { start, end } = composerSelection.current;
+    const safeStart = Math.min(value.length, Math.max(0, start));
+    const safeEnd = Math.min(value.length, Math.max(safeStart, end));
+    const nextValue = `${value.slice(0, safeStart)}${selectedEmoji}${value.slice(safeEnd)}`;
+    const nextCursor = safeStart + selectedEmoji.length;
+    setValue(nextValue);
+    composerSelection.current = { start: nextCursor, end: nextCursor };
+    if (!editingMessage) announceTyping(true);
+    window.setTimeout(() => {
+      const input = composerInput.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(nextCursor, nextCursor);
+    }, 0);
+  };
 
   const replyToMessage = (message: AppMessage) => {
     setMessageMenu(null);
@@ -1781,7 +2102,12 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     setReplyingTo(null);
     setAttachment(undefined);
     setValue(message.content);
-    window.setTimeout(() => composerInput.current?.focus(), 0);
+    window.setTimeout(() => {
+      const input = composerInput.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(message.content.length, message.content.length);
+    }, 0);
   };
 
   const jumpToMessage = useCallback((messageId: string) => {
@@ -1835,14 +2161,19 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
       setSearchOpen(false);
       setDetailsOpen(false);
       setProfileInfoOpen(false);
-      setEmojiOpen(false);
+      closeEmojiPicker();
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      if (emojiOpen) {
+        event.stopPropagation();
+        setEmojiOpen(false);
+        window.setTimeout(() => emojiButton.current?.focus(), 0);
+        return;
+      }
       setSearchOpen(false);
       setDetailsOpen(false);
       setProfileInfoOpen(false);
-      setEmojiOpen(false);
     };
     document.addEventListener('pointerdown', closeOutside);
     window.addEventListener('keydown', closeOnEscape);
@@ -1888,6 +2219,26 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
       setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
     } finally {
       setSending(false);
+    }
+  };
+  const retryFailedMessage = async (message: AppMessage) => {
+    if (!onRetry || message.deliveryState !== 'failed') return;
+    const retryId = message.clientId || message.id;
+    if (retryingMessagesRef.current.has(retryId)) return;
+    retryingMessagesRef.current.add(retryId);
+    setRetryingMessageIds((items) => new Set(items).add(retryId));
+    setSendError('');
+    try {
+      await onRetry(message);
+    } catch (retryFailure) {
+      setSendError(retryFailure instanceof Error ? retryFailure.message : 'Не удалось повторить отправку');
+    } finally {
+      retryingMessagesRef.current.delete(retryId);
+      setRetryingMessageIds((items) => {
+        const next = new Set(items);
+        next.delete(retryId);
+        return next;
+      });
     }
   };
   const chooseFile = async (file?: File) => {
@@ -1936,12 +2287,6 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     void chooseFile(event.dataTransfer.files[0]);
   };
   useEffect(() => {
-    if (!imagePreview) return;
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && setImagePreview(null);
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [imagePreview]);
-  useEffect(() => {
     setActiveMatchIndex(0);
   }, [normalizedSearch]);
   useEffect(() => {
@@ -1973,6 +2318,9 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     setSendError('');
     setReplyingTo(null);
     setEditingMessage(null);
+    setEmojiOpen(false);
+    setImagePreviewId(null);
+    composerSelection.current = { start: 0, end: 0 };
     setMuted(localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
     setBlocked(localStorage.getItem(`mova-blocked-${conversation.id}`) === 'true');
     positionedAtBottom.current = false;
@@ -2087,11 +2435,11 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
               <strong><AppleEmoji text={conversation.title} /></strong>
               {muted && <BellOff size={15} aria-label="Уведомления выключены" />}
             </span>
-            <small className={typingLabel ? 'is-typing' : ''}>{typingLabel || status}</small>
+            <small>{status}</small>
           </span>
         </button>
         <div>
-          <VoiceCallBar conversation={conversation} currentUser={currentUser} chatOpen={callChatOpen} unreadCount={callChatUnread} onToggleChat={() => setCallChatOpen(true)} onCallStateChange={setCallOpen} />
+          <VoiceCallBar conversation={conversation} currentUser={currentUser} chatOpen={callChatOpen} unreadCount={callChatUnread} onToggleChat={() => setCallChatOpen((open) => !open)} onCallStateChange={setCallOpen} />
           <IconButton
             label="Поиск"
             className={searchOpen ? 'is-active' : ''}
@@ -2244,8 +2592,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </IconButton>
         </div>
       )}
-      {detailsOpen && (
-        <div className="mova-chat-actions-menu" role="menu">
+      <PopoverSurface open={detailsOpen} className="mova-chat-actions-menu" ariaLabel="Действия с чатом">
           <button type="button" role="menuitem" onClick={toggleMuted}>
             <BellOff size={22} />
             <span>{muted ? 'Включить уведомления' : 'Выключить уведомления'}</span>
@@ -2282,14 +2629,23 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
             className="is-danger"
             onClick={() => {
               setDetailsOpen(false);
-              if (window.confirm(`Удалить чат «${conversation.title}»?`)) onDeleteConversation();
+              setDeleteConfirmOpen(true);
             }}
           >
             <Trash2 size={22} />
             <span>Удалить чат</span>
           </button>
-        </div>
-      )}
+      </PopoverSurface>
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="Удалить чат?"
+        description={`Чат «${conversation.title}» исчезнет из списка. Это действие нельзя отменить.`}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          setDeleteConfirmOpen(false);
+          onDeleteConversation();
+        }}
+      />
       {selectingMessages && (
         <div className="mova-message-selection-bar">
           <button
@@ -2311,60 +2667,79 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           <h1><AppleEmoji text={conversation.title} /></h1>
           <p>{conversation.kind === 'direct' ? `Это начало вашей переписки${other ? ` с ${other.name}` : ''}.` : 'Группа создана. Можно начинать разговор.'}</p>
         </div>
+        {historyError && (
+          <div className="mova-message-history-error" role="status">
+            <span>Не удалось загрузить сообщения</span>
+            <button type="button" disabled={loading} onClick={onRetryHistory}>Повторить</button>
+          </div>
+        )}
         {loading && messages.length === 0 ? <MessageListSkeleton /> : messages.map((message, index) => {
+          const structure = messageStructure[index];
+          const messageKey = message.clientId || message.id;
+          const daySeparator = structure.startsDay ? (
+            <div className="mova-message-day-separator" role="separator" aria-label={structure.dayLabel}>
+              <time dateTime={structure.dayKey}>{structure.dayLabel}</time>
+            </div>
+          ) : null;
           const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)));
           if (message.kind === 'call')
             return (
-              <article
-                key={message.id}
-                ref={(element) => {
-                  if (element) messageElements.current.set(message.id, element);
-                  else messageElements.current.delete(message.id);
-                }}
-                className={`mova-call-system-message ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''}`}
-              >
-                <span aria-hidden="true"><PhoneOff size={17} /></span>
-                <span>
-                  <strong>Звонок завершён</strong>
-                  <small>Длительность {formatCallDuration(message.call?.durationSeconds || 0)}</small>
-                </span>
-                <time>{new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>
-              </article>
+              <Fragment key={messageKey}>
+                {daySeparator}
+                <article
+                  ref={(element) => {
+                    if (element) messageElements.current.set(message.id, element);
+                    else messageElements.current.delete(message.id);
+                  }}
+                  className={`mova-call-system-message ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''}`}
+                >
+                  <span aria-hidden="true"><PhoneCall size={17} /></span>
+                  <span>
+                    <strong>Звонок завершён</strong>
+                    <small>Длительность {formatCallDuration(message.call?.durationSeconds || 0)}</small>
+                  </span>
+                  <time>{new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>
+                </article>
+              </Fragment>
             );
           const own = message.authorId === currentUser.id;
-          const previous = messages[index - 1];
-          const grouped = previous?.authorId === message.authorId && new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() < 300000;
-          const next = messages[index + 1];
-          const continuesGroup = next?.authorId === message.authorId && new Date(next.createdAt).getTime() - new Date(message.createdAt).getTime() < 300000;
+          const grouped = !structure.startsGroup;
+          const continuesGroup = !structure.endsGroup;
+          const showGroupAvatarSlot = conversation.kind === 'group' && !own;
           const imageAttachment = Boolean(message.attachment?.type.startsWith('image/'));
           const imageCaption = imageAttachment && Boolean(message.content.trim() || message.replyTo);
           const selectedForAction = selectedMessages.includes(message.id);
           return (
-            <article
-              ref={(element) => {
-                if (element) messageElements.current.set(message.id, element);
-                else messageElements.current.delete(message.id);
-              }}
-              className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${message.deliveryState === 'sending' ? 'is-sending' : message.deliveryState === 'failed' ? 'is-failed' : ''} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
-              onClick={selectingMessages ? () => setSelectedMessages((items) => (selectedForAction ? items.filter((id) => id !== message.id) : [...items, message.id])) : undefined}
-              onContextMenu={(event) => {
-                if (selectingMessages) return;
-                event.preventDefault();
-                const width = 194;
-                const height = own && onEdit ? 100 : 54;
-                setMessageMenu({
-                  message,
-                  x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
-                  y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
-                });
-              }}
-              key={message.clientId || message.id}
-            >
-              {selectingMessages && <span className="mova-message-selector">{selectedForAction && <Check size={14} />}</span>}
-              {!own && !grouped && <Avatar name={message.author.name} src={message.author.avatarDataUrl} color={message.author.color} size="sm" />}
-              <div className="mova-message-body">
-                {conversation.kind === 'group' && !own && !grouped && <strong><AppleEmoji text={message.author.name} /></strong>}
-                <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment ? ' has-file' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
+            <Fragment key={messageKey}>
+              {daySeparator}
+              <article
+                ref={(element) => {
+                  if (element) messageElements.current.set(message.id, element);
+                  else messageElements.current.delete(message.id);
+                }}
+                className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${message.deliveryState === 'sending' ? 'is-sending' : message.deliveryState === 'failed' ? 'is-failed' : ''} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
+                onClick={selectingMessages ? () => setSelectedMessages((items) => (selectedForAction ? items.filter((id) => id !== message.id) : [...items, message.id])) : undefined}
+                onContextMenu={(event) => {
+                  if (selectingMessages) return;
+                  event.preventDefault();
+                  const width = 194;
+                  const height = own && onEdit ? 100 : 54;
+                  setMessageMenu({
+                    message,
+                    x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
+                    y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
+                  });
+                }}
+              >
+                {selectingMessages && <span className="mova-message-selector">{selectedForAction && <Check size={14} />}</span>}
+                {showGroupAvatarSlot && (
+                  <span className="mova-message-avatar-slot">
+                    {structure.endsGroup && <Avatar name={message.author.name} src={message.author.avatarDataUrl} color={message.author.color} size="sm" />}
+                  </span>
+                )}
+                <div className="mova-message-body">
+                  {showGroupAvatarSlot && structure.startsGroup && <strong><AppleEmoji text={message.author.name} /></strong>}
+                  <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment ? ' has-file' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
                   {message.replyTo && (
                     <button
                       type="button"
@@ -2381,7 +2756,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                   )}
                   {message.attachment &&
                     (message.attachment.type.startsWith('image/') ? (
-                      <button type="button" className="mova-message-image" onClick={() => setImagePreview(message.attachment || null)} aria-label={`Открыть изображение ${message.attachment.name}`}>
+                      <button type="button" className="mova-message-image" onClick={() => setImagePreviewId(message.id)} aria-label={`Открыть изображение ${message.attachment.name}`}>
                         <CachedImage
                           src={attachmentSource(message.attachment)}
                           alt={message.attachment.name}
@@ -2403,18 +2778,28 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
                         </span>
                       </a>
                     ))}
-                  {message.content && <p><AppleEmoji text={message.content} /></p>}
-                  {message.editedAt && <span className="mova-message-edited">изменено</span>}
-                  <time>
-                    {new Intl.DateTimeFormat('ru', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    }).format(new Date(message.createdAt))}
-                  </time>
-                  {own && <MessageStatus message={message} conversation={conversation} />}
+                  {message.content && <p className={isEmojiOnlyText(message.content) ? 'mova-message-emoji-only' : undefined}><MessageText text={message.content} /></p>}
+                  <span className={`mova-message-meta${own ? ' is-own' : ''}`}>
+                    {message.editedAt && <span className="mova-message-edited">изменено</span>}
+                    <time>
+                      {new Intl.DateTimeFormat('ru', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      }).format(new Date(message.createdAt))}
+                    </time>
+                    {own && (
+                      <MessageStatus
+                        message={message}
+                        conversation={conversation}
+                        retrying={retryingMessageIds.has(message.clientId || message.id)}
+                        onRetry={message.deliveryState === 'failed' && onRetry && !selectingMessages ? () => void retryFailedMessage(message) : undefined}
+                      />
+                    )}
+                  </span>
+                  </div>
                 </div>
-              </div>
-            </article>
+              </article>
+            </Fragment>
           );
         })}
       </div>
@@ -2426,143 +2811,128 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           void send();
         }}
       >
-        {typingLabel && (
-          <div className="mova-real-typing" role="status" aria-live="polite">
-            <span aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-            <strong>{typingLabel}</strong>
-          </div>
-        )}
-        {(replyingTo || editingMessage) && (
-          <div className={`mova-composer-context${editingMessage ? ' is-editing' : ''}`}>
-            {editingMessage ? <Pencil size={17} /> : <Reply size={17} />}
-            <div className="mova-composer-context__preview">
+        <div className={`mova-real-typing${typingLabel ? '' : ' is-empty'}`} role="status" aria-live="polite" aria-hidden={typingLabel ? undefined : 'true'}>
+          <span aria-hidden="true"><i /><i /><i /></span>
+          <strong>{typingLabel || 'Никто не печатает'}</strong>
+        </div>
+        <div className="mova-composer-panel">
+          {(replyingTo || editingMessage) && (
+            <div className={`mova-composer-context mova-composer-context__preview${editingMessage ? ' is-editing' : ' is-replying'}`}>
+              <span className="mova-composer-row__icon" aria-hidden="true">{editingMessage ? <Pencil size={17} /> : <Reply size={17} />}</span>
               {!editingMessage && replyingTo?.attachment?.type.startsWith('image/') && <img src={attachmentSource(replyingTo.attachment)} alt="" />}
-              <span>
+              <span className="mova-composer-row__copy">
                 <strong>{editingMessage ? 'Редактирование сообщения' : `В ответ ${replyingTo?.author.name}`}</strong>
                 <small><AppleEmoji text={(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'} /></small>
               </span>
+              <button type="button" className="mova-composer-row__remove" aria-label={editingMessage ? 'Отменить редактирование' : 'Отменить ответ'} onClick={() => { setEditingMessage(null); setReplyingTo(null); setValue(''); }}>
+                <X size={16} aria-hidden="true" />
+              </button>
             </div>
-            <button
-              type="button"
-              aria-label={editingMessage ? 'Отменить редактирование' : 'Отменить ответ'}
-              onClick={() => {
-                setEditingMessage(null);
-                setReplyingTo(null);
-                setValue('');
+          )}
+          {attachment && (
+            <div className="mova-attachment-draft">
+              <span className="mova-composer-row__icon">
+                {attachment.type.startsWith('image/') ? <img src={attachmentSource(attachment)} alt="" /> : <FileText size={17} aria-hidden="true" />}
+              </span>
+              <span className="mova-composer-row__copy">
+                <strong><AppleEmoji text={attachment.name} /></strong>
+                <small>{Math.max(1, Math.round(attachment.size / 1024))} КБ</small>
+              </span>
+              <button type="button" className="mova-composer-row__remove" aria-label="Убрать вложение" onClick={() => setAttachment(undefined)}>
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+          <div className="mova-composer-input-row">
+            <input ref={fileInput} type="file" hidden onChange={(event) => { void chooseFile(event.target.files?.[0]); event.target.value = ''; }} />
+            <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
+              <Paperclip size={19} aria-hidden="true" />
+            </IconButton>
+            <textarea
+              ref={composerInput}
+              rows={1}
+              value={value}
+              disabled={blocked}
+              onChange={(event) => {
+                setValue(event.target.value);
+                composerSelection.current = { start: event.target.selectionStart, end: event.target.selectionEnd };
+                if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
               }}
+              onSelect={rememberComposerSelection}
+              onClick={rememberComposerSelection}
+              onKeyUp={rememberComposerSelection}
+              onBlur={() => { rememberComposerSelection(); announceTyping(false); }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && emojiOpen) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeEmojiPicker(true);
+                  return;
+                }
+                if (event.key === 'Escape' && (editingMessage || replyingTo)) {
+                  event.preventDefault();
+                  setEditingMessage(null);
+                  setReplyingTo(null);
+                  setValue('');
+                  return;
+                }
+                if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
+                  const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && message.kind !== 'call' && Boolean(message.content.trim()));
+                  if (latestEditableMessage) {
+                    event.preventDefault();
+                    editOwnMessage(latestEditableMessage);
+                    return;
+                  }
+                }
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+              aria-label={`Сообщение в ${conversation.title}`}
+              placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
+            />
+            <IconButton
+              ref={emojiButton}
+              label="Эмодзи"
+              className={emojiOpen ? 'is-active' : ''}
+              aria-haspopup="dialog"
+              aria-expanded={emojiOpen}
+              onPointerDown={rememberComposerSelection}
+              onClick={() => setEmojiOpen((open) => !open)}
             >
-              <X size={15} />
+              <Smile size={19} aria-hidden="true" />
+            </IconButton>
+            <button className="mova-composer-send" type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
+              <Send size={18} aria-hidden="true" />
             </button>
           </div>
-        )}
-        {attachment && (
-          <div className="mova-attachment-draft">
-            {attachment.type.startsWith('image/') ? <img src={attachmentSource(attachment)} alt="" /> : <FileText size={16} />}
-            <span>{attachment.name}</span>
-            <button type="button" aria-label="Убрать вложение" onClick={() => setAttachment(undefined)}>
-              <X size={14} />
-            </button>
-          </div>
-        )}
-        <input
-          ref={fileInput}
-          type="file"
-          hidden
-          onChange={(event) => {
-            void chooseFile(event.target.files?.[0]);
-            event.target.value = '';
-          }}
-        />
-        <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
-          <Paperclip size={19} />
-        </IconButton>
-        <textarea
-          ref={composerInput}
-          rows={1}
-          value={value}
-          disabled={blocked}
-          onChange={(event) => {
-            setValue(event.target.value);
-            if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
-          }}
-          onBlur={() => announceTyping(false)}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape' && (editingMessage || replyingTo)) {
-              event.preventDefault();
-              setEditingMessage(null);
-              setReplyingTo(null);
-              setValue('');
-              return;
-            }
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          aria-label={`Сообщение в ${conversation.title}`}
-          placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
-        />
-        {emojiOpen && (
-          <div className="mova-emoji-picker">
-            {['😀', '😂', '🥰', '😎', '🤔', '👍', '🔥', '❤️', '🎉', '✨', '👀', '🙏'].map((emoji) => (
-              <button
-                type="button"
-                key={emoji}
-                onClick={() => {
-                  setValue((text) => text + emoji);
-                  if (!editingMessage) announceTyping(true);
-                  setEmojiOpen(false);
-                }}
-              >
-                <AppleEmoji text={emoji} />
-              </button>
-            ))}
-          </div>
-        )}
-        <IconButton label="Эмодзи" className={emojiOpen ? 'is-active' : ''} onClick={() => setEmojiOpen((open) => !open)}>
-          <Smile size={19} />
-        </IconButton>
-        <button type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
-          <Send size={18} />
-        </button>
-        {attachmentError && <span className="mova-attachment-error">{attachmentError}</span>}
-        {sendError && <span className="mova-send-error" role="alert">{sendError}</span>}
+        </div>
+        {emojiOpen && <EmojiPicker onSelect={insertEmoji} onClose={() => closeEmojiPicker(true)} />}
+        <div className="mova-composer-errors" aria-live="polite">
+          {attachmentError && <span className="mova-attachment-error">{attachmentError}</span>}
+          {sendError && <span className="mova-send-error" role="alert">{sendError}</span>}
+        </div>
       </form>
-      {imagePreview &&
+      {imagePreviewId && mediaGallery.some((item) => item.id === imagePreviewId) &&
         createPortal(
-          <div className="mova-image-viewer" role="dialog" aria-modal="true" aria-label={`Просмотр изображения ${imagePreview.name}`} onMouseDown={(event) => event.target === event.currentTarget && setImagePreview(null)}>
-            <div className="mova-image-viewer__toolbar">
-              <span>{imagePreview.name}</span>
-              <a href={attachmentSource(imagePreview)} download={imagePreview.name} aria-label="Скачать изображение">
-                <Download size={19} />
-              </a>
-              <button type="button" aria-label="Закрыть изображение" onClick={() => setImagePreview(null)}>
-                <X size={21} />
-              </button>
-            </div>
-            <img src={attachmentSource(imagePreview)} alt={imagePreview.name} />
-          </div>,
+          <MediaViewer items={mediaGallery} activeId={imagePreviewId} onClose={() => setImagePreviewId(null)} />,
           document.body,
         )}
-      {messageMenu &&
-        createPortal(
-          <div className="mova-message-context-layer" onPointerDown={() => setMessageMenu(null)} onContextMenu={(event) => event.preventDefault()}>
-            <div className="mova-message-context-menu" role="menu" aria-label="Действия с сообщением" style={{ left: messageMenu.x, top: messageMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
-              <button type="button" role="menuitem" onClick={() => replyToMessage(messageMenu.message)}>
+      {createPortal(
+          <div className="mova-message-context-layer" style={{ pointerEvents: messageMenu ? 'auto' : 'none' }} onPointerDown={() => setMessageMenu(null)} onContextMenu={(event) => event.preventDefault()}>
+            <PopoverSurface open={Boolean(messageMenu)} className="mova-message-context-menu" ariaLabel="Действия с сообщением" style={messageMenu ? { left: messageMenu.x, top: messageMenu.y } : undefined}>
+              <button type="button" role="menuitem" onClick={() => messageMenu && replyToMessage(messageMenu.message)}>
                 <Reply size={16} />
                 <span>Ответить</span>
               </button>
-              {messageMenu.message.authorId === currentUser.id && onEdit && (
-                <button type="button" role="menuitem" onClick={() => editOwnMessage(messageMenu.message)}>
+              {messageMenu?.message.authorId === currentUser.id && onEdit && (
+                <button type="button" role="menuitem" onClick={() => messageMenu && editOwnMessage(messageMenu.message)}>
                   <Pencil size={15} />
                   <span>Редактировать</span>
                 </button>
               )}
-            </div>
+            </PopoverSurface>
           </div>,
           document.body,
         )}
@@ -2570,7 +2940,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   );
 }
 
-function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser; onUserUpdate: (user: AppUser) => void; onLogout: () => void }) {
+export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser; onUserUpdate: (user: AppUser) => void; onLogout: () => void }) {
   const SIDEBAR_COMPACT_WIDTH = 76;
   const SIDEBAR_MIN_WIDTH = 260;
   const SIDEBAR_MAX_WIDTH = 560;
@@ -2584,6 +2954,8 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(!isFresh(conversationCache.get(currentUser.id)) || !isFresh(userCache.get(currentUser.id)));
   const [messagesLoading, setMessagesLoading] = useState(() => Boolean(initialSelectedId && !isFresh(messageCache.get(messageCacheKey(currentUser.id, initialSelectedId)))));
+  const [messagesErrorFor, setMessagesErrorFor] = useState<string | null>(null);
+  const [messagesLoadAttempt, setMessagesLoadAttempt] = useState(0);
   const [backgroundColor, setBackgroundColor] = useState(loadBackgroundColor);
   const [accentColor, setAccentColor] = useState(loadAccentColor);
   const [createOpen, setCreateOpen] = useState(false);
@@ -2606,6 +2978,8 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   const typingExpiryTimers = useRef(new Map<string, number>());
   const overviewSyncInFlight = useRef<Promise<void> | null>(null);
   const realtimeReadyCount = useRef(0);
+  const retryingClientIds = useRef(new Set<string>());
+  const notifiedRealtimeMessageIds = useRef(new Set<string>());
   currentUserRef.current = currentUser;
   conversationsRef.current = conversations;
   selectedIdRef.current = selectedId;
@@ -2694,15 +3068,23 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
   useEffect(
     () =>
       realtime.subscribe((event) => {
-        if (event.type === 'message:new' && event.message.authorId !== currentUserRef.current.id && currentUserRef.current.presence !== 'dnd') {
-          const settings = loadAudioSettings();
-          const audio = new Audio(messageSoundUrl);
-          audio.volume = settings.systemVolume / 100;
-          const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
-          const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
-          const play = () => void audio.play().catch(() => undefined);
-          if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
-          else play();
+        if (event.type === 'message:new') {
+          const handledMessageIds = notifiedRealtimeMessageIds.current;
+          const alreadyHandled = handledMessageIds.has(event.message.id);
+          handledMessageIds.add(event.message.id);
+          if (handledMessageIds.size > 500) handledMessageIds.delete(handledMessageIds.values().next().value!);
+          const shouldNotify = !alreadyHandled && event.message.authorId !== currentUserRef.current.id && currentUserRef.current.presence !== 'dnd';
+          if (!shouldNotify) return;
+          if (event.message.kind !== 'call') {
+            const settings = loadAudioSettings();
+            const audio = new Audio(messageSoundUrl);
+            audio.volume = settings.systemVolume / 100;
+            const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
+            const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
+            const play = () => void audio.play().catch(() => undefined);
+            if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
+            else play();
+          }
           const conversation = conversationsRef.current.find((item) => item.id === event.message.conversationId);
           showMessageNotification(event.message, conversation, () => {
             setSelectedId(event.message.conversationId);
@@ -2885,12 +3267,14 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
     if (!selectedId) {
       setMessages([]);
       setMessagesLoading(false);
+      setMessagesErrorFor(null);
       return;
     }
     const key = messageCacheKey(currentUser.id, selectedId);
     const cached = messageCache.get(key);
     if (cached) setMessages(cached.value);
     else setMessages([]);
+    setMessagesErrorFor(null);
     if (isFresh(cached)) {
       setMessagesLoading(false);
       return;
@@ -2902,11 +3286,14 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
         messageCache.set(key, { value: result.messages, updatedAt: Date.now() });
         if (!cancelled) setMessages(result.messages);
       })
+      .catch(() => {
+        if (!cancelled) setMessagesErrorFor(selectedId);
+      })
       .finally(() => !cancelled && setMessagesLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [selectedId, currentUser.id]);
+  }, [selectedId, currentUser.id, messagesLoadAttempt]);
   useEffect(() => {
     const markRead = () => {
       if (!selectedId || document.visibilityState !== 'visible') return;
@@ -2940,6 +3327,37 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       window.removeEventListener('focus', markRead);
     };
   }, [selectedId, messages, currentUser.id]);
+  const updatePendingMessage = (conversationId: string, clientId: string, patch: Partial<AppMessage>) => {
+    const update = (items: AppMessage[]) => items.map((message) => (message.clientId === clientId && !message.sentAt ? { ...message, ...patch } : message));
+    const cacheKey = messageCacheKey(currentUser.id, conversationId);
+    const cached = messageCache.get(cacheKey)?.value || [];
+    messageCache.set(cacheKey, { value: update(cached), updatedAt: Date.now() });
+    setMessages((items) => (selectedIdRef.current === conversationId ? update(items) : items));
+    setConversations((items) => {
+      const next = items.map((conversation) =>
+        conversation.id === conversationId && conversation.lastMessage?.clientId === clientId && !conversation.lastMessage.sentAt
+          ? { ...conversation, lastMessage: { ...conversation.lastMessage, ...patch } }
+          : conversation,
+      );
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  };
+  const acknowledgeMessage = (message: AppMessage) => {
+    const cacheKey = messageCacheKey(currentUser.id, message.conversationId);
+    const cached = messageCache.get(cacheKey)?.value || [];
+    messageCache.set(cacheKey, { value: reconcileClientMessage(cached, message), updatedAt: Date.now() });
+    setMessages((items) => (selectedIdRef.current === message.conversationId ? reconcileClientMessage(items, message) : items));
+    setConversations((items) => {
+      const next = updateConversationLastMessage(items, message);
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  };
+  const sendMessageAttempt = (message: AppMessage) =>
+    api.sendMessage(message.conversationId, message.content, message.attachment, message.replyToId || message.replyTo?.id, message.clientId, (uploadedAttachment) =>
+      updatePendingMessage(message.conversationId, message.clientId || message.id, { attachment: uploadedAttachment }),
+    );
   const send = async (content: string, attachment?: MessageAttachment, replyToId?: string) => {
     if (!selectedId) return;
     const conversationId = selectedId;
@@ -2981,36 +3399,26 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
       return next;
     });
     try {
-      const result = await api.sendMessage(conversationId, content, attachment, replyToId, clientId);
-      const cacheKey = messageCacheKey(currentUser.id, conversationId);
-      const cached = messageCache.get(cacheKey)?.value || [];
-      messageCache.set(cacheKey, { value: reconcileClientMessage(cached, result.message), updatedAt: Date.now() });
-      setMessages((items) => {
-        if (selectedIdRef.current !== conversationId) return items;
-        return reconcileClientMessage(items, result.message);
-      });
-      setConversations((items) => {
-        const next = updateConversationLastMessage(items, result.message);
-        conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
-        return next;
-      });
+      const result = await sendMessageAttempt(optimisticMessage);
+      acknowledgeMessage(result.message);
     } catch (sendFailure) {
-      const markFailed = (items: AppMessage[]) => items.map((message) => (message.clientId === clientId && !message.sentAt ? { ...message, deliveryState: 'failed' as const } : message));
-      const cacheKey = messageCacheKey(currentUser.id, conversationId);
-      const cached = messageCache.get(cacheKey)?.value || [];
-      messageCache.set(cacheKey, { value: markFailed(cached), updatedAt: Date.now() });
-      setMessages((items) => {
-        if (selectedIdRef.current !== conversationId) return items;
-        return markFailed(items);
-      });
-      setConversations((items) =>
-        items.map((conversation) =>
-          conversation.id === conversationId && conversation.lastMessage?.clientId === clientId
-            ? { ...conversation, lastMessage: { ...conversation.lastMessage, deliveryState: 'failed' } }
-            : conversation,
-        ),
-      );
+      updatePendingMessage(conversationId, clientId, { deliveryState: 'failed' });
       throw sendFailure;
+    }
+  };
+  const retry = async (message: AppMessage) => {
+    const clientId = message.clientId;
+    if (!clientId || retryingClientIds.current.has(clientId)) return;
+    retryingClientIds.current.add(clientId);
+    updatePendingMessage(message.conversationId, clientId, { deliveryState: 'sending' });
+    try {
+      const result = await sendMessageAttempt(message);
+      acknowledgeMessage(result.message);
+    } catch (retryFailure) {
+      updatePendingMessage(message.conversationId, clientId, { deliveryState: 'failed' });
+      throw retryFailure;
+    } finally {
+      retryingClientIds.current.delete(clientId);
     }
   };
   const edit = async (messageId: string, content: string) => {
@@ -3126,8 +3534,11 @@ function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser
           currentUser={currentUser}
           messages={messages}
           loading={messagesLoading}
+          historyError={messagesErrorFor === selected.id}
           typingUserIds={typingByConversation[selected.id] || []}
           onSend={send}
+          onRetry={retry}
+          onRetryHistory={() => setMessagesLoadAttempt((attempt) => attempt + 1)}
           onEdit={edit}
           onDeleteConversation={() => {
             setConversations((items) => items.filter((item) => item.id !== selected.id));

@@ -2,17 +2,23 @@ import { app, BrowserWindow, Menu, desktopCapturer, dialog, ipcMain, session, sh
 import updater from 'electron-updater';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { availableSharePickerTabs, buildSharePickerSources } from './share-picker-model.mjs';
+import { desktopWindowFrameOptions } from './window-shell.mjs';
 
 const { autoUpdater } = updater;
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
 const settingsPath = () => join(app.getPath('userData'), 'desktop.json');
 const setupPath = join(desktopRoot, 'setup.html');
 const setupPreloadPath = join(desktopRoot, 'setup-preload.cjs');
+const appPreloadPath = join(desktopRoot, 'app-preload.cjs');
+const sharePickerPath = join(desktopRoot, 'share-picker.html');
+const sharePickerPreloadPath = join(desktopRoot, 'share-picker-preload.cjs');
 const iconPath = join(desktopRoot, 'assets', 'icon.png');
 const developmentUrl = 'http://127.0.0.1:5173';
 
 let mainWindow = null;
+let sharePickerWindow = null;
 let appUrl = null;
 
 function normalizeAppUrl(value, { allowLocal = false } = {}) {
@@ -57,6 +63,81 @@ function isTrustedOrigin(origin) {
   }
 }
 
+async function chooseDesktopSource(sources) {
+  const pickerSources = buildSharePickerSources(sources);
+  if (!pickerSources.length) return null;
+
+  sharePickerWindow?.destroy();
+
+  return new Promise((resolve) => {
+    const sourceById = new Map(sources.map((source) => [String(source.id), source]));
+    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    const picker = new BrowserWindow({
+      title: 'Выбор источника демонстрации',
+      width: 980,
+      height: 760,
+      minWidth: 680,
+      minHeight: 520,
+      parent,
+      modal: Boolean(parent),
+      show: false,
+      autoHideMenuBar: true,
+      backgroundColor: '#17191f',
+      icon: iconPath,
+      resizable: true,
+      ...desktopWindowFrameOptions(process.platform),
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        preload: sharePickerPreloadPath,
+      },
+    });
+    sharePickerWindow = picker;
+
+    let settled = false;
+    const pickerUrl = pathToFileURL(sharePickerPath).toString();
+    const cleanup = () => {
+      ipcMain.removeListener('share-picker:choose', handleChoose);
+      ipcMain.removeListener('share-picker:cancel', handleCancel);
+      if (sharePickerWindow === picker) sharePickerWindow = null;
+    };
+    const finish = (sourceId = null, closeWindow = true) => {
+      if (settled) return;
+      settled = true;
+      const source = sourceId ? sourceById.get(String(sourceId)) || null : null;
+      cleanup();
+      if (closeWindow && !picker.isDestroyed()) picker.destroy();
+      resolve(source);
+    };
+    const isPickerSender = (event) => !picker.isDestroyed() && event.sender === picker.webContents;
+    function handleChoose(event, sourceId) {
+      if (!isPickerSender(event) || !sourceById.has(String(sourceId))) return;
+      finish(sourceId);
+    }
+    function handleCancel(event) {
+      if (isPickerSender(event)) finish();
+    }
+
+    ipcMain.on('share-picker:choose', handleChoose);
+    ipcMain.on('share-picker:cancel', handleCancel);
+    picker.on('closed', () => finish(null, false));
+    picker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    picker.webContents.on('will-navigate', (event, url) => {
+      if (url !== pickerUrl) event.preventDefault();
+    });
+    picker.webContents.once('did-finish-load', () => {
+      if (picker.isDestroyed()) return;
+      picker.webContents.send('share-picker:sources', {
+        sources: pickerSources,
+        tabs: availableSharePickerTabs(pickerSources),
+      });
+    });
+    picker.once('ready-to-show', () => picker.show());
+    void picker.loadFile(sharePickerPath).catch(() => finish());
+  });
+}
+
 function configurePermissions() {
   const allowedPermissions = new Set(['media', 'notifications', 'fullscreen', 'pointerLock']);
   session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
@@ -68,24 +149,19 @@ function configurePermissions() {
   session.defaultSession.setDisplayMediaRequestHandler(
     async (request, callback) => {
       if (!isTrustedOrigin(request.frame.url)) return callback({});
-      const sources = await desktopCapturer.getSources({
-        types: ['screen', 'window'],
-        thumbnailSize: { width: 320, height: 180 },
-        fetchWindowIcons: true,
-      });
-      if (!sources.length) return callback({});
-      const choice = await dialog.showMessageBox(mainWindow, {
-        type: 'question',
-        title: 'Демонстрация экрана',
-        message: 'Что показать собеседникам?',
-        buttons: [...sources.slice(0, 12).map((source) => source.name), 'Отмена'],
-        cancelId: Math.min(sources.length, 12),
-        noLink: true,
-      });
-      const source = sources[choice.response];
-      callback(source ? { video: source, audio: 'loopback' } : {});
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen', 'window'],
+          thumbnailSize: { width: 640, height: 360 },
+          fetchWindowIcons: true,
+        });
+        const source = await chooseDesktopSource(sources);
+        callback(source ? { video: source, audio: 'loopback' } : {});
+      } catch {
+        callback({});
+      }
     },
-    { useSystemPicker: true },
+    { useSystemPicker: false },
   );
 }
 
@@ -132,6 +208,10 @@ function createWindow(webPreferences = {}) {
     show: false,
     backgroundColor: '#080c12',
     icon: iconPath,
+    resizable: true,
+    maximizable: true,
+    minimizable: true,
+    ...desktopWindowFrameOptions(process.platform),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -139,6 +219,22 @@ function createWindow(webPreferences = {}) {
       ...webPreferences,
     },
   });
+}
+
+function controlledMainWindow(event) {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return null;
+  return mainWindow;
+}
+
+function sendMaximizedState(window) {
+  if (!window.isDestroyed()) window.webContents.send('desktop-window:maximized-change', window.isMaximized());
+}
+
+function configureWindowShell(window) {
+  if (process.platform !== 'win32') return;
+  window.on('maximize', () => sendMaximizedState(window));
+  window.on('unmaximize', () => sendMaximizedState(window));
+  window.webContents.once('did-finish-load', () => sendMaximizedState(window));
 }
 
 function lockWindowTitle(window) {
@@ -152,6 +248,7 @@ async function showSetup() {
   mainWindow?.destroy();
   mainWindow = createWindow({ preload: setupPreloadPath });
   lockWindowTitle(mainWindow);
+  configureWindowShell(mainWindow);
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   await mainWindow.loadFile(setupPath);
   createMenu();
@@ -160,8 +257,9 @@ async function showSetup() {
 async function showApp() {
   if (!appUrl) return showSetup();
   mainWindow?.destroy();
-  mainWindow = createWindow();
+  mainWindow = createWindow({ preload: appPreloadPath });
   lockWindowTitle(mainWindow);
+  configureWindowShell(mainWindow);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isTrustedOrigin(url)) return { action: 'allow' };
     if (/^https?:/.test(url)) void shell.openExternal(url);
@@ -207,6 +305,16 @@ ipcMain.handle('desktop:save-url', async (event, value) => {
   await showApp();
   return appUrl;
 });
+
+ipcMain.on('desktop-window:minimize', (event) => controlledMainWindow(event)?.minimize());
+ipcMain.on('desktop-window:toggle-maximize', (event) => {
+  const window = controlledMainWindow(event);
+  if (!window) return;
+  if (window.isMaximized()) window.unmaximize();
+  else window.maximize();
+});
+ipcMain.on('desktop-window:close', (event) => controlledMainWindow(event)?.close());
+ipcMain.handle('desktop-window:is-maximized', (event) => controlledMainWindow(event)?.isMaximized() ?? false);
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {

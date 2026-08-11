@@ -70,6 +70,7 @@ function rowMessage(row) {
     attachment: jsonParse(row.attachment_json),
     replyToId: row.reply_to_id || undefined,
     call: jsonParse(row.call_json),
+    clientId: row.client_id || undefined,
     createdAt: row.created_at,
     sentAt: row.sent_at || row.created_at,
     editedAt: row.edited_at || undefined,
@@ -151,6 +152,7 @@ export async function openDatabase(paths) {
       attachment_json TEXT,
       reply_to_id TEXT REFERENCES messages(id),
       call_json TEXT,
+      client_id TEXT,
       created_at TEXT NOT NULL,
       sent_at TEXT NOT NULL,
       edited_at TEXT
@@ -167,6 +169,9 @@ export async function openDatabase(paths) {
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(reply_to_id);
   `);
+  const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
+  if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_client ON messages(author_id, client_id) WHERE client_id IS NOT NULL');
   const database = new MovaDatabase(sqlite, paths);
   await database.migrateLegacyJson();
   return database;
@@ -421,11 +426,22 @@ export class MovaDatabase {
   insertMessage(message) {
     this.transaction(() => {
       this.sqlite
-        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,created_at,sent_at,edited_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null);
+        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,client_id,created_at,sent_at,edited_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null);
       if (message.attachment?.url?.startsWith('/uploads/')) this.sqlite.prepare("UPDATE uploads SET attached_message_id=?, purpose='message' WHERE file_name=?").run(message.id, message.attachment.url.slice('/uploads/'.length));
     });
+  }
+
+  insertMessageIdempotent(message) {
+    try {
+      this.insertMessage(message);
+      return { message, created: true };
+    } catch (error) {
+      const existing = message.clientId ? this.getMessageByClientId(message.authorId, message.clientId) : null;
+      if (existing) return { message: existing, created: false };
+      throw error;
+    }
   }
 
   updateMessage(message) {
@@ -434,6 +450,10 @@ export class MovaDatabase {
 
   getMessage(messageId, conversationId) {
     return rowMessage(this.sqlite.prepare('SELECT * FROM messages WHERE id=? AND conversation_id=?').get(messageId, conversationId));
+  }
+
+  getMessageByClientId(authorId, clientId) {
+    return rowMessage(this.sqlite.prepare('SELECT * FROM messages WHERE author_id=? AND client_id=?').get(authorId, clientId));
   }
 
   lastMessage(conversationId) {

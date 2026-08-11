@@ -504,9 +504,24 @@ async function handleApi(request, response) {
     if (messageMatch && request.method === 'POST') {
       if (!allowRequest(`message:${user.id}`, 120, 60_000)) throw Object.assign(new Error('Слишком много сообщений'), { statusCode: 429 });
       const data = await body(request);
+      const clientId = String(data.clientId || '');
+      if (clientId.length > 100) return json(response, 400, { error: 'Некорректный идентификатор сообщения' });
+      const existingMessage = clientId ? database.getMessageByClientId(user.id, clientId) : null;
+      if (existingMessage) {
+        if (existingMessage.conversationId !== messageMatch[1]) return json(response, 409, { error: 'Идентификатор сообщения уже использован в другом чате' });
+        return json(response, 200, { message: messageDto(existingMessage) });
+      }
       const content = String(data.content || '').trim();
       const rawAttachment = data.attachment;
-      const attachment = rawAttachment && typeof rawAttachment === 'object' ? await database.normalizeAttachment(rawAttachment, user.id) : undefined;
+      let attachment;
+      try {
+        attachment = rawAttachment && typeof rawAttachment === 'object' ? await database.normalizeAttachment(rawAttachment, user.id) : undefined;
+      } catch (attachmentError) {
+        const concurrentMessage = clientId ? database.getMessageByClientId(user.id, clientId) : null;
+        if (!concurrentMessage) throw attachmentError;
+        if (concurrentMessage.conversationId !== messageMatch[1]) return json(response, 409, { error: 'Идентификатор сообщения уже использован в другом чате' });
+        return json(response, 200, { message: messageDto(concurrentMessage) });
+      }
       if ((!content && !attachment) || content.length > 4000)
         return json(response, 400, {
           error: 'Сообщение пустое или слишком длинное',
@@ -517,7 +532,6 @@ async function handleApi(request, response) {
           error: 'Сообщение для ответа не найдено',
         });
       const createdAt = new Date().toISOString();
-      const clientId = String(data.clientId || '').slice(0, 100);
       const message = {
         id: id('msg'),
         conversationId: messageMatch[1],
@@ -530,8 +544,10 @@ async function handleApi(request, response) {
         sentAt: createdAt,
         readBy: [],
       };
-      database.insertMessage(message);
-      const dto = messageDto(message);
+      const stored = database.insertMessageIdempotent(message);
+      if (!stored.created && stored.message.conversationId !== messageMatch[1]) return json(response, 409, { error: 'Идентификатор сообщения уже использован в другом чате' });
+      const dto = messageDto(stored.message);
+      if (!stored.created) return json(response, 200, { message: dto });
       broadcastToConversation(message.conversationId, {
         type: 'message:new',
         message: dto,

@@ -1,31 +1,15 @@
-/* Text entry stays visually stable while typing. */
-input:focus,
-textarea:focus,
-[contenteditable]:not([contenteditable="false"]):focus {
-  outline: none;
+/* Focus ownership lives on the visible control shell. */
+.mova-control-shell > input,
+.mova-control-shell > textarea,
+.mova-control-shell > select,
+.mova-field__control > input,
+.mova-field__control > textarea {
+  border: 0;
+  outline: 0;
   box-shadow: none;
 }
 
-.mova-field__control:focus-within {
-  color: var(--mova-muted);
-  border-color: var(--mova-line);
-  box-shadow: none;
-}
-
-.mova-auth-card input:focus,
-.mova-create-name input:focus {
-  background: rgba(3, 7, 12, .35);
-  border-color: rgba(228, 237, 250, .09);
-  box-shadow: none;
-}
-
-.mova-real-topbar > label:focus-within {
-  background: rgba(255, 255, 255, .04);
-  border-color: rgba(228, 237, 250, .065);
-}
-
-.mova-profile-form input:focus,
-.mova-profile-form textarea:focus {
-  border-color: rgba(228, 237, 250, .08);
-  box-shadow: none;
+.mova-control-shell:focus-within {
+  border-color: color-mix(in srgb, var(--mova-accent-color, #8774e1) 68%, white);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mova-accent-color, #8774e1) 16%, transparent);
 }

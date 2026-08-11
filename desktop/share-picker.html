@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'self'; script-src 'self'" />
+    <title>Выбор источника — Mova</title>
+    <link rel="stylesheet" href="./share-picker.css" />
+  </head>
+  <body>
+    <main class="picker" aria-labelledby="picker-title">
+      <header class="picker__header">
+        <span>
+          <strong id="picker-title">Демонстрация экрана</strong>
+          <small>Выберите, что увидят участники звонка</small>
+        </span>
+        <button type="button" class="picker__close" aria-label="Закрыть">×</button>
+      </header>
+      <nav class="picker__tabs" aria-label="Тип источника"></nav>
+      <section class="picker__content">
+        <p class="picker__status">Загружаем доступные источники…</p>
+        <div class="picker__grid" role="listbox" aria-label="Источники демонстрации"></div>
+      </section>
+      <footer class="picker__footer">
+        <span class="picker__quality">
+          <strong>Качество демонстрации</strong>
+          <small>Разрешение и FPS применяются из настроек звонка Mova</small>
+        </span>
+        <button type="button" class="picker__cancel">Отмена</button>
+        <button type="button" class="picker__start" disabled>Начать демонстрацию</button>
+      </footer>
+    </main>
+    <script src="./share-picker.js"></script>
+  </body>
+</html>

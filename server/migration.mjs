@@ -1,10 +1,13 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from './database.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'mova-migration-'));
+const schemaDirectory = await mkdtemp(join(tmpdir(), 'mova-schema-migration-'));
 const paths = { sqlitePath: join(directory, 'db.sqlite'), legacyJsonPath: join(directory, 'db.json'), uploadsPath: join(directory, 'uploads') };
+const oldSchemaPaths = { sqlitePath: join(schemaDirectory, 'db.sqlite'), legacyJsonPath: join(schemaDirectory, 'db.json'), uploadsPath: join(schemaDirectory, 'uploads') };
 const createdAt = '2026-08-10T10:00:00.000Z';
 const readAt = '2026-08-10T10:01:00.000Z';
 
@@ -46,7 +49,28 @@ try {
   database = await openDatabase(paths);
   if (database.stats().messages !== 1) throw new Error('Legacy migration was executed twice');
   database.close();
-  console.log(JSON.stringify({ migrated: true, attachmentUrl: true, readState: true, idempotent: true }));
+
+  database = await openDatabase(oldSchemaPaths);
+  database.insertUser({ id: 'usr_old', name: 'Old', email: 'old@example.test', handle: '@old_user', color: '#fff', presence: 'online', passwordHash: 'salt:00', createdAt });
+  database.insertConversation({ id: 'cnv_old', kind: 'direct', title: '', createdBy: 'usr_old', createdAt });
+  database.insertMembership({ conversationId: 'cnv_old', userId: 'usr_old', joinedAt: createdAt });
+  database.insertMessage({ id: 'msg_old', conversationId: 'cnv_old', authorId: 'usr_old', content: 'before client id', createdAt, sentAt: createdAt });
+  database.close();
+  const oldSchema = new DatabaseSync(oldSchemaPaths.sqlitePath);
+  oldSchema.exec('DROP INDEX idx_messages_author_client; ALTER TABLE messages DROP COLUMN client_id');
+  oldSchema.close();
+
+  database = await openDatabase(oldSchemaPaths);
+  const migratedColumns = database.sqlite.prepare('PRAGMA table_info(messages)').all();
+  if (!migratedColumns.some((column) => column.name === 'client_id') || database.getMessage('msg_old', 'cnv_old')?.content !== 'before client id') throw new Error('Existing messages table did not migrate safely');
+  const newMessage = { id: 'msg_new', conversationId: 'cnv_old', authorId: 'usr_old', content: 'after client id', clientId: 'migration-client-id', createdAt, sentAt: createdAt };
+  database.insertMessageIdempotent(newMessage);
+  database.close();
+  database = await openDatabase(oldSchemaPaths);
+  if (database.getMessage('msg_new', 'cnv_old')?.clientId !== 'migration-client-id') throw new Error('Persisted client id was lost after reopening SQLite');
+  database.close();
+  console.log(JSON.stringify({ migrated: true, attachmentUrl: true, readState: true, idempotent: true, clientIdSchema: true, clientIdReopen: true }));
 } finally {
   await rm(directory, { recursive: true, force: true });
+  await rm(schemaDirectory, { recursive: true, force: true });
 }

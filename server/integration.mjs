@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
 
 const testDirectory = await mkdtemp(join(tmpdir(), 'mova-integration-'));
@@ -91,6 +92,16 @@ const waitFor = (socket, type) =>
     };
     socket.on('message', listener);
   });
+const captureEvents = (socket, type, predicate = () => true) => {
+  const events = [];
+  const listener = (raw) => {
+    const event = JSON.parse(raw);
+    if (event.type === type && predicate(event)) events.push(event);
+  };
+  socket.on('message', listener);
+  return { events, stop: () => socket.off('message', listener) };
+};
+const settleRealtime = () => new Promise((resolve) => setTimeout(resolve, 120));
 
 try {
   await waitForServer();
@@ -138,6 +149,79 @@ try {
   if (!storedAttachmentResponse.ok || storedAttachmentContents !== 'mova test' || attachmentMessage.message.attachment.dataUrl) throw new Error('Binary attachment was not stored outside the database');
   const firstSocket = await openSocket(first.token);
   const secondSocket = await openSocket(second.token);
+  const attachmentRetryEvents = captureEvents(secondSocket, 'message:new', (event) => event.message.clientId === 'integration-attachment-message');
+  const attachmentRetry = await call(
+    `/api/conversations/${conversation.conversation.id}/messages`,
+    'POST',
+    { content: 'Файл', clientId: 'integration-attachment-message', attachment: uploadedAttachment },
+    first.token,
+  );
+  await settleRealtime();
+  attachmentRetryEvents.stop();
+  if (attachmentRetry.message.id !== attachmentMessage.message.id || attachmentRetryEvents.events.length !== 0) throw new Error('Attachment retry was not idempotent');
+
+  const sequentialEvents = captureEvents(secondSocket, 'message:new', (event) => event.message.clientId === 'integration-sequential');
+  const sequentialFirst = await call(
+    `/api/conversations/${conversation.conversation.id}/messages`,
+    'POST',
+    { content: 'Последовательный retry', clientId: 'integration-sequential' },
+    first.token,
+  );
+  const sequentialSecond = await call(
+    `/api/conversations/${conversation.conversation.id}/messages`,
+    'POST',
+    { content: 'Последовательный retry', clientId: 'integration-sequential' },
+    first.token,
+  );
+  await settleRealtime();
+  sequentialEvents.stop();
+  if (sequentialFirst.message.id !== sequentialSecond.message.id || sequentialEvents.events.length !== 1) throw new Error('Sequential message retry created a duplicate or a second realtime event');
+
+  const sharedClientId = 'integration-shared-between-users';
+  const firstShared = await call(
+    `/api/conversations/${conversation.conversation.id}/messages`,
+    'POST',
+    { content: 'От первого', clientId: sharedClientId },
+    first.token,
+  );
+  const secondShared = await call(
+    `/api/conversations/${conversation.conversation.id}/messages`,
+    'POST',
+    { content: 'От второго', clientId: sharedClientId },
+    second.token,
+  );
+  if (firstShared.message.id === secondShared.message.id || firstShared.message.authorId === secondShared.message.authorId) throw new Error('The same client id incorrectly conflicted between users');
+
+  const concurrentEvents = captureEvents(secondSocket, 'message:new', (event) => event.message.clientId === 'integration-concurrent');
+  const concurrentResults = await Promise.all([
+    call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Одновременный retry', clientId: 'integration-concurrent' }, first.token),
+    call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Одновременный retry', clientId: 'integration-concurrent' }, first.token),
+  ]);
+  await settleRealtime();
+  concurrentEvents.stop();
+  if (concurrentResults[0].message.id !== concurrentResults[1].message.id || concurrentEvents.events.length !== 1) throw new Error('Concurrent message retry was not idempotent');
+
+  const concurrentAttachment = await upload('concurrent.txt', 'text/plain', 'concurrent attachment', first.token);
+  const concurrentAttachmentEvents = captureEvents(secondSocket, 'message:new', (event) => event.message.clientId === 'integration-concurrent-attachment');
+  const concurrentAttachmentResults = await Promise.all([
+    call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Одновременный файл', clientId: 'integration-concurrent-attachment', attachment: concurrentAttachment }, first.token),
+    call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Одновременный файл', clientId: 'integration-concurrent-attachment', attachment: concurrentAttachment }, first.token),
+  ]);
+  await settleRealtime();
+  concurrentAttachmentEvents.stop();
+  if (concurrentAttachmentResults[0].message.id !== concurrentAttachmentResults[1].message.id || concurrentAttachmentEvents.events.length !== 1) throw new Error('Concurrent attachment retry was not idempotent');
+
+  const idempotentHistory = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
+  const countByClientId = (clientId) => idempotentHistory.messages.filter((message) => message.clientId === clientId).length;
+  if (countByClientId('integration-sequential') !== 1 || countByClientId('integration-concurrent') !== 1 || countByClientId(sharedClientId) !== 2) throw new Error('Re-read message DTOs did not preserve unique client ids');
+  const sqliteVerification = new DatabaseSync(join(testDirectory, 'db.sqlite'), { readOnly: true });
+  const sequentialRows = sqliteVerification.prepare('SELECT COUNT(*) AS count FROM messages WHERE author_id=? AND client_id=?').get(first.user.id, 'integration-sequential').count;
+  const concurrentRows = sqliteVerification.prepare('SELECT COUNT(*) AS count FROM messages WHERE author_id=? AND client_id=?').get(first.user.id, 'integration-concurrent').count;
+  const attachmentUpload = sqliteVerification.prepare('SELECT attached_message_id, purpose FROM uploads WHERE file_name=?').get(uploadedAttachment.url.split('/').at(-1));
+  const concurrentAttachmentUpload = sqliteVerification.prepare('SELECT attached_message_id, purpose FROM uploads WHERE file_name=?').get(concurrentAttachment.url.split('/').at(-1));
+  sqliteVerification.close();
+  if (sequentialRows !== 1 || concurrentRows !== 1 || attachmentUpload?.attached_message_id !== attachmentMessage.message.id || attachmentUpload?.purpose !== 'message' || concurrentAttachmentUpload?.attached_message_id !== concurrentAttachmentResults[0].message.id || concurrentAttachmentUpload?.purpose !== 'message') throw new Error('SQLite idempotency or attachment ownership verification failed');
+
   const presencePromise = waitFor(secondSocket, 'presence:update');
   const livePresence = await call('/api/presence', 'POST', { presence: 'idle' }, first.token);
   const presenceEvent = await presencePromise;
@@ -260,6 +344,13 @@ try {
       rtcIceServers: rtcConfig.iceServers.length,
       attachment: attachmentMessage.message.attachment.name,
       clientId: attachmentMessage.message.clientId === 'integration-attachment-message',
+      sequentialIdempotency: sequentialFirst.message.id === sequentialSecond.message.id && sequentialRows === 1,
+      concurrentIdempotency: concurrentResults[0].message.id === concurrentResults[1].message.id && concurrentRows === 1,
+      concurrentAttachmentIdempotency: concurrentAttachmentResults[0].message.id === concurrentAttachmentResults[1].message.id && concurrentAttachmentEvents.events.length === 1,
+      perUserClientId: firstShared.message.id !== secondShared.message.id,
+      singleRealtimeEvent: sequentialEvents.events.length === 1 && concurrentEvents.events.length === 1,
+      attachmentRetry: attachmentRetry.message.id === attachmentMessage.message.id && attachmentRetryEvents.events.length === 0,
+      persistedClientIdDto: countByClientId('integration-sequential') === 1,
       attachmentUrl: attachmentMessage.message.attachment.url.startsWith('/uploads/'),
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id && replyEvent.message.replyTo.attachment.name === 'mova-test.txt',
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),

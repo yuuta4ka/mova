@@ -4,7 +4,7 @@
   "description": "Десктопный клиент мессенджера Mova",
   "author": "Mova",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -31,8 +31,9 @@
   },
   "dependencies": {
     "@fontsource-variable/manrope": "latest",
-    "emoji-js": "^3.9.0",
     "electron-updater": "^6.6.2",
+    "emoji-datasource": "16.0.0",
+    "emoji-js": "^3.9.0",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -75,6 +76,7 @@
     "mac": {
       "category": "public.app-category.social-networking",
       "icon": "desktop/assets/icon.icns",
+      "artifactName": "Mova-${version}-${arch}.${ext}",
       "hardenedRuntime": true,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Mova использует микрофон для голосовых звонков.",
@@ -91,6 +93,7 @@
     },
     "win": {
       "icon": "desktop/assets/icon.png",
+      "artifactName": "Mova-Setup-${version}.${ext}",
       "target": "nsis"
     },
     "nsis": {
