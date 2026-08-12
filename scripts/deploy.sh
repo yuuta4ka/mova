@@ -45,9 +45,18 @@ if [ -z "${MOVA_DEPLOY_HOOK_SECRET:-}" ]; then
   exit 1
 fi
 
-MOVA_DEPLOYMENT_ID="deploy-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
-echo "Включаем maintenance ($MOVA_DEPLOYMENT_ID)..."
-node scripts/maintenance.mjs on "$MOVA_DEPLOYMENT_ID"
+MOVA_MAINTENANCE_STATE="$(node scripts/maintenance.mjs status)"
+MOVA_DEPLOYMENT_ID=""
+if printf '%s' "$MOVA_MAINTENANCE_STATE" | grep -q '"active":true'; then
+  MOVA_DEPLOYMENT_ID="$(printf '%s' "$MOVA_MAINTENANCE_STATE" | sed -n 's/.*"deploymentId":"\([^"]*\)".*/\1/p')"
+fi
+if [ -n "$MOVA_DEPLOYMENT_ID" ]; then
+  echo "Продолжаем активный maintenance ($MOVA_DEPLOYMENT_ID)..."
+else
+  MOVA_DEPLOYMENT_ID="deploy-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
+  echo "Включаем maintenance ($MOVA_DEPLOYMENT_ID)..."
+  node scripts/maintenance.mjs on "$MOVA_DEPLOYMENT_ID"
+fi
 
 echo "Отправляем код в GitHub..."
 if ! git push origin "$MOVA_BRANCH"; then
