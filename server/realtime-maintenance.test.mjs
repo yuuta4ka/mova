@@ -81,6 +81,7 @@ beforeAll(async () => {
       MOVA_DATABASE_PATH: join(testDirectory, 'db.sqlite'),
       MOVA_SESSION_SECRET: 'realtime-maintenance-session-secret',
       MOVA_DEPLOY_HOOK_SECRET: hookSecret,
+      MOVA_VOICE_RECONNECT_GRACE_MS: '1500',
     },
     stdio: 'ignore',
   });
@@ -146,6 +147,77 @@ describe('realtime while maintenance state changes', () => {
     await maintenance(false, 'deploy-realtime');
     expect(await api('/api/maintenance')).toEqual({ active: false });
     reconnectedFirst.close();
+    secondSocket.close();
+  });
+
+  it('keeps a room snapshot through a brief disconnect, explicit leave, and rejoin', async () => {
+    const suffix = `${Date.now()}-voice`;
+    const first = await api('/api/register', { method: 'POST', data: { name: 'Говорящий', email: `voice.first.${suffix}@mova.test`, password: 'strongpass1' } });
+    const second = await api('/api/register', { method: 'POST', data: { name: 'Слушатель', email: `voice.second.${suffix}@mova.test`, password: 'strongpass2' } });
+    const conversation = await api('/api/conversations', { method: 'POST', token: first.token, data: { kind: 'direct', memberIds: [second.user.id] } });
+    const conversationId = conversation.conversation.id;
+    const firstSocket = await openSocket(first.token);
+    const secondSocket = await openSocket(second.token);
+
+    const invited = waitForEvent(secondSocket, 'call:invite', (event) => event.conversationId === conversationId);
+    firstSocket.send(JSON.stringify({ type: 'call:invite', conversationId }));
+    await invited;
+    const accepted = waitForEvent(firstSocket, 'call:accept', (event) => event.conversationId === conversationId);
+    secondSocket.send(JSON.stringify({ type: 'call:accept', conversationId }));
+    await accepted;
+
+    const firstJoined = waitForEvent(firstSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id));
+    firstSocket.send(JSON.stringify({ type: 'voice:join', conversationId }));
+    await firstJoined;
+
+    const mutedSnapshot = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.muted));
+    firstSocket.send(JSON.stringify({ type: 'voice:state', conversationId, muted: true, deafened: false }));
+    await mutedSnapshot;
+    const mediaSnapshot = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.media.camera === 'camera-stream'));
+    firstSocket.send(JSON.stringify({ type: 'voice:media', conversationId, mediaKind: 'camera', enabled: true, streamId: 'camera-stream' }));
+    await mediaSnapshot;
+
+    const peersForSecond = waitForEvent(secondSocket, 'voice:peers', (event) => event.conversationId === conversationId);
+    const bothConnected = waitForEvent(firstSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.length === 2 && event.participants.every((participant) => participant.connectionState === 'connected'));
+    secondSocket.send(JSON.stringify({ type: 'voice:join', conversationId }));
+    expect((await peersForSecond).peers).toEqual([first.user.id]);
+    await bothConnected;
+
+    const reconnecting = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.connectionState === 'reconnecting'));
+    firstSocket.close();
+    const reconnectingSnapshot = await reconnecting;
+    expect(reconnectingSnapshot.participants.find((participant) => participant.userId === first.user.id)).toMatchObject({
+      muted: true,
+      deafened: false,
+      media: { camera: 'camera-stream' },
+    });
+
+    const restoredSocket = await openSocket(first.token);
+    const restoredPeers = waitForEvent(restoredSocket, 'voice:peers', (event) => event.conversationId === conversationId);
+    const restored = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.connectionState === 'connected'));
+    restoredSocket.send(JSON.stringify({ type: 'voice:join', conversationId }));
+    expect((await restoredPeers).peers).toEqual([second.user.id]);
+    const restoredSnapshot = await restored;
+    expect(restoredSnapshot.participants.find((participant) => participant.userId === first.user.id)).toMatchObject({ muted: true, media: { camera: 'camera-stream' } });
+
+    const left = waitForEvent(secondSocket, 'voice:left', (event) => event.conversationId === conversationId && event.userId === first.user.id);
+    const afterLeave = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.length === 1);
+    restoredSocket.send(JSON.stringify({ type: 'voice:leave', conversationId }));
+    await left;
+    expect((await afterLeave).participants.map((participant) => participant.userId)).toEqual([second.user.id]);
+
+    const rejoinedPeers = waitForEvent(restoredSocket, 'voice:peers', (event) => event.conversationId === conversationId);
+    const rejoined = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.length === 2);
+    restoredSocket.send(JSON.stringify({ type: 'voice:join', conversationId }));
+    expect((await rejoinedPeers).peers).toEqual([second.user.id]);
+    expect((await rejoined).participants.map((participant) => participant.userId).sort()).toEqual([first.user.id, second.user.id].sort());
+
+    const reconnectingAgain = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.connectionState === 'reconnecting'));
+    const expired = waitForEvent(secondSocket, 'voice:left', (event) => event.conversationId === conversationId && event.userId === first.user.id);
+    restoredSocket.close();
+    await reconnectingAgain;
+    await expired;
+    secondSocket.send(JSON.stringify({ type: 'voice:leave', conversationId }));
     secondSocket.close();
   });
 });

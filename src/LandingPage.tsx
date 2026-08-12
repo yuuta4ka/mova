@@ -3,6 +3,7 @@ import {
   Download,
   Code2,
   Globe2,
+  Heart,
   Laptop,
   MessageCircleMore,
   MonitorDown,
@@ -13,8 +14,9 @@ import {
   Video,
 } from 'lucide-react';
 
-const version = '0.1.1';
+const version = '0.1.2';
 const githubUrl = 'https://github.com/yuuta4ka/mova';
+const donationUrl = 'https://donatex.gg/donate/yuuta';
 const releaseBase = `https://github.com/yuuta4ka/mova/releases/download/v${version}`;
 
 const downloads = [
@@ -103,13 +105,19 @@ export function LandingPage() {
 
         <section className="mova-landing-showcase" aria-labelledby="showcase-title">
           <header>
-            <div><span>Настоящий интерфейс</span><h2 id="showcase-title">Вот так Mova выглядит сейчас</h2></div>
-            <p>Без generic mockup и выдуманных экранов — это интерфейс из текущей версии приложения.</p>
+            <div><span>Настоящий интерфейс</span><h2 id="showcase-title">Диалоги и звонки в Mova</h2></div>
+            <p>Оба скриншота сняты в текущей версии приложения на локальных демонстрационных аккаунтах.</p>
           </header>
-          <figure>
-            <img src="/mova-interface.png" alt="Интерфейс Mova: список каналов и открытый групповой чат" />
-            <figcaption><i /> Актуальный интерфейс Mova · desktop</figcaption>
-          </figure>
+          <div className="mova-landing-showcase__grid">
+            <figure>
+              <img src="/mova-interface.png" alt="Диалог в Mova с текстом, ссылкой, изображением и эмодзи" />
+              <figcaption><i /> Диалог · ссылки, изображения и emoji</figcaption>
+            </figure>
+            <figure>
+              <img src="/mova-call.png" alt="Активный голосовой звонок между двумя пользователями Mova" />
+              <figcaption><i /> Голосовой звонок · текущий интерфейс</figcaption>
+            </figure>
+          </div>
         </section>
 
         <section className="mova-landing-why" id="story" aria-labelledby="why-title">
@@ -183,6 +191,30 @@ export function LandingPage() {
           </div>
 
           <p className="mova-landing-download__release"><Radio size={14} /> Установщики ведут на опубликованный релиз Mova {version} в GitHub.</p>
+        </section>
+
+        <section className="mova-landing-support" aria-label="Поддержка и обратная связь">
+          <article className="mova-landing-support__donation">
+            <i><Heart size={22} /></i>
+            <div>
+              <span>Поддержка проекта</span>
+              <h2>Поддержать Mova</h2>
+              <p>Mova — независимый pet-project. Поддержка помогает оплачивать серверы, продолжать развитие и сохранять базовое использование без обязательных подписок.</p>
+            </div>
+            <a href={donationUrl} target="_blank" rel="noreferrer">Поддержать проект <ArrowRight size={16} /></a>
+          </article>
+
+          <article className="mova-landing-support__feedback">
+            <div>
+              <span>Обратная связь</span>
+              <h2>Нашли баг или есть идея?</h2>
+              <p>Напишите об ошибке, предложите новую функцию или поделитесь впечатлениями о проекте.</p>
+            </div>
+            <div className="mova-landing-support__links">
+              <span className="mova-landing-support__username"><MessageCircleMore size={16} /> @yuuta4ka</span>
+              <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={15} /> GitHub</a>
+            </div>
+          </article>
         </section>
       </main>
 

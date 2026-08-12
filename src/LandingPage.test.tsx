@@ -11,13 +11,21 @@ describe('Mova landing page', () => {
     expect(screen.getByRole('heading', { name: /Сделано с AI/i })).toBeVisible();
     expect(screen.getAllByRole('link', { name: /Windows/i })[0]).toHaveAttribute(
       'href',
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.1/Mova-Setup-0.1.1.exe',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.2/Mova-Setup-0.1.2.exe',
     );
     expect(screen.getAllByRole('link', { name: /Открыть Mova/i })[0]).toHaveAttribute('href', '/app');
     expect(screen.getByRole('link', { name: /macOS/i })).toHaveAttribute(
       'href',
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.1/Mova-0.1.1-arm64.dmg',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.2/Mova-0.1.2-arm64.dmg',
     );
-    expect(screen.getByAltText(/Интерфейс Mova/i)).toHaveAttribute('src', '/mova-interface.png');
+    expect(screen.getByAltText(/Диалог в Mova/i)).toHaveAttribute('src', '/mova-interface.png');
+    expect(screen.getByAltText(/Активный голосовой звонок/i)).toHaveAttribute('src', '/mova-call.png');
+    expect(screen.getByRole('link', { name: /Поддержать проект/i })).toHaveAttribute(
+      'href',
+      'https://donatex.gg/donate/yuuta',
+    );
+    expect(screen.getByRole('heading', { name: /Нашли баг или есть идея/i })).toBeVisible();
+    expect(screen.getByText('@yuuta4ka', { selector: '.mova-landing-support__username' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: /@yuuta4ka/i })).not.toBeInTheDocument();
   });
 });

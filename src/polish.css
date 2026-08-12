@@ -128,6 +128,7 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-tg-app .mova-real-thread__header>span strong { font-size:16px; font-weight:680; }
 .mova-tg-app .mova-real-thread__header>span small { color:var(--mova-accent-color,#8774e1); font-size:13px; }
 .mova-tg-app .mova-real-thread__header .mova-icon-button,.mova-tg-app .mova-real-thread__header .mova-button { width:44px; height:44px; }
+.mova-mobile-chat-back { display:none; }
 .mova-tg-app .mova-real-messages { padding:26px clamp(20px,5vw,72px); background-color:color-mix(in srgb,var(--mova-background-color,#20293c) 72%,#0d121b); background-image:none; }
 .mova-tg-app .mova-real-thread-intro { margin:10px auto 34px; }
 .mova-tg-app .mova-real-thread-intro p { color:#b6bac3; background:rgba(9,11,16,.3); font-size:13px; }
@@ -163,7 +164,7 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-settings>main { padding:24px; }
 }
 
-@media(max-width:760px) {
+@media(max-width:760px),(orientation:landscape) and (max-height:520px) and (max-width:960px) {
   .mova-tg-app { grid-template-columns:72px minmax(0,1fr); gap:0; padding:0; background:#11151e; }
   .mova-tg-sidebar { border-block:0; border-left:0; border-radius:0; }
   .mova-tg-app>.mova-real-thread,.mova-tg-app>.mova-real-welcome { border-block:0; border-right:0; border-radius:0; }
@@ -181,6 +182,27 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-settings>aside>button.is-active { box-shadow:inset 0 -3px 0 var(--mova-accent-color,#8774e1); }
   .mova-settings>main { padding:20px; }
 }
+
+/* Phone navigation keeps both panes mounted and slides between them. */
+.mova-tg-app.is-mobile-navigation { position:relative; display:block; width:100%; height:100dvh; min-width:0; min-height:0; padding:0; overflow:hidden; background:#11151e; }
+.mova-tg-app.is-mobile-navigation>.mova-tg-sidebar,.mova-tg-app.is-mobile-navigation>.mova-real-thread,.mova-tg-app.is-mobile-navigation>.mova-real-welcome { position:absolute; inset:0; width:100%; height:100%; min-width:0; border:0; border-radius:0; transition:transform 280ms cubic-bezier(.22,.76,.24,1),opacity 280ms ease; will-change:transform; }
+.mova-tg-app.is-mobile-navigation>.mova-tg-sidebar { z-index:2; padding:8px 10px max(10px,env(safe-area-inset-bottom)); transform:translate3d(0,0,0); }
+.mova-tg-app.is-mobile-navigation>.mova-real-thread,.mova-tg-app.is-mobile-navigation>.mova-real-welcome { z-index:3; transform:translate3d(100%,0,0); }
+.mova-tg-app.is-mobile-navigation.is-mobile-chat>.mova-tg-sidebar { opacity:.68; pointer-events:none; transform:translate3d(-24%,0,0); }
+.mova-tg-app.is-mobile-navigation.is-mobile-chat>.mova-real-thread,.mova-tg-app.is-mobile-navigation.is-mobile-chat>.mova-real-welcome { transform:translate3d(0,0,0); }
+.mova-tg-app.is-mobile-navigation.is-mobile-list>.mova-real-thread,.mova-tg-app.is-mobile-navigation.is-mobile-list>.mova-real-welcome { pointer-events:none; }
+.mova-tg-app.is-mobile-navigation .mova-tg-search-row { justify-content:stretch; min-height:64px; padding:8px 4px 10px; }
+.mova-tg-app.is-mobile-navigation .mova-tg-search { display:flex; }
+.mova-tg-app.is-mobile-navigation .mova-tg-sidebar>.mova-real-chat-list { padding:2px 0 76px; }
+.mova-tg-app.is-mobile-navigation .mova-tg-sidebar .mova-real-chat-list>button { justify-content:flex-start; width:100%; height:72px; min-height:72px; padding:8px 10px; border-radius:17px; }
+.mova-tg-app.is-mobile-navigation .mova-tg-sidebar .mova-real-chat-list>button>span:not(.mova-avatar):not(.mova-real-group-avatar) { display:grid; }
+.mova-tg-app.is-mobile-navigation .mova-tg-sidebar .mova-real-chat-list>button>.mova-avatar,.mova-tg-app.is-mobile-navigation .mova-tg-sidebar .mova-real-chat-list>button>.mova-real-group-avatar { width:52px; height:52px; flex-basis:52px; }
+.mova-tg-app.is-mobile-navigation.is-mobile-list .mova-tg-sidebar .mova-real-chat-list>button.is-active { background:transparent; box-shadow:none; }
+.mova-tg-app.is-mobile-navigation .mova-tg-compose { display:grid; }
+.mova-tg-app.is-mobile-navigation .mova-sidebar-resizer { display:none; }
+.mova-tg-app.is-mobile-navigation .mova-real-thread__header { box-sizing:border-box; width:100%; max-width:none; height:calc(56px + env(safe-area-inset-top)); min-height:calc(56px + env(safe-area-inset-top)); flex-basis:calc(56px + env(safe-area-inset-top)); margin:0; padding:env(safe-area-inset-top) max(4px,env(safe-area-inset-right)) 0 max(4px,env(safe-area-inset-left)); border-width:0 0 1px; border-radius:0; box-shadow:none; }
+.mova-tg-app.is-mobile-navigation .mova-mobile-chat-back { display:grid; width:44px; height:44px; flex:0 0 44px; color:#b8bac2; border-radius:50%; }
+.mova-tg-app.is-mobile-navigation .mova-chat-identity { padding-right:4px; }
 
 @media(max-width:720px) {
   .mova-landing-nav { width:calc(100% - 32px); height:72px; }
@@ -221,4 +243,5 @@ html.mova-landing-document body { background: #0b0d12; }
 
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
+  .mova-tg-app.is-mobile-navigation>.mova-tg-sidebar,.mova-tg-app.is-mobile-navigation>.mova-real-thread,.mova-tg-app.is-mobile-navigation>.mova-real-welcome { transition:none!important; }
 }

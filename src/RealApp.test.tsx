@@ -284,6 +284,316 @@ describe('Product realtime notification sound', () => {
   });
 });
 
+describe('Product typing surfaces', () => {
+  it('shows typing above the composer and instead of the last message in the chat list', async () => {
+    const typingUser: AppUser = { ...currentUser, id: 'typing-user', email: 'typing-user@mova.test' };
+    const typingFriend: AppUser = { ...friend, id: 'typing-friend', name: 'Печатающий друг', email: 'typing-friend@mova.test' };
+    const lastMessage: AppMessage = {
+      id: 'typing-last-message',
+      conversationId: 'typing-chat',
+      authorId: typingFriend.id,
+      author: typingFriend,
+      content: 'Предыдущее сообщение',
+      createdAt: '2026-08-10T12:00:00.000Z',
+      readBy: [],
+    };
+    const typingConversation: AppConversation = {
+      ...conversation,
+      id: lastMessage.conversationId,
+      title: typingFriend.name,
+      members: [typingUser, typingFriend],
+      lastMessage: { ...lastMessage, author: undefined } as unknown as AppConversation['lastMessage'],
+    };
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [typingConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [typingFriend] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [lastMessage] });
+    vi.spyOn(api, 'markConversationRead').mockResolvedValue({ conversationId: typingConversation.id, userId: typingUser.id, messageIds: [lastMessage.id], readAt: '2026-08-10T12:01:00.000Z' });
+    const { container, unmount } = render(<Product currentUser={typingUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+
+    await screen.findByText(lastMessage.content);
+    const sidebarPreview = container.querySelector('.mova-real-chat-list small');
+    expect(sidebarPreview).toHaveTextContent(lastMessage.content);
+
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'typing', conversationId: typingConversation.id, userId: typingFriend.id, active: true })));
+
+    await waitFor(() => expect(sidebarPreview).toHaveTextContent('Печатающий друг печатает…'));
+    expect(sidebarPreview).toHaveClass('mova-typing-status');
+    expect(container.querySelector('.mova-real-typing')).toHaveTextContent('Печатающий друг печатает…');
+    expect(screen.getByText('в сети')).toBeVisible();
+
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'typing', conversationId: typingConversation.id, userId: typingFriend.id, active: false })));
+
+    await waitFor(() => expect(sidebarPreview).toHaveTextContent(lastMessage.content));
+    expect(sidebarPreview).not.toHaveClass('mova-typing-status');
+    expect(container.querySelector('.mova-real-typing')).toHaveClass('is-empty');
+    unmount();
+  });
+});
+
+describe('Product global voice dock', () => {
+  it('keeps one call session across chats, blocks a second call, returns without a new invite, and leaves only the current participant', async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const user = userEvent.setup();
+    const voiceUser: AppUser = { ...currentUser, id: 'voice-dock-user', email: 'voice-dock-user@mova.test' };
+    const firstFriend: AppUser = { ...friend, id: 'voice-dock-first', name: 'Первый собеседник', email: 'voice-dock-first@mova.test' };
+    const secondFriend: AppUser = { ...friend, id: 'voice-dock-second', name: 'Второй собеседник', email: 'voice-dock-second@mova.test' };
+    const firstChat: AppConversation = { ...conversation, id: 'voice-dock-first-chat', title: firstFriend.name, members: [voiceUser, firstFriend] };
+    const secondChat: AppConversation = { ...conversation, id: 'voice-dock-second-chat', title: secondFriend.name, members: [voiceUser, secondFriend], createdAt: '2026-08-10T00:01:00.000Z' };
+    const audioTrack = { id: 'voice-dock-track', enabled: true, stop: vi.fn() };
+    const microphoneStream = {
+      id: 'voice-dock-stream',
+      getAudioTracks: () => [audioTrack],
+      getVideoTracks: () => [],
+      getTracks: () => [audioTrack],
+    } as unknown as MediaStream;
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn().mockResolvedValue(microphoneStream) } });
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    const send = vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [secondChat, firstChat] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [firstFriend, secondFriend] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+    vi.spyOn(api, 'markConversationRead').mockImplementation(async (conversationId) => ({ conversationId, userId: voiceUser.id, messageIds: [], readAt: '2026-08-10T12:00:00.000Z' }));
+    window.localStorage.setItem('mova-selected-conversation', firstChat.id);
+    const rendered = render(<ToastProvider><Product currentUser={voiceUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} /></ToastProvider>);
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'call:sync', conversationId: firstChat.id }));
+    act(() => realtime.listeners.forEach((listener) => listener({
+      type: 'call:state',
+      conversationId: firstChat.id,
+      status: 'active',
+      createdAt: '2026-08-10T12:00:00.000Z',
+      startedAt: '2026-08-10T12:00:03.000Z',
+      participants: [voiceUser.id, firstFriend.id],
+      room: [
+        { userId: voiceUser.id, connectionState: 'reconnecting', muted: false, deafened: false, media: {} },
+        { userId: firstFriend.id, connectionState: 'connected', muted: false, deafened: false, media: {} },
+      ],
+      joined: true,
+    })));
+
+    const dock = await screen.findByRole('region', { name: `Активный звонок с ${firstFriend.name}` });
+    expect(dock).toHaveAttribute('data-call-state', 'disconnected');
+    const secondChatButton = Array.from(rendered.container.querySelectorAll<HTMLButtonElement>('.mova-real-chat-list>button')).find((button) => button.textContent?.includes(secondFriend.name))!;
+    await user.click(secondChatButton);
+    expect(dock).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: 'Позвонить' }));
+    expect(await screen.findByRole('status')).toHaveTextContent(`Вы уже находитесь в звонке «${firstFriend.name}»`);
+    expect(send).not.toHaveBeenCalledWith({ type: 'call:invite', conversationId: secondChat.id });
+
+    await user.click(screen.getByRole('button', { name: `Вернуться в звонок с ${firstFriend.name}` }));
+    await waitFor(() => expect(rendered.container.querySelector('.mova-call-stage')).toBeInTheDocument());
+    expect(send).not.toHaveBeenCalledWith({ type: 'call:invite', conversationId: firstChat.id });
+    await user.click(screen.getByRole('button', { name: 'Свернуть звонок' }));
+    const restoredDock = await screen.findByRole('region', { name: `Активный звонок с ${firstFriend.name}` });
+    expect(restoredDock).toHaveAttribute('data-call-state', 'connected');
+
+    await user.click(screen.getByRole('button', { name: 'Выключить микрофон' }));
+    expect(screen.getByRole('button', { name: 'Включить микрофон' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Выключить звук в наушниках' }));
+    expect(screen.getByRole('button', { name: 'Включить звук в наушниках' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Выйти из звонка' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: `Активный звонок с ${firstFriend.name}` })).not.toBeInTheDocument());
+    expect(send).toHaveBeenCalledWith({ type: 'voice:leave', conversationId: firstChat.id });
+
+    act(() => realtime.listeners.forEach((listener) => listener({
+      type: 'call:state',
+      conversationId: firstChat.id,
+      status: 'active',
+      createdAt: '2026-08-10T12:00:00.000Z',
+      startedAt: '2026-08-10T12:00:03.000Z',
+      participants: [firstFriend.id],
+      room: [{ userId: firstFriend.id, connectionState: 'connected', muted: false, deafened: false, media: {} }],
+      joined: false,
+    })));
+    expect(await screen.findByRole('button', { name: 'Подключиться к звонку' })).toBeVisible();
+    rendered.unmount();
+  });
+});
+
+const stubMobileNavigationViewport = () => {
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: query.includes('max-width: 760px') || query.includes('max-width:760px'),
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })));
+};
+
+const dispatchTouchPointer = (target: EventTarget, type: string, init: { pointerId: number; clientX: number; clientY: number }) => {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.entries({ ...init, pointerType: 'touch' }).forEach(([key, value]) => Object.defineProperty(event, key, { configurable: true, value }));
+  target.dispatchEvent(event);
+};
+
+const dispatchTouch = (target: EventTarget, type: 'touchstart' | 'touchmove' | 'touchend', init: { identifier: number; clientX: number; clientY: number }) => {
+  const touch = { ...init, target };
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    touches: { configurable: true, value: type === 'touchend' ? [] : [touch] },
+    changedTouches: { configurable: true, value: [touch] },
+  });
+  target.dispatchEvent(event);
+};
+
+async function renderMobileProduct(suffix: string) {
+  stubMobileNavigationViewport();
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  window.history.replaceState(null, '', '/app');
+  const user: AppUser = { ...currentUser, id: `mobile-user-${suffix}`, email: `mobile-user-${suffix}@mova.test` };
+  const contact: AppUser = { ...friend, id: `mobile-friend-${suffix}`, email: `mobile-friend-${suffix}@mova.test` };
+  const chat: AppConversation = { ...conversation, id: `mobile-chat-${suffix}`, title: `Друг ${suffix}`, members: [user, contact] };
+  const connect = vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+  const close = vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+  vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [chat] });
+  vi.spyOn(api, 'users').mockResolvedValue({ users: [contact] });
+  vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+  vi.spyOn(api, 'markConversationRead').mockResolvedValue({ conversationId: chat.id, userId: user.id, messageIds: [], readAt: '2026-08-10T12:00:00.000Z' });
+  const rendered = render(<Product currentUser={user} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+  await waitFor(() => expect(rendered.container.querySelector('.mova-real-chat-list>button')).toBeInTheDocument());
+  return { ...rendered, user, contact, chat, connect, close };
+}
+
+describe('Product mobile chat navigation', () => {
+  it('keeps the voice dock mounted in both the mobile list and chat views', async () => {
+    const user = userEvent.setup();
+    const setup = await renderMobileProduct('voice-dock');
+    await user.click(setup.container.querySelector<HTMLButtonElement>('.mova-real-chat-list>button')!);
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 50)));
+    await user.click(screen.getByRole('button', { name: 'К списку диалогов' }));
+
+    act(() => realtime.listeners.forEach((listener) => listener({
+      type: 'call:state',
+      conversationId: setup.chat.id,
+      status: 'active',
+      createdAt: '2026-08-10T12:00:00.000Z',
+      startedAt: '2026-08-10T12:00:03.000Z',
+      participants: [setup.user.id, setup.contact.id],
+      room: [
+        { userId: setup.user.id, connectionState: 'reconnecting', muted: false, deafened: false, media: {} },
+        { userId: setup.contact.id, connectionState: 'connected', muted: false, deafened: false, media: {} },
+      ],
+      joined: true,
+    })));
+
+    const app = setup.container.querySelector('.mova-tg-app')!;
+    const dock = await screen.findByRole('region', { name: `Активный звонок с ${setup.chat.title}` });
+    expect(app).toHaveAttribute('data-mobile-view', 'list');
+    expect(dock).toBeVisible();
+    await user.click(setup.container.querySelector<HTMLButtonElement>('.mova-real-chat-list>button')!);
+    expect(app).toHaveAttribute('data-mobile-view', 'chat');
+    expect(dock).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'К списку диалогов' }));
+    expect(app).toHaveAttribute('data-mobile-view', 'list');
+    expect(dock).toBeVisible();
+    setup.unmount();
+  });
+
+  it('starts on the list and preserves the mounted composer while navigating back', async () => {
+    const user = userEvent.setup();
+    const setup = await renderMobileProduct('navigation');
+    const app = setup.container.querySelector('.mova-tg-app')!;
+    const chatButton = setup.container.querySelector<HTMLButtonElement>('.mova-real-chat-list>button')!;
+
+    expect(app).toHaveAttribute('data-mobile-view', 'list');
+    expect(setup.container.querySelector('.mova-real-thread')).toHaveAttribute('aria-hidden', 'true');
+
+    await user.click(chatButton);
+    expect(app).toHaveAttribute('data-mobile-view', 'chat');
+    const composer = screen.getByRole('textbox', { name: `Сообщение в ${setup.chat.title}` });
+    await user.type(composer, 'Черновик остаётся');
+    expect(composer).toHaveValue('Черновик остаётся');
+
+    await user.click(screen.getByRole('button', { name: 'К списку диалогов' }));
+    await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'list'));
+    expect(composer).toHaveValue('Черновик остаётся');
+
+    await user.click(chatButton);
+    expect(app).toHaveAttribute('data-mobile-view', 'chat');
+    expect(composer).toHaveValue('Черновик остаётся');
+    expect(setup.close).not.toHaveBeenCalled();
+  });
+
+  it('accepts a touch edge swipe without capturing composer or vertical scroll gestures', async () => {
+    const user = userEvent.setup();
+    const setup = await renderMobileProduct('swipe');
+    const app = setup.container.querySelector('.mova-tg-app')!;
+    const chatButton = setup.container.querySelector<HTMLButtonElement>('.mova-real-chat-list>button')!;
+    await user.click(chatButton);
+    const composer = screen.getByRole('textbox', { name: `Сообщение в ${setup.chat.title}` });
+    const messages = setup.container.querySelector('.mova-real-messages')!;
+
+    dispatchTouch(composer, 'touchstart', { identifier: 1, clientX: 8, clientY: 700 });
+    dispatchTouch(composer, 'touchend', { identifier: 1, clientX: 130, clientY: 704 });
+    expect(app).toHaveAttribute('data-mobile-view', 'chat');
+
+    dispatchTouch(messages, 'touchstart', { identifier: 2, clientX: 8, clientY: 280 });
+    dispatchTouch(messages, 'touchmove', { identifier: 2, clientX: 12, clientY: 350 });
+    dispatchTouch(messages, 'touchend', { identifier: 2, clientX: 130, clientY: 354 });
+    expect(app).toHaveAttribute('data-mobile-view', 'chat');
+
+    dispatchTouch(messages, 'touchstart', { identifier: 3, clientX: 8, clientY: 280 });
+    dispatchTouch(messages, 'touchend', { identifier: 3, clientX: 130, clientY: 286 });
+    await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'list'));
+  });
+
+  it('keeps the PointerEvent fallback for touch-capable embedded browsers', async () => {
+    const user = userEvent.setup();
+    const setup = await renderMobileProduct('pointer-swipe');
+    const app = setup.container.querySelector('.mova-tg-app')!;
+    await user.click(setup.container.querySelector<HTMLButtonElement>('.mova-real-chat-list>button')!);
+    const messages = setup.container.querySelector('.mova-real-messages')!;
+
+    dispatchTouchPointer(messages, 'pointerdown', { pointerId: 4, clientX: 8, clientY: 280 });
+    dispatchTouchPointer(messages, 'pointerup', { pointerId: 4, clientX: 130, clientY: 286 });
+    await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'list'));
+  });
+
+  it('closes a list overlay on browser back without opening the selected chat', async () => {
+    const user = userEvent.setup();
+    const setup = await renderMobileProduct('overlay');
+    const app = setup.container.querySelector('.mova-tg-app')!;
+
+    await user.click(screen.getByRole('button', { name: 'Новый разговор' }));
+    expect(screen.getByRole('dialog', { name: 'Новый чат' })).toBeVisible();
+    act(() => window.dispatchEvent(new PopStateEvent('popstate')));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Новый чат' })).not.toBeInTheDocument());
+    expect(app).toHaveAttribute('data-mobile-view', 'list');
+  });
+
+  it('gives an incoming call priority over list and browser back navigation', async () => {
+    const setup = await renderMobileProduct('call');
+    const app = setup.container.querySelector('.mova-tg-app')!;
+    expect(app).toHaveAttribute('data-mobile-view', 'list');
+
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'call:invite', conversationId: setup.chat.id, from: setup.contact, createdAt: '2026-08-10T12:00:00.000Z' })));
+    await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'chat'));
+    expect(await screen.findByRole('region', { name: 'Входящий звонок' })).toBeVisible();
+
+    act(() => window.history.back());
+    await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'chat'));
+
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'call:end', conversationId: setup.chat.id, fromUserId: setup.contact.id })));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Входящий звонок' })).not.toBeInTheDocument());
+    act(() => window.history.back());
+    await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'list'));
+  });
+});
+
 function renderChat(messages: AppMessage[] = []) {
   return render(<RealMessages conversation={conversation} currentUser={currentUser} messages={messages} onSend={vi.fn().mockResolvedValue(undefined)} />);
 }
@@ -993,7 +1303,7 @@ describe('RealMessages send failures', () => {
 });
 
 describe('RealMessages typing indicator', () => {
-  it('keeps presence in the header and shows typing only above the composer', () => {
+  it('keeps presence in the header and shows typing above the composer', () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} typingUserIds={[]} onSend={onSend} />);
 
@@ -1002,7 +1312,7 @@ describe('RealMessages typing indicator', () => {
 
     rerender(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} typingUserIds={[friend.id]} onSend={onSend} />);
     expect(screen.getByText('в сети')).toBeVisible();
-    expect(screen.getAllByText('Друг печатает…')).toHaveLength(1);
+    expect(screen.getByText('Друг печатает…')).toBeVisible();
     expect(screen.getByText('Друг печатает…').closest('.mova-real-typing')).toBeVisible();
 
     rerender(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} typingUserIds={[]} onSend={onSend} />);

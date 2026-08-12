@@ -20,8 +20,11 @@ const host = process.env.HOST || '0.0.0.0';
 const secret = process.env.MOVA_SESSION_SECRET || 'mova-local-development-secret';
 const clients = new Map();
 const voiceRooms = new Map();
+const voiceStates = new Map();
+const voiceReconnectTimers = new Map();
 const activeCalls = new Map();
 const callCleanupTimers = new Map();
+const voiceReconnectGraceMs = Math.max(1_000, Number(process.env.MOVA_VOICE_RECONNECT_GRACE_MS || 12_000));
 const hashAsync = promisify(scrypt);
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 eventLoopDelay.enable();
@@ -216,6 +219,38 @@ function safeSocketSend(socket, payload) {
 function roomUserIds(conversationId) {
   return [...(voiceRooms.get(conversationId)?.keys() || [])];
 }
+function voiceReconnectKey(conversationId, userId) {
+  return `${conversationId}:${userId}`;
+}
+function clearVoiceReconnect(conversationId, userId) {
+  const key = voiceReconnectKey(conversationId, userId);
+  const timer = voiceReconnectTimers.get(key);
+  if (timer) clearTimeout(timer);
+  voiceReconnectTimers.delete(key);
+}
+function voiceStateFor(conversationId, userId) {
+  if (!voiceStates.has(conversationId)) voiceStates.set(conversationId, new Map());
+  const states = voiceStates.get(conversationId);
+  if (!states.has(userId)) states.set(userId, { muted: false, deafened: false, media: {} });
+  return states.get(userId);
+}
+function roomSnapshot(conversationId) {
+  const room = voiceRooms.get(conversationId);
+  if (!room) return [];
+  return [...room.entries()].map(([userId, sockets]) => {
+    const state = voiceStateFor(conversationId, userId);
+    return {
+      userId,
+      connectionState: sockets.size ? 'connected' : 'reconnecting',
+      muted: Boolean(state.muted),
+      deafened: Boolean(state.deafened),
+      media: { ...state.media },
+    };
+  });
+}
+function broadcastVoiceSnapshot(conversationId) {
+  broadcastToConversation(conversationId, { type: 'voice:snapshot', conversationId, participants: roomSnapshot(conversationId) });
+}
 function callStateFor(conversationId, socket) {
   const active = activeCalls.get(conversationId);
   return {
@@ -230,6 +265,7 @@ function callStateFor(conversationId, socket) {
         }
       : {}),
     participants: roomUserIds(conversationId),
+    room: roomSnapshot(conversationId),
     joined: socket.voiceConversationId === conversationId,
   };
 }
@@ -722,23 +758,40 @@ function handleRequest(request, response) {
   return pathname.startsWith('/api/') ? handleApi(request, response) : serveFrontend(request, response);
 }
 
-function leaveVoice(socket) {
+function removeVoiceParticipant(conversationId, userId, notify = true) {
+  clearVoiceReconnect(conversationId, userId);
+  const room = voiceRooms.get(conversationId);
+  if (!room?.has(userId)) return;
+  room.delete(userId);
+  voiceStates.get(conversationId)?.delete(userId);
+  if (notify) broadcastToConversation(conversationId, { type: 'voice:left', conversationId, userId }, userId);
+  if (room.size === 0) {
+    voiceRooms.delete(conversationId);
+    voiceStates.delete(conversationId);
+    finishCall(conversationId, userId);
+  } else broadcastVoiceSnapshot(conversationId);
+}
+
+function leaveVoice(socket, allowReconnect = false) {
   if (!socket.voiceConversationId || !socket.userId) return;
   const conversationId = socket.voiceConversationId;
   socket.voiceConversationId = null;
   const room = voiceRooms.get(conversationId);
   const userSockets = room?.get(socket.userId);
   userSockets?.delete(socket);
-  if (userSockets?.size === 0) {
-    room.delete(socket.userId);
-    broadcastToConversation(conversationId, { type: 'voice:left', conversationId, userId: socket.userId }, socket.userId);
-  }
-  if (room?.size === 0) {
-    voiceRooms.delete(conversationId);
-    finishCall(conversationId, socket.userId);
-  } else if (socket.readyState === WebSocket.OPEN) {
-    safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
-  }
+  if (!userSockets || userSockets.size > 0) return;
+  if (!allowReconnect) return removeVoiceParticipant(conversationId, socket.userId);
+  clearVoiceReconnect(conversationId, socket.userId);
+  const key = voiceReconnectKey(conversationId, socket.userId);
+  voiceReconnectTimers.set(
+    key,
+    setTimeout(() => {
+      voiceReconnectTimers.delete(key);
+      if (voiceRooms.get(conversationId)?.get(socket.userId)?.size) return;
+      removeVoiceParticipant(conversationId, socket.userId);
+    }, voiceReconnectGraceMs),
+  );
+  broadcastVoiceSnapshot(conversationId);
 }
 
 function handleSocket(socket, request) {
@@ -826,7 +879,7 @@ function handleSocket(socket, request) {
         return leaveVoice(socket);
       }
       if (event.type === 'voice:join') {
-        leaveVoice(socket);
+        if (socket.voiceConversationId && socket.voiceConversationId !== conversationId) leaveVoice(socket);
         socket.voiceConversationId = conversationId;
         clearCallCleanup(conversationId);
         if (!activeCalls.has(conversationId)) {
@@ -846,13 +899,20 @@ function handleSocket(socket, request) {
         const room = voiceRooms.get(conversationId);
         const peers = [...room.keys()].filter((userId) => userId !== user.id);
         if (!room.has(user.id)) room.set(user.id, new Set());
+        clearVoiceReconnect(conversationId, user.id);
+        voiceStateFor(conversationId, user.id);
         room.get(user.id).add(socket);
         safeSocketSend(socket, JSON.stringify({ type: 'voice:peers', conversationId, peers }));
-        return broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(user) }, user.id);
+        broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(user) }, user.id);
+        return broadcastVoiceSnapshot(conversationId);
       }
       if (event.type === 'voice:leave') return leaveVoice(socket);
-      if (event.type === 'voice:media' && ['camera', 'screen'].includes(event.mediaKind))
-        return broadcastToConversation(
+      if (event.type === 'voice:media' && ['camera', 'screen'].includes(event.mediaKind)) {
+        if (socket.voiceConversationId !== conversationId || !voiceRooms.get(conversationId)?.has(user.id)) return;
+        const state = voiceStateFor(conversationId, user.id);
+        if (event.enabled && event.streamId) state.media[event.mediaKind] = String(event.streamId);
+        else delete state.media[event.mediaKind];
+        broadcastToConversation(
           conversationId,
           {
             type: 'voice:media',
@@ -864,8 +924,14 @@ function handleSocket(socket, request) {
           },
           user.id,
         );
-      if (event.type === 'voice:state')
-        return broadcastToConversation(
+        return broadcastVoiceSnapshot(conversationId);
+      }
+      if (event.type === 'voice:state') {
+        if (socket.voiceConversationId !== conversationId || !voiceRooms.get(conversationId)?.has(user.id)) return;
+        const state = voiceStateFor(conversationId, user.id);
+        state.muted = Boolean(event.muted);
+        state.deafened = Boolean(event.deafened);
+        broadcastToConversation(
           conversationId,
           {
             type: 'voice:state',
@@ -876,7 +942,10 @@ function handleSocket(socket, request) {
           },
           user.id,
         );
+        return broadcastVoiceSnapshot(conversationId);
+      }
       if (['voice:offer', 'voice:answer', 'voice:ice'].includes(event.type) && event.targetUserId) {
+        if (socket.voiceConversationId !== conversationId || !voiceRooms.get(conversationId)?.has(user.id) || !voiceRooms.get(conversationId)?.has(event.targetUserId)) return;
         const payload = JSON.stringify({ ...event, fromUserId: user.id });
         for (const targetSocket of clients.get(event.targetUserId) || []) safeSocketSend(targetSocket, payload);
       }
@@ -885,7 +954,7 @@ function handleSocket(socket, request) {
     }
   });
   socket.on('close', () => {
-    leaveVoice(socket);
+    leaveVoice(socket, true);
     clients.get(user.id)?.delete(socket);
     for (const conversationId of socket.typingConversationIds || []) {
       const stillTyping = [...(clients.get(user.id) || [])].some((otherSocket) => otherSocket.typingConversationIds?.has(conversationId));
@@ -937,6 +1006,7 @@ function shutdown(signal) {
   clearInterval(socketHeartbeat);
   clearInterval(uploadCleanupTimer);
   for (const timer of callCleanupTimers.values()) clearTimeout(timer);
+  for (const timer of voiceReconnectTimers.values()) clearTimeout(timer);
   for (const socket of sockets.clients) socket.close(1001, 'Server shutdown');
   sockets.close();
   server.close(() => {

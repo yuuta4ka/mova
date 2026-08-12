@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, FileText, Gamepad2, HeadphoneOff, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowLeft, AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, FileText, Gamepad2, HeadphoneOff, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
-import { useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
+import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, useToast } from './components/Primitives';
 import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
 import { EmojiPicker } from './components/EmojiPicker';
@@ -175,6 +175,47 @@ const preferredConversation = (items: AppConversation[]) => {
   const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
   return (preferred && items.some((item) => item.id === preferred) ? preferred : items[0]?.id) || null;
 };
+const conversationTypingLabel = (conversation: AppConversation, currentUserId: string, typingUserIds: string[]) => {
+  const typingUsers = conversation.members.filter((member) => member.id !== currentUserId && typingUserIds.includes(member.id));
+  return typingUsers.length === 1
+    ? `${typingUsers[0].name} печатает…`
+    : typingUsers.length === 2
+      ? `${typingUsers[0].name} и ${typingUsers[1].name} печатают…`
+      : typingUsers.length > 2
+        ? `${typingUsers[0].name}, ${typingUsers[1].name} и ещё ${typingUsers.length - 2} печатают…`
+        : '';
+};
+type MobileNavigationView = 'list' | 'chat';
+const mobileNavigationQuery = '(max-width: 760px), (orientation: landscape) and (max-height: 520px) and (max-width: 960px)';
+const mobileHistoryKey = 'movaMobileNavigation';
+const readMobileHistory = () => {
+  const state = window.history.state;
+  if (!state || typeof state !== 'object') return null;
+  const value = (state as Record<string, unknown>)[mobileHistoryKey];
+  if (!value || typeof value !== 'object') return null;
+  const view = (value as { view?: unknown }).view;
+  const conversationId = (value as { conversationId?: unknown }).conversationId;
+  return view === 'list' || view === 'chat'
+    ? { view, conversationId: typeof conversationId === 'string' ? conversationId : null }
+    : null;
+};
+const mobileHistoryState = (view: MobileNavigationView, conversationId?: string | null) => ({
+  ...(window.history.state && typeof window.history.state === 'object' ? window.history.state : {}),
+  [mobileHistoryKey]: { view, conversationId: conversationId || null },
+});
+function useMobileNavigationViewport() {
+  const matches = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.(mobileNavigationQuery).matches);
+  const [mobile, setMobile] = useState(matches);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia(mobileNavigationQuery);
+    const update = () => setMobile(media.matches);
+    update();
+    media.addEventListener?.('change', update);
+    return () => media.removeEventListener?.('change', update);
+  }, []);
+  return mobile;
+}
 const clearClientCache = () => {
   conversationCache.clear();
   userCache.clear();
@@ -1051,6 +1092,7 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
 
 function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; onOpenSettings?: () => void }) {
   const call = useVoiceCall(conversation.id, currentUser.id);
+  const callState = normalizeCallState(call.state);
   const [moreOpen, setMoreOpen] = useState(false);
   const [showSelf, setShowSelf] = useState(true);
   const [showNoVideo, setShowNoVideo] = useState(true);
@@ -1060,13 +1102,13 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
     height: 1080,
     frameRate: 30,
   });
-  if (call.state === 'idle')
+  if (callState === 'idle')
     return (
       <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={call.call}>
         Позвонить
       </Button>
     );
-  if (call.state === 'incoming')
+  if (callState === 'incoming')
     return (
       <div className="mova-call-bar incoming">
         <span className="mova-call-pulse">
@@ -1085,10 +1127,12 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
         </IconButton>
       </div>
     );
-  const ringing = call.state === 'ringing';
-  if (call.state === 'active') {
+  const ringing = callState === 'ringing';
+  if (isJoinedCallState(callState)) {
     const localCamera = call.cameraStream;
     const localScreen = call.screenStream;
+    const selfConnectionState: ParticipantConnectionState = callState === 'reconnecting' || callState === 'disconnected' ? 'reconnecting' : 'connected';
+    const participantConnectionState = (userId: string): ParticipantConnectionState => call.reconnectingUsers[userId] ? 'reconnecting' : call.diagnostics[userId]?.connectionState === 'connected' ? 'connected' : 'connecting';
     const remoteTiles = call.remoteVideoStreams.map((item) => ({
       ...item,
       kind: call.remoteMedia[item.userId]?.screen === item.streamId ? ('screen' as const) : ('camera' as const),
@@ -1103,12 +1147,12 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
           </span>
         </header>
         <div className="mova-call-grid">
-          {localScreen && <CallVideoTile stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} />}
-          {showSelf && (localCamera ? <CallVideoTile stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} /> : !localScreen && <CallAvatarTile user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} />)}
+          {localScreen && <CallVideoTile participantId={currentUser.id} stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} screenSharing />}
+          {showSelf && (localCamera ? <CallVideoTile participantId={currentUser.id} stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} /> : !localScreen && <CallAvatarTile participantId={currentUser.id} user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} />)}
           {remoteTiles.map((tile) => {
             const user = conversation.members.find((member) => member.id === tile.userId);
             const voice = call.remoteVoiceStates[tile.userId];
-            return <CallVideoTile key={`${tile.userId}-${tile.streamId}`} stream={tile.stream} label={`${user?.name || 'Участник'}${tile.kind === 'screen' ? ' · экран' : ''}`} kind={tile.kind} muted={voice?.muted} deafened={voice?.deafened} />;
+            return <CallVideoTile key={`${tile.userId}-${tile.streamId}`} participantId={tile.userId} stream={tile.stream} label={`${user?.name || 'Участник'}${tile.kind === 'screen' ? ' · экран' : ''}`} kind={tile.kind} muted={voice?.muted} deafened={voice?.deafened} connectionState={participantConnectionState(tile.userId)} screenSharing={Boolean(call.remoteMedia[tile.userId]?.screen)} />;
           })}
           {showNoVideo &&
             call.participants
@@ -1116,7 +1160,7 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
               .map((id) => {
                 const user = conversation.members.find((member) => member.id === id);
                 const voice = call.remoteVoiceStates[id];
-                return user ? <CallAvatarTile key={id} user={user} label={user.name} muted={voice?.muted} deafened={voice?.deafened} /> : null;
+                return user ? <CallAvatarTile key={id} participantId={id} user={user} label={user.name} muted={voice?.muted} deafened={voice?.deafened} connectionState={participantConnectionState(id)} screenSharing={Boolean(call.remoteMedia[id]?.screen)} /> : null;
               })}
         </div>
         <div className="mova-call-controls">
@@ -1181,13 +1225,13 @@ function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => 
     );
   }
   return (
-    <div className={`mova-call-bar ${call.state}`}>
+    <div className={`mova-call-bar ${callState}`}>
       <span className="mova-call-pulse">
         <i />
         <Phone size={15} />
       </span>
       <span>
-        <strong>{ringing ? 'Вызываем…' : call.state === 'connecting' ? 'Подключаем…' : call.state === 'error' ? 'Не удалось подключить' : 'Голосовой звонок'}</strong>
+        <strong>{ringing ? 'Вызываем…' : callState === 'connecting' ? 'Подключаем…' : 'Голосовой звонок'}</strong>
         <small>{call.error || (ringing ? conversation.title : `${call.participants.length + 1} в разговоре`)}</small>
       </span>
       <IconButton label="Завершить звонок" className="mova-hangup" onClick={ringing ? call.decline : call.leave}>
@@ -1228,12 +1272,11 @@ function CallControlButton({ label, active = false, off = false, danger = false,
 const screenAudioWarningPrefix = 'Экран демонстрируется без звука.';
 const screenAudioToastText = 'Демонстрация без звука. Включите «Поделиться аудио» при выборе экрана.';
 const isScreenAudioWarning = (error: string) => error.startsWith(screenAudioWarningPrefix);
+type VoiceCallController = ReturnType<typeof useVoiceCall>;
 
-function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onToggleChat, onCallStateChange, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onCallStateChange: (open: boolean) => void; onOpenSettings?: () => void }) {
-  const [callConversation, setCallConversation] = useState(conversation);
-  const call = useVoiceCall(callConversation.id, currentUser.id);
-  const [stageHost, setStageHost] = useState<HTMLElement | null>(null);
-  const [bannerHost, setBannerHost] = useState<HTMLElement | null>(null);
+function VoiceCallBar({ conversation, callConversation, currentUser, call, canvasOpen, stageHost, bannerHost, chatOpen, unreadCount, onToggleChat, onOpenCanvas, onMinimizeCanvas, onStartCall, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; callConversation: AppConversation; currentUser: AppUser; call: VoiceCallController; canvasOpen: boolean; stageHost: HTMLElement | null; bannerHost: HTMLElement | null; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onOpenCanvas: () => void; onMinimizeCanvas: () => void; onStartCall: (video: boolean) => void; onOpenSettings?: () => void }) {
+  const callState = normalizeCallState(call.state);
+  const sameConversation = conversation.id === callConversation.id;
   const [moreOpen, setMoreOpen] = useState(false);
   const [screenMenuOpen, setScreenMenuOpen] = useState(false);
   const [showSelf, setShowSelf] = useState(true);
@@ -1243,7 +1286,6 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
   const [screenAudioToastVisible, setScreenAudioToastVisible] = useState(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(() => loadScreenShareSettings());
   const [activeSeconds, setActiveSeconds] = useState(0);
-  const startWithCamera = useRef(false);
   const screenAudioToastSession = useRef<MediaStream | null>(null);
   const screenAudioToastShown = useRef(false);
   const screenAudioToastHideTimer = useRef<number | null>(null);
@@ -1254,13 +1296,6 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     screenAudioToastHideTimer.current = null;
     screenAudioToastRemoveTimer.current = null;
   }, []);
-  useEffect(() => {
-    if (call.state === 'idle' && callConversation.id !== conversation.id) setCallConversation(conversation);
-  }, [call.state, callConversation.id, conversation]);
-  useEffect(() => {
-    setStageHost(document.querySelector('.mova-open-chat > .mova-call-host'));
-    setBannerHost(document.querySelector('.mova-open-chat > .mova-active-call-host'));
-  }, [conversation.id]);
   useEffect(() => {
     const update = (event: Event) => setScreenQuality((event as CustomEvent<ScreenShareSettings>).detail || loadScreenShareSettings());
     window.addEventListener('mova-screen-share-settings', update);
@@ -1323,11 +1358,8 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     };
   }, [moreOpen, screenMenuOpen]);
   useEffect(() => {
-    onCallStateChange(call.state !== 'idle' && call.state !== 'available');
-  }, [call.state, onCallStateChange]);
-  useEffect(() => {
     const timeSource = call.startedAt || call.createdAt;
-    if (!timeSource || !['active', 'available', 'ringing', 'incoming'].includes(call.state)) {
+    if (!timeSource || !['connected', 'reconnecting', 'disconnected', 'available', 'ringing', 'incoming'].includes(callState)) {
       setActiveSeconds(0);
       return;
     }
@@ -1336,31 +1368,21 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     update();
     const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
-  }, [call.createdAt, call.startedAt, call.state]);
-  useEffect(() => {
-    const start = (event: Event) => {
-      const detail = (event as CustomEvent<{ conversationId: string; video: boolean }>).detail;
-      if (detail?.conversationId !== conversation.id || call.state !== 'idle') return;
-      startWithCamera.current = detail.video;
-      call.call();
-    };
-    window.addEventListener('mova-start-call', start);
-    return () => window.removeEventListener('mova-start-call', start);
-  }, [call, conversation.id]);
-  useEffect(() => {
-    if (call.state === 'active' && startWithCamera.current && !call.cameraStream) {
-      startWithCamera.current = false;
-      void call.toggleCamera();
-    }
-  }, [call]);
-
-  if (call.state === 'idle')
+  }, [call.createdAt, call.startedAt, callState]);
+  if (!sameConversation)
     return (
-      <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={call.call}>
+      <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
         Позвонить
       </Button>
     );
-  if (call.state === 'available')
+  if (callState === 'idle')
+    return (
+      <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
+        Позвонить
+      </Button>
+    );
+  if (callState === 'available' && call.joined) return null;
+  if (callState === 'available')
     return bannerHost
       ? createPortal(
           <section className="mova-active-call-banner" aria-label={`Активный звонок с ${callConversation.title}`}>
@@ -1369,7 +1391,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
               <small><i aria-hidden="true" />Звонок идёт · {formatCallDuration(activeSeconds)}</small>
             </span>
             {call.error && <small className="mova-active-call-banner__error">Не удалось подключить микрофон</small>}
-            <button type="button" title={call.error || undefined} aria-label={call.error ? `Повторить подключение. ${call.error}` : 'Подключиться к звонку'} onClick={call.accept}>
+            <button type="button" title={call.error || undefined} aria-label={call.error ? `Повторить подключение. ${call.error}` : 'Подключиться к звонку'} onClick={() => { onOpenCanvas(); void call.accept(); }}>
               <Phone size={16} />
               <span>{call.error ? 'Повторить' : 'Подключиться'}</span>
             </button>
@@ -1377,9 +1399,16 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
           bannerHost,
         )
       : null;
-  if (call.state !== 'active') return stageHost ? createPortal(<PendingCallStage state={call.state} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={call.state === 'ringing' || call.state === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
+  if (!isJoinedCallState(callState)) return stageHost ? createPortal(<PendingCallStage state={callState} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={callState === 'ringing' || callState === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
 
-  if (call.state === 'active') {
+  if (!canvasOpen)
+    return (
+      <Button variant="secondary" size="sm" aria-label="Вернуться в звонок" leadingIcon={<Phone size={16} />} onClick={onOpenCanvas}>
+        Вернуться
+      </Button>
+    );
+
+  if (isJoinedCallState(callState)) {
     const localCamera = call.cameraStream;
     const localScreen = call.screenStream;
     const remoteTiles = call.remoteVideoStreams.map((item) => ({
@@ -1388,7 +1417,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     }));
     const screenTiles = remoteTiles.filter((tile) => tile.kind === 'screen');
     const cameraTiles = remoteTiles.filter((tile) => tile.kind === 'camera');
-    const remoteWithCamera = new Set(cameraTiles.map((item) => item.userId));
+    const cameraTileByUser = new Map(cameraTiles.map((item) => [item.userId, item]));
     const hasScreen = Boolean(localScreen || screenTiles.length);
     const peerDiagnostics = Object.values(call.diagnostics || {});
     const callConnected = peerDiagnostics.some((peer) => peer.connectionState === 'connected');
@@ -1398,69 +1427,68 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
     const latency = peerDiagnostics.reduce<number | undefined>((maximum, peer) => (peer.roundTripTimeMs === undefined ? maximum : Math.max(maximum ?? 0, peer.roundTripTimeMs)), undefined);
     const latencyLabel = latency === undefined ? 'Измеряем задержку…' : `Задержка ${latency} мс`;
     const networkLabel = networkQuality === 'good' ? '4 полосы' : networkQuality === 'fair' ? '3 полосы' : networkQuality === 'poor' ? '1 полоса' : 'нет данных';
+    const participantConnectionState = (userId: string): ParticipantConnectionState => {
+      if (call.reconnectingUsers[userId]) return 'reconnecting';
+      const connectionState = call.diagnostics[userId]?.connectionState;
+      if (connectionState === 'connected') return 'connected';
+      if (connectionState === 'disconnected' || connectionState === 'failed' || connectionState === 'closed') return 'reconnecting';
+      return 'connecting';
+    };
+    const selfConnectionState: ParticipantConnectionState = callState === 'reconnecting' || callState === 'disconnected' ? 'reconnecting' : 'connected';
+    const remoteParticipantIds = Array.from(new Set([...call.participants, ...cameraTiles.map((tile) => tile.userId)]))
+      .map((userId, snapshotIndex) => ({ userId, snapshotIndex, connectionState: participantConnectionState(userId) }))
+      .sort((left, right) => {
+        const priority = ({ userId, connectionState }: { userId: string; connectionState: ParticipantConnectionState }) =>
+          connectionState !== 'reconnecting' && call.speakingUsers[userId] ? 0 : connectionState === 'connected' ? 1 : connectionState === 'connecting' ? 2 : 3;
+        return priority(left) - priority(right) || left.snapshotIndex - right.snapshotIndex;
+      });
     const remoteParticipantTiles: ReactNode[] = [];
     const selfTile = showSelf
       ? localCamera ? (
-          <CallVideoTile key="local-camera" stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} selfView />
+          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
         ) : (
-          <CallAvatarTile key="local-avatar" user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} selfView />
+          <CallAvatarTile key="local-avatar" participantId={currentUser.id} user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
         )
       : null;
-    cameraTiles.forEach((tile) => {
-      const user = callConversation.members.find((member) => member.id === tile.userId);
-      const voice = call.remoteVoiceStates[tile.userId];
-      remoteParticipantTiles.push(
-        <CallVideoTile
-          key={`${tile.userId}-${tile.streamId}`}
-          stream={tile.stream}
-          label={user?.name || 'Участник'}
-          kind="camera"
-          muted={voice?.muted}
-          deafened={voice?.deafened}
-          speaking={call.speakingUsers[tile.userId]}
-          volume={
-            user
-              ? {
-                  label: `Громкость ${user.name}`,
-                  value: call.participantVolumes[tile.userId] ?? 100,
-                  onChange: (value) => call.setParticipantVolume(tile.userId, value),
-                }
-              : undefined
-          }
-        />,
-      );
+    remoteParticipantIds.forEach(({ userId, connectionState }) => {
+      const user = callConversation.members.find((member) => member.id === userId);
+      const voice = call.remoteVoiceStates[userId];
+      const cameraTile = cameraTileByUser.get(userId);
+      const screenSharing = Boolean(call.remoteMedia[userId]?.screen);
+      if (!user || (!cameraTile && !showNoVideo)) return;
+      const sharedProps = {
+        participantId: userId,
+        label: user.name,
+        muted: voice?.muted,
+        deafened: voice?.deafened,
+        speaking: call.speakingUsers[userId],
+        connectionState,
+        camera: Boolean(cameraTile),
+        screenSharing,
+        volume: {
+          label: `Громкость ${user.name}`,
+          value: call.participantVolumes[userId] ?? 100,
+          onChange: (value: number) => call.setParticipantVolume(userId, value),
+        },
+      };
+      remoteParticipantTiles.push(cameraTile ? (
+        <CallVideoTile key={`${userId}-${cameraTile.streamId}`} {...sharedProps} stream={cameraTile.stream} kind="camera" />
+      ) : (
+        <CallAvatarTile key={userId} {...sharedProps} user={user} />
+      ));
     });
-    if (showNoVideo)
-      call.participants
-        .filter((id) => !remoteWithCamera.has(id))
-        .forEach((id) => {
-          const user = callConversation.members.find((member) => member.id === id);
-          const voice = call.remoteVoiceStates[id];
-          if (!user) return;
-          remoteParticipantTiles.push(
-            <CallAvatarTile
-              key={id}
-              user={user}
-              label={user.name}
-              muted={voice?.muted}
-              deafened={voice?.deafened}
-              speaking={call.speakingUsers[id]}
-              volume={{
-                label: `Громкость ${user.name}`,
-                value: call.participantVolumes[id] ?? 100,
-                onChange: (value) => call.setParticipantVolume(id, value),
-              }}
-            />,
-          );
-        });
     const participantTiles = [...remoteParticipantTiles, ...(selfTile ? [selfTile] : [])];
+    const participantRailTiles = [...(selfTile ? [selfTile] : []), ...remoteParticipantTiles];
 
     return stageHost
       ? createPortal(
           <section className="mova-call-stage" data-call-connected={callConnected} data-audio-sending={microphoneSending} data-audio-receiving={microphoneReceiving}>
             <header>
+              <IconButton label="Свернуть звонок" className="mova-call-minimize" onClick={onMinimizeCanvas}>
+                <Minimize2 size={18} />
+              </IconButton>
               <div className="mova-call-header-tools">
-                <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${latencyLabel}`} data-tooltip={latencyLabel} title={latencyLabel}>
+                <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${latencyLabel}`} data-tooltip={latencyLabel}>
                   <span className="mova-network-bars" aria-hidden="true">
                     <i />
                     <i />
@@ -1477,7 +1505,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
             {hasScreen ? (
               <div className={`mova-call-grid has-screen${participantRailVisible ? '' : ' is-rail-collapsed'}`} data-call-layout="screen-share" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length} data-participant-rail={participantRailVisible ? 'visible' : 'hidden'}>
                 <div className="mova-call-screen-area">
-                  {localScreen && <CallVideoTile stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} />}
+                  {localScreen && <CallVideoTile participantId={currentUser.id} stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} screenSharing />}
                   {screenTiles.map((tile) => {
                     const user = callConversation.members.find((member) => member.id === tile.userId);
                     const voice = call.remoteVoiceStates[tile.userId];
@@ -1485,10 +1513,13 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                       <CallVideoTile
                         key={`${tile.userId}-${tile.streamId}`}
                         stream={tile.stream}
+                        participantId={tile.userId}
                         label={`${user?.name || 'Участник'} · экран`}
                         kind="screen"
                         muted={voice?.muted}
                         deafened={voice?.deafened}
+                        connectionState={participantConnectionState(tile.userId)}
+                        screenSharing
                         volume={
                           user
                             ? {
@@ -1512,7 +1543,7 @@ function VoiceCallBar({ conversation, currentUser, chatOpen, unreadCount, onTogg
                   >
                     {participantRailVisible ? <ChevronDown size={17} /> : <ChevronUp size={17} />}
                   </button>
-                  <div className="mova-call-participants" aria-hidden={!participantRailVisible}>{participantTiles}</div>
+                  <div className="mova-call-participants" aria-hidden={!participantRailVisible}>{participantRailTiles}</div>
                 </div>
               </div>
             ) : (
@@ -1772,13 +1803,19 @@ function CallVolumeMenu({ control, point, onClose }: { control: CallVolumeContro
   );
 }
 const screenAspectRatioFallback = 16 / 10;
+type ParticipantConnectionState = 'connecting' | 'connected' | 'reconnecting';
+const participantConnectionLabels: Record<ParticipantConnectionState, string> = {
+  connecting: 'Подключается',
+  connected: 'Подключён',
+  reconnecting: 'Переподключается',
+};
 const validMediaAspectRatio = (value: number) => Number.isFinite(value) && value >= 0.2 && value <= 5;
 const streamAspectRatio = (stream: MediaStream) => {
   const settings = stream.getVideoTracks()[0]?.getSettings();
   const ratio = Number(settings?.aspectRatio) || (Number(settings?.width) / Number(settings?.height));
   return validMediaAspectRatio(ratio) ? ratio : screenAspectRatioFallback;
 };
-function CallTileShell({ className, label, muted, deafened, screen = false, speaking = false, expandable = true, expanded, onExpandedChange, volume, mediaAspectRatio, children }: { className: string; label: string; muted?: boolean; deafened?: boolean; screen?: boolean; speaking?: boolean; expandable?: boolean; expanded: boolean; onExpandedChange: (expanded: boolean) => void; volume?: CallVolumeControl; mediaAspectRatio?: number; children: ReactNode }) {
+function CallTileShell({ className, participantId, label, muted, deafened, screen = false, screenSharing = false, speaking = false, connectionState, expandable = true, expanded, onExpandedChange, volume, mediaAspectRatio, children }: { className: string; participantId: string; label: string; muted?: boolean; deafened?: boolean; screen?: boolean; screenSharing?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; expandable?: boolean; expanded: boolean; onExpandedChange: (expanded: boolean) => void; volume?: CallVolumeControl; mediaAspectRatio?: number; children: ReactNode }) {
   const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null);
   const [expandedUiVisible, setExpandedUiVisible] = useState(true);
   const [expandedClosing, setExpandedClosing] = useState(false);
@@ -1867,6 +1904,8 @@ function CallTileShell({ className, label, muted, deafened, screen = false, spea
       tabIndex={screen ? 0 : undefined}
       aria-label={screen ? fullscreenLabel : undefined}
       data-speaking={speaking && !muted ? 'true' : undefined}
+      data-participant-id={participantId}
+      data-participant-connection={connectionState}
       data-self-view={className.includes('is-self') ? 'true' : undefined}
       data-source-aspect-ratio={screen && mediaAspectRatio ? String(mediaAspectRatio) : undefined}
       data-expanded-ui={expanded ? (expandedUiVisible ? 'visible' : 'hidden') : undefined}
@@ -1891,18 +1930,24 @@ function CallTileShell({ className, label, muted, deafened, screen = false, spea
       }}
     >
       {children}
+      {connectionState !== 'connected' && (
+        <span className={`mova-call-participant-state is-${connectionState}`} aria-label={participantConnectionLabels[connectionState]} title={participantConnectionLabels[connectionState]}>
+          <i aria-hidden="true" />
+          <b>{participantConnectionLabels[connectionState]}</b>
+        </span>
+      )}
       {expandable && !screen && (
         <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => requestExpandedChange(!expanded)}>
           {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
         </button>
       )}
-      <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} />
+      <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} screenSharing={screenSharing} />
       {menuPoint && volume && <CallVolumeMenu control={volume} point={menuPoint} onClose={() => setMenuPoint(null)} />}
     </article>
   );
   return expanded && !mobileCallLayout ? createPortal(tile, document.body) : tile;
 }
-function CallVideoTile({ stream, label, kind, mirrored = false, muted, deafened, speaking = false, selfView = false, volume }: { stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
+function CallVideoTile({ participantId, stream, label, kind, mirrored = false, muted, deafened, speaking = false, connectionState, screenSharing = false, selfView = false, volume }: { participantId: string; stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [sourceAspectRatio, setSourceAspectRatio] = useState(() => kind === 'screen' ? streamAspectRatio(stream) : undefined);
@@ -1920,30 +1965,62 @@ function CallVideoTile({ stream, label, kind, mirrored = false, muted, deafened,
     syncSourceAspectRatio();
   }, [stream, expanded, syncSourceAspectRatio]);
   return (
-    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} speaking={speaking} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
+    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} screenSharing={screenSharing || kind === 'screen'} speaking={speaking} connectionState={connectionState} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
       <video ref={videoRef} autoPlay playsInline muted className={mirrored ? 'is-mirrored' : ''} onLoadedMetadata={syncSourceAspectRatio} onResize={syncSourceAspectRatio} />
     </CallTileShell>
   );
 }
-function CallAvatarTile({ user, label, muted = false, deafened = false, speaking = false, selfView = false, volume }: { user: AppUser; label: string; muted?: boolean; deafened?: boolean; speaking?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
+function CallAvatarTile({ participantId, user, label, muted = false, deafened = false, speaking = false, connectionState, screenSharing = false, selfView = false, volume }: { participantId: string; user: AppUser; label: string; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <CallTileShell className={`is-avatar${selfView ? ' is-self' : ''}`} label={label} muted={muted} deafened={deafened} speaking={speaking} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
+    <CallTileShell className={`is-avatar${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screenSharing={screenSharing} speaking={speaking} connectionState={connectionState} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
       <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="xl" initialsLength={1} />
     </CallTileShell>
   );
 }
-function CallTileLabel({ label, muted, deafened, screen }: { label: string; muted?: boolean; deafened?: boolean; screen?: boolean }) {
+function CallTileLabel({ label, muted, deafened, screen, screenSharing }: { label: string; muted?: boolean; deafened?: boolean; screen?: boolean; screenSharing?: boolean }) {
+  const hasStatus = Boolean(muted || deafened || screen || screenSharing);
   return (
     <span className="mova-call-label">
-      {screen && <MonitorUp size={14} />}
-      {deafened ? <Headphones size={14} aria-label="Выключены наушники" /> : muted ? <MicOff size={14} aria-label="Микрофон выключен" /> : null}
+      {hasStatus && (
+        <span className="mova-call-label__statuses">
+          {muted && <MicOff size={14} aria-label="Микрофон выключен" />}
+          {deafened && <HeadphoneOff size={14} aria-label="Звук выключен" />}
+          {(screen || screenSharing) && <MonitorUp size={14} aria-label="Демонстрация экрана включена" />}
+        </span>
+      )}
       {label}
     </span>
   );
 }
 
-export function RealMessages({ conversation, currentUser, messages, loading = false, historyError = false, typingUserIds = [], onSend, onRetry, onRetryHistory, onEdit, onDeleteConversation = () => undefined }: { conversation: AppConversation; currentUser: AppUser; messages: AppMessage[]; loading?: boolean; historyError?: boolean; typingUserIds?: string[]; onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>; onRetry?: (message: AppMessage) => Promise<void>; onRetryHistory?: () => void; onEdit?: (messageId: string, content: string) => Promise<void>; onDeleteConversation?: () => void }) {
+interface RealMessagesProps {
+  conversation: AppConversation;
+  currentUser: AppUser;
+  messages: AppMessage[];
+  loading?: boolean;
+  historyError?: boolean;
+  typingUserIds?: string[];
+  mobileActive?: boolean;
+  onMobileBack?: () => void;
+  onCallOpenChange?: (open: boolean) => void;
+  onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>;
+  onRetry?: (message: AppMessage) => Promise<void>;
+  onRetryHistory?: () => void;
+  onEdit?: (messageId: string, content: string) => Promise<void>;
+  onDeleteConversation?: () => void;
+}
+
+interface RealMessagesViewProps extends RealMessagesProps {
+  voiceSession: VoiceCallController;
+  voiceConversation: AppConversation;
+  callCanvasOpen: boolean;
+  onOpenCallCanvas: () => void;
+  onMinimizeCallCanvas: () => void;
+  onStartCall: (video: boolean) => void;
+}
+
+function RealMessagesView({ conversation, currentUser, messages, loading = false, historyError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onEdit, onDeleteConversation = () => undefined }: RealMessagesViewProps) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -1969,7 +2046,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const [replyHighlightId, setReplyHighlightId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState(false);
   const [imagePreviewId, setImagePreviewId] = useState<string | null>(null);
-  const [callOpen, setCallOpen] = useState(false);
+  const [callStageHost, setCallStageHost] = useState<HTMLElement | null>(null);
+  const [callBannerHost, setCallBannerHost] = useState<HTMLElement | null>(null);
   const [callChatOpen, setCallChatOpen] = useState(false);
   const [callChatUnread, setCallChatUnread] = useState(0);
   const [callChatWidth, setCallChatWidth] = useState(() => {
@@ -1982,6 +2060,8 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const emojiButton = useRef<HTMLButtonElement>(null);
   const composerSelection = useRef({ start: 0, end: 0 });
   const threadRef = useRef<HTMLElement>(null);
+  const threadHeaderRef = useRef<HTMLElement>(null);
+  const composerRef = useRef<HTMLFormElement>(null);
   const messagesContainer = useRef<HTMLDivElement>(null);
   const messageElements = useRef(new Map<string, HTMLElement>());
   const previousMessageCount = useRef(0);
@@ -2001,15 +2081,20 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   const activeMatchId = matchingMessages[activeMatchIndex]?.id || matchingMessages[0]?.id;
   const matchCount = matchingMessages.length;
   const status = conversation.kind === 'direct' ? formatPresenceStatus(other) : `${conversation.members.length} участников`;
-  const typingUsers = conversation.members.filter((member) => member.id !== currentUser.id && typingUserIds.includes(member.id));
-  const typingLabel =
-    typingUsers.length === 1
-      ? `${typingUsers[0].name} печатает…`
-      : typingUsers.length === 2
-        ? `${typingUsers[0].name} и ${typingUsers[1].name} печатают…`
-        : typingUsers.length > 2
-          ? `${typingUsers[0].name}, ${typingUsers[1].name} и ещё ${typingUsers.length - 2} печатают…`
-          : '';
+  const typingLabel = conversationTypingLabel(conversation, currentUser.id, typingUserIds);
+  const voiceState = normalizeCallState(voiceSession.state);
+  const callOpen = callCanvasOpen && voiceConversation.id === conversation.id && voiceState !== 'idle' && voiceState !== 'available';
+
+  useEffect(() => {
+    if (mobileActive) return;
+    setSearchOpen(false);
+    setSearchQuery('');
+    setDetailsOpen(false);
+    setProfileInfoOpen(false);
+    setEmojiOpen(false);
+    setMessageMenu(null);
+    setImagePreviewId(null);
+  }, [mobileActive]);
 
   const announceTyping = useCallback(
     (active: boolean) => {
@@ -2057,6 +2142,27 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     input.style.height = `${height}px`;
     input.style.overflowY = input.scrollHeight > 120 ? 'auto' : 'hidden';
   }, [value, editingMessage]);
+
+  useLayoutEffect(() => {
+    const thread = threadRef.current;
+    const header = threadHeaderRef.current;
+    const composer = composerRef.current;
+    if (!thread || !header || !composer) return;
+    const updateOverlayMetrics = () => {
+      const threadRect = thread.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
+      const composerRect = composer.getBoundingClientRect();
+      thread.style.setProperty('--mova-chat-header-overlay-height', `${Math.max(0, headerRect.bottom - threadRect.top)}px`);
+      thread.style.setProperty('--mova-chat-composer-overlay-height', `${Math.max(0, threadRect.bottom - composerRect.top)}px`);
+    };
+    updateOverlayMetrics();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(updateOverlayMetrics);
+    observer.observe(thread);
+    observer.observe(header);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
 
   const rememberComposerSelection = () => {
     const input = composerInput.current;
@@ -2290,6 +2396,9 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     setActiveMatchIndex(0);
   }, [normalizedSearch]);
   useEffect(() => {
+    onCallOpenChange?.(callOpen);
+  }, [callOpen, onCallOpenChange]);
+  useEffect(() => {
     if (!callOpen) {
       setCallChatOpen(false);
       setCallChatUnread(0);
@@ -2389,11 +2498,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
     });
   const startCall = (video: boolean) => {
     setDetailsOpen(false);
-    window.dispatchEvent(
-      new CustomEvent('mova-start-call', {
-        detail: { conversationId: conversation.id, video },
-      }),
-    );
+    onStartCall(video);
   };
   const toggleMuted = () => {
     const next = !muted;
@@ -2409,7 +2514,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   };
 
   return (
-    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen ? 'is-call-chat-open' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-chat-width': `${callChatWidth}px` } as CSSProperties} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
+    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen ? 'is-call-chat-open' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-chat-width': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
       {draggingFile && (
         <div className="mova-file-drop-overlay">
           <Upload size={28} />
@@ -2417,7 +2522,12 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           <span>Изображение или файл до 8 МБ</span>
         </div>
       )}
-      <header className="mova-real-thread__header">
+      <header ref={threadHeaderRef} className="mova-real-thread__header">
+        {onMobileBack && (
+          <IconButton label="К списку диалогов" className="mova-mobile-chat-back" onClick={onMobileBack}>
+            <ArrowLeft size={23} />
+          </IconButton>
+        )}
         <button
           type="button"
           className="mova-chat-identity"
@@ -2439,7 +2549,21 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </span>
         </button>
         <div>
-          <VoiceCallBar conversation={conversation} currentUser={currentUser} chatOpen={callChatOpen} unreadCount={callChatUnread} onToggleChat={() => setCallChatOpen((open) => !open)} onCallStateChange={setCallOpen} />
+          <VoiceCallBar
+            conversation={conversation}
+            callConversation={voiceConversation}
+            currentUser={currentUser}
+            call={voiceSession}
+            canvasOpen={callCanvasOpen}
+            stageHost={callStageHost}
+            bannerHost={callBannerHost}
+            chatOpen={callChatOpen}
+            unreadCount={callChatUnread}
+            onToggleChat={() => setCallChatOpen((open) => !open)}
+            onOpenCanvas={onOpenCallCanvas}
+            onMinimizeCanvas={onMinimizeCallCanvas}
+            onStartCall={onStartCall}
+          />
           <IconButton
             label="Поиск"
             className={searchOpen ? 'is-active' : ''}
@@ -2464,7 +2588,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </IconButton>
         </div>
       </header>
-      <div className="mova-active-call-host" />
+      <div ref={setCallBannerHost} className="mova-active-call-host" />
       {profileInfoOpen && (
         <aside className="mova-contact-info" aria-label={`Информация о ${conversation.title}`}>
           <header>
@@ -2507,7 +2631,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
           </section>
         </aside>
       )}
-      <div className="mova-call-host" />
+      <div ref={setCallStageHost} className="mova-call-host" />
       {callOpen && callChatOpen && (
         <div
           className="mova-call-chat-resizer"
@@ -2804,6 +2928,7 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
         })}
       </div>
       <form
+        ref={composerRef}
         className="mova-real-composer"
         onPaste={pasteFile}
         onSubmit={(event) => {
@@ -2940,6 +3065,93 @@ export function RealMessages({ conversation, currentUser, messages, loading = fa
   );
 }
 
+export function RealMessages(props: RealMessagesProps) {
+  const [voiceConversation, setVoiceConversation] = useState(props.conversation);
+  const [callCanvasOpen, setCallCanvasOpen] = useState(true);
+  const startWithCamera = useRef(false);
+  const pendingStart = useRef<{ conversation: AppConversation; video: boolean } | null>(null);
+  const voiceSession = useVoiceCall(voiceConversation.id, props.currentUser.id);
+  const voiceState = normalizeCallState(voiceSession.state);
+  useEffect(() => {
+    if (voiceState === 'idle' && voiceConversation.id !== props.conversation.id) setVoiceConversation(props.conversation);
+  }, [props.conversation, voiceConversation.id, voiceState]);
+  useEffect(() => {
+    const pending = pendingStart.current;
+    if (!pending || pending.conversation.id !== voiceConversation.id || voiceState !== 'idle') return;
+    pendingStart.current = null;
+    startWithCamera.current = pending.video;
+    setCallCanvasOpen(true);
+    voiceSession.call();
+  }, [voiceConversation.id, voiceSession, voiceState]);
+  useEffect(() => {
+    if (voiceState === 'connected' && startWithCamera.current && !voiceSession.cameraStream) {
+      startWithCamera.current = false;
+      void voiceSession.toggleCamera();
+    }
+  }, [voiceSession, voiceState]);
+  const startCall = (video: boolean) => {
+    if (voiceState !== 'idle') return;
+    if (voiceConversation.id === props.conversation.id) {
+      startWithCamera.current = video;
+      setCallCanvasOpen(true);
+      voiceSession.call();
+      return;
+    }
+    pendingStart.current = { conversation: props.conversation, video };
+    setVoiceConversation(props.conversation);
+  };
+  return (
+    <RealMessagesView
+      {...props}
+      voiceSession={voiceSession}
+      voiceConversation={voiceConversation}
+      callCanvasOpen={callCanvasOpen}
+      onOpenCallCanvas={() => setCallCanvasOpen(true)}
+      onMinimizeCallCanvas={() => setCallCanvasOpen(false)}
+      onStartCall={startCall}
+    />
+  );
+}
+
+const voiceDockStateLabel = (state: ReturnType<typeof normalizeCallState>) =>
+  state === 'connecting'
+    ? 'Подключение…'
+    : state === 'connected'
+      ? 'Подключено'
+      : state === 'reconnecting'
+        ? 'Переподключение…'
+        : 'Соединение потеряно';
+
+export function VoiceDock({ conversation, call, onReturn }: { conversation: AppConversation; call: VoiceCallController; onReturn: () => void }) {
+  const state = normalizeCallState(call.state);
+  const displayedState = state === 'available' ? 'disconnected' : state;
+  return (
+    <section className={`mova-voice-dock is-${displayedState}`} aria-label={`Активный звонок с ${conversation.title}`} data-call-state={displayedState}>
+      <button type="button" className="mova-voice-dock__summary" onClick={onReturn} aria-label={`Вернуться в звонок с ${conversation.title}`}>
+        <span className="mova-voice-dock__icon" aria-hidden="true"><PhoneCall size={18} /></span>
+        <span>
+          <strong><AppleEmoji text={conversation.title} /></strong>
+          <small>{voiceDockStateLabel(displayedState)}</small>
+        </span>
+      </button>
+      <div className="mova-voice-dock__controls">
+        <IconButton label={call.muted ? 'Включить микрофон' : 'Выключить микрофон'} className={call.muted ? 'is-off' : ''} onClick={call.toggleMute}>
+          {call.muted ? <MicOff size={17} /> : <Mic size={17} />}
+        </IconButton>
+        <IconButton label={call.deafened ? 'Включить звук в наушниках' : 'Выключить звук в наушниках'} className={call.deafened ? 'is-off' : ''} onClick={call.toggleDeafen}>
+          {call.deafened ? <HeadphoneOff size={17} /> : <Headphones size={17} />}
+        </IconButton>
+        <IconButton label="Вернуться в звонок" onClick={onReturn}>
+          <Maximize2 size={17} />
+        </IconButton>
+        <IconButton label="Выйти из звонка" className="is-disconnect" onClick={call.leave}>
+          <PhoneOff size={18} />
+        </IconButton>
+      </div>
+    </section>
+  );
+}
+
 export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser; onUserUpdate: (user: AppUser) => void; onLogout: () => void }) {
   const SIDEBAR_COMPACT_WIDTH = 76;
   const SIDEBAR_MIN_WIDTH = 260;
@@ -2947,6 +3159,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const SIDEBAR_COLLAPSE_THRESHOLD = 220;
   const initialConversations = conversationCache.get(currentUser.id)?.value || [];
   const initialSelectedId = preferredConversation(initialConversations);
+  const initialVoiceConversationId = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || initialSelectedId;
   const [conversations, setConversations] = useState<AppConversation[]>(initialConversations);
   const [users, setUsers] = useState<AppUser[]>(userCache.get(currentUser.id)?.value || []);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
@@ -2962,13 +3175,24 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const [profileOpen, setProfileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [voiceConversationId, setVoiceConversationId] = useState<string | null>(initialVoiceConversationId);
+  const [callCanvasOpen, setCallCanvasOpen] = useState(Boolean(sessionStorage.getItem('mova-pending-call')));
   const [query, setQuery] = useState('');
+  const mobileNavigation = useMobileNavigationViewport();
+  const [mobileView, setMobileView] = useState<MobileNavigationView>(() =>
+    sessionStorage.getItem('mova-pending-call') ? 'chat' : 'list',
+  );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-sidebar-width');
     const saved = stored === null ? NaN : Number(stored);
     return Number.isFinite(saved) ? (saved < 220 ? 76 : Math.min(560, Math.max(260, saved))) : 360;
   });
   const sidebarCompact = sidebarWidth === SIDEBAR_COMPACT_WIDTH;
+  const voiceSession = useVoiceCall(voiceConversationId, currentUser.id);
+  const voiceState = normalizeCallState(voiceSession.state);
+  const voiceConversation = conversations.find((conversation) => conversation.id === voiceConversationId) || null;
+  const voiceDockVisible = Boolean(voiceConversation && !callCanvasOpen && (isJoinedCallState(voiceState) || (voiceState === 'available' && voiceSession.joined)));
+  const toast = useToast();
   const resolveSidebarWidth = (rawWidth: number) => (rawWidth < SIDEBAR_COLLAPSE_THRESHOLD ? SIDEBAR_COMPACT_WIDTH : Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, rawWidth)));
   const currentUserRef = useRef(currentUser);
   const conversationsRef = useRef(conversations);
@@ -2980,9 +3204,193 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const realtimeReadyCount = useRef(0);
   const retryingClientIds = useRef(new Set<string>());
   const notifiedRealtimeMessageIds = useRef(new Set<string>());
+  const pendingCallStart = useRef<{ conversationId: string; video: boolean } | null>(null);
+  const startCallWithCamera = useRef(false);
+  const voiceStateRef = useRef(voiceState);
+  const voiceConversationIdRef = useRef(voiceConversationId);
+  const mobileNavigationRef = useRef(mobileNavigation);
+  const mobileViewRef = useRef(mobileView);
+  const mobileCallOpenRef = useRef(false);
+  const mobileCallConversationRef = useRef<string | null>(sessionStorage.getItem('mova-pending-call'));
+  const productOverlayOpenRef = useRef(false);
+  const edgeSwipeRef = useRef<{ source: 'touch' | 'pointer'; id: number; x: number; y: number; startedAt: number } | null>(null);
   currentUserRef.current = currentUser;
   conversationsRef.current = conversations;
   selectedIdRef.current = selectedId;
+  voiceStateRef.current = voiceState;
+  voiceConversationIdRef.current = voiceConversationId;
+  mobileNavigationRef.current = mobileNavigation;
+  mobileViewRef.current = mobileView;
+  productOverlayOpenRef.current = createOpen || profileOpen || settingsOpen || accountOpen;
+  const setMobileNavigationView = useCallback((view: MobileNavigationView) => {
+    mobileViewRef.current = view;
+    setMobileView(view);
+  }, []);
+  const closeProductOverlays = useCallback(() => {
+    setCreateOpen(false);
+    setProfileOpen(false);
+    setSettingsOpen(false);
+    setAccountOpen(false);
+    productOverlayOpenRef.current = false;
+  }, []);
+  const showMobileConversation = useCallback((conversationId: string, mode: 'auto' | 'push' | 'replace' = 'auto') => {
+    if (!mobileNavigationRef.current) return;
+    const currentHistory = readMobileHistory();
+    const historyMode = mode === 'auto' ? (mobileViewRef.current === 'chat' || currentHistory?.view === 'chat' ? 'replace' : 'push') : mode;
+    const nextState = mobileHistoryState('chat', conversationId);
+    if (historyMode === 'replace') window.history.replaceState(nextState, '');
+    else window.history.pushState(nextState, '');
+    setMobileNavigationView('chat');
+  }, [setMobileNavigationView]);
+  const restoreMobileChatAfterBack = useCallback(() => {
+    const conversationId = mobileCallConversationRef.current || selectedIdRef.current;
+    if (!conversationId) return;
+    showMobileConversation(conversationId, 'push');
+  }, [showMobileConversation]);
+  const navigateToMobileList = useCallback(() => {
+    if (!mobileNavigationRef.current || mobileViewRef.current !== 'chat') return;
+    if (mobileCallOpenRef.current) return;
+    const currentHistory = readMobileHistory();
+    if (currentHistory?.view === 'chat') window.history.back();
+    else {
+      window.history.replaceState(mobileHistoryState('list'), '');
+      setMobileNavigationView('list');
+    }
+  }, [setMobileNavigationView]);
+  const handleMobileCallOpenChange = useCallback((open: boolean) => {
+    mobileCallOpenRef.current = open;
+    if (open) {
+      const conversationId = selectedIdRef.current;
+      if (conversationId) {
+        mobileCallConversationRef.current = conversationId;
+        showMobileConversation(conversationId);
+      }
+      return;
+    }
+    mobileCallConversationRef.current = null;
+  }, [showMobileConversation]);
+  useEffect(() => {
+    if (!mobileNavigation) {
+      edgeSwipeRef.current = null;
+      return;
+    }
+    const pendingCallConversation = sessionStorage.getItem('mova-pending-call');
+    if (pendingCallConversation) {
+      mobileCallConversationRef.current = pendingCallConversation;
+      setSelectedId(pendingCallConversation);
+      showMobileConversation(pendingCallConversation, 'replace');
+      return;
+    }
+    mobileCallConversationRef.current = null;
+    window.history.replaceState(mobileHistoryState('list'), '');
+    setMobileNavigationView('list');
+  }, [mobileNavigation, setMobileNavigationView, showMobileConversation]);
+  useEffect(() => {
+    const onPopState = () => {
+      if (!mobileNavigationRef.current) return;
+      if (mobileCallOpenRef.current) {
+        restoreMobileChatAfterBack();
+        return;
+      }
+      if (productOverlayOpenRef.current) {
+        const previousView = mobileViewRef.current;
+        closeProductOverlays();
+        if (previousView === 'chat') restoreMobileChatAfterBack();
+        else {
+          window.history.pushState(mobileHistoryState('list'), '');
+          setMobileNavigationView('list');
+        }
+        return;
+      }
+      const next = readMobileHistory();
+      if (next?.view === 'chat' && next.conversationId) {
+        setSelectedId(next.conversationId);
+        window.localStorage.setItem('mova-selected-conversation', next.conversationId);
+        setMobileNavigationView('chat');
+      } else setMobileNavigationView('list');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [closeProductOverlays, restoreMobileChatAfterBack, setMobileNavigationView]);
+  useEffect(() => {
+    if (!mobileNavigation || mobileView !== 'chat') return;
+    const excludedTarget = (target: EventTarget | null) =>
+      target instanceof Element && Boolean(target.closest('.mova-real-composer,.mova-emoji-picker,.mova-media-viewer,.mova-call-stage,.mova-message-image,.mova-message-file,input,textarea,[contenteditable="true"]'));
+    const startSwipe = (source: 'touch' | 'pointer', id: number, clientX: number, clientY: number, target: EventTarget | null) => {
+      const edgeWidth = Math.min(40, window.innerWidth * 0.1);
+      if (clientX > edgeWidth || mobileCallOpenRef.current || productOverlayOpenRef.current || excludedTarget(target)) return;
+      edgeSwipeRef.current = { source, id, x: clientX, y: clientY, startedAt: performance.now() };
+    };
+    const updateSwipe = (source: 'touch' | 'pointer', id: number, clientX: number, clientY: number) => {
+      const swipe = edgeSwipeRef.current;
+      if (!swipe || swipe.source !== source || swipe.id !== id) return;
+      const distanceX = clientX - swipe.x;
+      const distanceY = Math.abs(clientY - swipe.y);
+      if (distanceX < -8 || (distanceY > 20 && distanceY > Math.abs(distanceX))) edgeSwipeRef.current = null;
+    };
+    const finishSwipe = (source: 'touch' | 'pointer', id: number, clientX: number, clientY: number) => {
+      const swipe = edgeSwipeRef.current;
+      if (!swipe || swipe.source !== source || swipe.id !== id) return;
+      edgeSwipeRef.current = null;
+      const distanceX = clientX - swipe.x;
+      const distanceY = Math.abs(clientY - swipe.y);
+      if (distanceX >= 64 && distanceX > distanceY * 1.2 && performance.now() - swipe.startedAt <= 900) navigateToMobileList();
+    };
+    const findTouch = (touches: TouchList, id: number) => Array.from(touches).find((touch) => touch.identifier === id);
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      startSwipe('touch', touch.identifier, touch.clientX, touch.clientY, event.target);
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const swipe = edgeSwipeRef.current;
+      if (!swipe || swipe.source !== 'touch') return;
+      const touch = findTouch(event.touches, swipe.id);
+      if (touch) updateSwipe('touch', swipe.id, touch.clientX, touch.clientY);
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      const swipe = edgeSwipeRef.current;
+      if (!swipe || swipe.source !== 'touch') return;
+      const touch = findTouch(event.changedTouches, swipe.id);
+      if (touch) finishSwipe('touch', swipe.id, touch.clientX, touch.clientY);
+      else edgeSwipeRef.current = null;
+    };
+    const onTouchCancel = () => {
+      if (edgeSwipeRef.current?.source === 'touch') edgeSwipeRef.current = null;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch' || edgeSwipeRef.current?.source === 'touch') return;
+      startSwipe('pointer', event.pointerId, event.clientX, event.clientY, event.target);
+    };
+    const clearSwipe = (event: PointerEvent) => {
+      if (edgeSwipeRef.current?.source === 'pointer' && edgeSwipeRef.current.id === event.pointerId) edgeSwipeRef.current = null;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      updateSwipe('pointer', event.pointerId, event.clientX, event.clientY);
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      finishSwipe('pointer', event.pointerId, event.clientX, event.clientY);
+    };
+    document.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    document.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    document.addEventListener('touchcancel', onTouchCancel, { passive: true, capture: true });
+    document.addEventListener('pointerdown', onPointerDown, { passive: true, capture: true });
+    document.addEventListener('pointermove', onPointerMove, { passive: true, capture: true });
+    document.addEventListener('pointerup', onPointerUp, { passive: true, capture: true });
+    document.addEventListener('pointercancel', clearSwipe, { passive: true, capture: true });
+    return () => {
+      edgeSwipeRef.current = null;
+      document.removeEventListener('touchstart', onTouchStart, true);
+      document.removeEventListener('touchmove', onTouchMove, true);
+      document.removeEventListener('touchend', onTouchEnd, true);
+      document.removeEventListener('touchcancel', onTouchCancel, true);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('pointermove', onPointerMove, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
+      document.removeEventListener('pointercancel', clearSwipe, true);
+    };
+  }, [mobileNavigation, mobileView, navigateToMobileList]);
   const updateTypingUser = useCallback((conversationId: string, userId: string, active: boolean) => {
     const key = `${conversationId}:${userId}`;
     const existingTimer = typingExpiryTimers.current.get(key);
@@ -3089,10 +3497,11 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           showMessageNotification(event.message, conversation, () => {
             setSelectedId(event.message.conversationId);
             window.localStorage.setItem('mova-selected-conversation', event.message.conversationId);
+            showMobileConversation(event.message.conversationId);
           });
         }
       }),
-    [],
+    [showMobileConversation],
   );
   useEffect(() => {
     const requestPermission = () => void requestMessageNotificationPermission();
@@ -3107,7 +3516,56 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const selectConversation = useCallback((conversationId: string) => {
     setSelectedId(conversationId);
     window.localStorage.setItem('mova-selected-conversation', conversationId);
-  }, []);
+    showMobileConversation(conversationId);
+  }, [showMobileConversation]);
+  const requestCall = useCallback((conversationId: string, video: boolean) => {
+    if (voiceState !== 'idle') {
+      if (voiceConversationId === conversationId && (isJoinedCallState(voiceState) || voiceState === 'available')) {
+        selectConversation(conversationId);
+        setCallCanvasOpen(true);
+        if (voiceState === 'available') void voiceSession.accept();
+        return;
+      }
+      const activeTitle = conversationsRef.current.find((conversation) => conversation.id === voiceConversationId)?.title || 'другом чате';
+      toast.push(`Вы уже находитесь в звонке «${activeTitle}». Сначала выйдите из него.`, 'info');
+      return;
+    }
+    startCallWithCamera.current = video;
+    setCallCanvasOpen(true);
+    if (voiceConversationId === conversationId) {
+      voiceSession.call();
+      return;
+    }
+    pendingCallStart.current = { conversationId, video };
+    setVoiceConversationId(conversationId);
+  }, [selectConversation, toast, voiceConversationId, voiceSession, voiceState]);
+  const returnToCall = useCallback(() => {
+    if (!voiceConversationId) return;
+    selectConversation(voiceConversationId);
+    setCallCanvasOpen(true);
+    if (voiceState === 'available') void voiceSession.accept();
+  }, [selectConversation, voiceConversationId, voiceSession, voiceState]);
+  useEffect(() => {
+    const pending = pendingCallStart.current;
+    if (!pending || pending.conversationId !== voiceConversationId || voiceState !== 'idle') return;
+    pendingCallStart.current = null;
+    startCallWithCamera.current = pending.video;
+    voiceSession.call();
+  }, [voiceConversationId, voiceSession, voiceState]);
+  useEffect(() => {
+    if (voiceState === 'connected' && startCallWithCamera.current && !voiceSession.cameraStream) {
+      startCallWithCamera.current = false;
+      void voiceSession.toggleCamera();
+    }
+  }, [voiceSession, voiceState]);
+  useEffect(() => {
+    if (voiceState === 'idle') {
+      setCallCanvasOpen(false);
+      if (selectedId && !pendingCallStart.current && voiceConversationId !== selectedId) setVoiceConversationId(selectedId);
+      return;
+    }
+    if (voiceState === 'ringing' || voiceState === 'incoming' || voiceState === 'connecting') setCallCanvasOpen(true);
+  }, [selectedId, voiceConversationId, voiceState]);
   const reloadConversations = useCallback(async (force = false) => {
     const cached = conversationCache.get(currentUser.id);
     if (!force && isFresh(cached)) {
@@ -3196,8 +3654,38 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           ),
         );
       }
-      if (event.type === 'call:invite') selectConversation(event.conversationId);
-      if (event.type === 'call:state' && event.status !== 'idle' && (sessionStorage.getItem('mova-active-call') === event.conversationId || sessionStorage.getItem('mova-pending-call') === event.conversationId || event.status === 'ringing')) selectConversation(event.conversationId);
+      if (event.type === 'call:invite') {
+        if (voiceStateRef.current !== 'idle' && voiceConversationIdRef.current !== event.conversationId) {
+          const activeTitle = conversationsRef.current.find((conversation) => conversation.id === voiceConversationIdRef.current)?.title || 'другом чате';
+          toast.push(`Входящий звонок пропущен: вы уже разговариваете в «${activeTitle}».`, 'info');
+          return;
+        }
+        setVoiceConversationId(event.conversationId);
+        setCallCanvasOpen(true);
+        mobileCallConversationRef.current = event.conversationId;
+        selectConversation(event.conversationId);
+      }
+      if (event.type === 'call:state') {
+        const currentVoiceConversationId = voiceConversationIdRef.current;
+        const belongsToCurrentCall = currentVoiceConversationId === event.conversationId;
+        const joined = event.joined || event.room?.some((participant) => participant.userId === currentUserRef.current.id);
+        if (voiceStateRef.current !== 'idle' && !belongsToCurrentCall && event.status !== 'idle') return;
+        if (event.status === 'idle' && belongsToCurrentCall && mobileCallConversationRef.current === event.conversationId) {
+          mobileCallConversationRef.current = null;
+          mobileCallOpenRef.current = false;
+        } else if (event.status !== 'idle' && (sessionStorage.getItem('mova-active-call') === event.conversationId || sessionStorage.getItem('mova-pending-call') === event.conversationId || event.status === 'ringing' || joined)) {
+          setVoiceConversationId(event.conversationId);
+          if (event.status === 'ringing') {
+            mobileCallConversationRef.current = event.conversationId;
+            setCallCanvasOpen(true);
+            selectConversation(event.conversationId);
+          }
+        }
+      }
+      if ((event.type === 'call:decline' || event.type === 'call:end') && mobileCallConversationRef.current === event.conversationId) {
+        mobileCallConversationRef.current = null;
+        mobileCallOpenRef.current = false;
+      }
       if (event.type === 'conversation:new') void reloadConversations(true);
       if (event.type === 'ready') {
         realtimeReadyCount.current += 1;
@@ -3237,7 +3725,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       typingExpiryTimers.current.clear();
       realtime.close();
     };
-  }, [reloadConversations, selectConversation, currentUser.id, syncOverview, updateTypingUser]);
+  }, [reloadConversations, selectConversation, currentUser.id, syncOverview, toast, updateTypingUser]);
   useEffect(() => {
     const markActive = () => {
       lastActivity.current = Date.now();
@@ -3436,10 +3924,11 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     });
   };
   const visible = useMemo(() => conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [conversations, query]);
+  const mobileNavigationClass = mobileNavigation ? ` is-mobile-navigation is-mobile-${mobileView}` : '';
   return (
-    <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}${accountOpen ? ' is-account-menu-open' : ''}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor, '--mova-accent-color': accentColor } as CSSProperties}>
+    <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}${accountOpen ? ' is-account-menu-open' : ''}${voiceDockVisible ? ' has-voice-dock' : ''}${mobileNavigationClass}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor, '--mova-accent-color': accentColor } as CSSProperties} data-mobile-view={mobileNavigation ? mobileView : undefined}>
       <div className="mova-real-aurora" />
-      <aside className="mova-real-sidebar mova-tg-sidebar">
+      <aside className="mova-real-sidebar mova-tg-sidebar" aria-hidden={mobileNavigation && mobileView === 'chat'} inert={mobileNavigation && mobileView === 'chat' ? true : undefined}>
         <div className="mova-tg-search-row">
           <div className="mova-account-anchor">
             <IconButton label="Меню и профиль" className="mova-tg-menu" onClick={() => setAccountOpen(!accountOpen)}>
@@ -3462,7 +3951,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
               <p>{conversations.length ? 'Попробуйте другой запрос' : 'Создайте личный чат или группу'}</p>
             </div>
           ) : (
-            visible.map((conversation) => (
+            visible.map((conversation) => {
+              const typingLabel = conversationTypingLabel(conversation, currentUser.id, typingByConversation[conversation.id] || []);
+              return (
               <button type="button" key={conversation.id} aria-label={sidebarCompact ? conversation.title : undefined} title={sidebarCompact ? conversation.title : undefined} className={selectedId === conversation.id ? 'is-active' : ''} onClick={() => selectConversation(conversation.id)}>
                 <ConversationAvatar conversation={conversation} currentUser={currentUser} />
                 <span>
@@ -3477,10 +3968,10 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
                         : ''}
                     </time>
                   </span>
-                  <small>
+                  <small className={typingLabel ? 'mova-typing-status' : undefined} aria-live="polite">
                     <AppleEmoji
                       text={
-                        conversation.lastMessage?.content ||
+                        typingLabel || conversation.lastMessage?.content ||
                         (conversation.lastMessage?.attachment
                           ? conversation.lastMessage.attachment.type.startsWith('image/')
                             ? 'Фотография'
@@ -3493,7 +3984,8 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
                   </small>
                 </span>
               </button>
-            ))
+              );
+            })
           )}
         </div>
         <button type="button" className="mova-tg-compose" aria-label="Новый разговор" onClick={() => setCreateOpen(true)}>
@@ -3529,13 +4021,22 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
         </div>
       </aside>
       {selected ? (
-        <RealMessages
+        <RealMessagesView
           conversation={selected}
           currentUser={currentUser}
+          voiceSession={voiceSession}
+          voiceConversation={voiceConversation || selected}
+          callCanvasOpen={callCanvasOpen}
+          onOpenCallCanvas={returnToCall}
+          onMinimizeCallCanvas={() => setCallCanvasOpen(false)}
+          onStartCall={(video) => requestCall(selected.id, video)}
           messages={messages}
           loading={messagesLoading}
           historyError={messagesErrorFor === selected.id}
           typingUserIds={typingByConversation[selected.id] || []}
+          mobileActive={!mobileNavigation || mobileView === 'chat'}
+          onMobileBack={navigateToMobileList}
+          onCallOpenChange={handleMobileCallOpenChange}
           onSend={send}
           onRetry={retry}
           onRetryHistory={() => setMessagesLoadAttempt((attempt) => attempt + 1)}
@@ -3544,10 +4045,14 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
             setConversations((items) => items.filter((item) => item.id !== selected.id));
             setSelectedId(null);
             setMessages([]);
+            if (mobileNavigationRef.current) {
+              window.history.replaceState(mobileHistoryState('list'), '');
+              setMobileNavigationView('list');
+            }
           }}
         />
       ) : (
-        <section className="mova-real-welcome">
+        <section className="mova-real-welcome" aria-hidden={mobileNavigation && mobileView === 'list'} inert={mobileNavigation && mobileView === 'list' ? true : undefined}>
           <div>
             <span><img src="/mova-logo.png" alt="" /></span>
             <h1>Mova</h1>
@@ -3558,6 +4063,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           </div>
         </section>
       )}
+      {voiceDockVisible && voiceConversation && <VoiceDock conversation={voiceConversation} call={voiceSession} onReturn={returnToCall} />}
       <CreateConversation
         open={createOpen}
         users={users}

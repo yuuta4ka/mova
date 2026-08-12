@@ -1,19 +1,21 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RealMessages } from './RealApp';
+import { RealMessages, VoiceDock } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const callMedia = vi.hoisted(() => ({ state: 'active', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, error: '', cameraStream: null as MediaStream | null, screenStream: null as MediaStream | null, remoteVideoStreams: [] as Array<{ userId: string; streamId: string; stream: MediaStream }>, remoteMedia: {} as Record<string, { screen?: string }>, remoteVoiceStates: {} as Record<string, { muted?: boolean; deafened?: boolean }>, speakingUsers: {} as Record<string, boolean>, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleDeafen: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, object> }));
+const callMedia = vi.hoisted(() => ({ state: 'connected', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, error: '', muted: false, deafened: false, joined: true, cameraStream: null as MediaStream | null, screenStream: null as MediaStream | null, remoteVideoStreams: [] as Array<{ userId: string; streamId: string; stream: MediaStream }>, remoteMedia: {} as Record<string, { camera?: string; screen?: string }>, remoteVoiceStates: {} as Record<string, { muted?: boolean; deafened?: boolean }>, reconnectingUsers: {} as Record<string, boolean>, speakingUsers: {} as Record<string, boolean>, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleMute: vi.fn(), toggleDeafen: vi.fn(), leave: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, { connectionState?: string; outboundAudioBytes?: number; inboundAudioBytes?: number; quality?: string; roundTripTimeMs?: number }> }));
 
 vi.mock('./hooks/useVoiceCall', () => ({
+  normalizeCallState: (state: string) => state === 'active' ? 'connected' : state === 'error' ? 'disconnected' : state,
+  isJoinedCallState: (state: string) => ['connected', 'reconnecting', 'disconnected'].includes(state),
   useVoiceCall: (conversationId: string) => {
     callMedia.conversationIds.push(conversationId);
     return ({
-    state: callMedia.state, createdAt: callMedia.createdAt, startedAt: callMedia.startedAt, muted: false, deafened: false, participants: callMedia.participants, error: callMedia.error, incomingFrom: null,
-    cameraStream: callMedia.cameraStream, screenStream: callMedia.screenStream, remoteVideoStreams: callMedia.remoteVideoStreams, remoteMedia: callMedia.remoteMedia, remoteVoiceStates: callMedia.remoteVoiceStates, localSpeaking: callMedia.localSpeaking, speakingUsers: callMedia.speakingUsers,
+    state: callMedia.state, createdAt: callMedia.createdAt, startedAt: callMedia.startedAt, muted: callMedia.muted, deafened: callMedia.deafened, joined: callMedia.joined, participants: callMedia.participants, error: callMedia.error, incomingFrom: null,
+    cameraStream: callMedia.cameraStream, screenStream: callMedia.screenStream, remoteVideoStreams: callMedia.remoteVideoStreams, remoteMedia: callMedia.remoteMedia, remoteVoiceStates: callMedia.remoteVoiceStates, reconnectingUsers: callMedia.reconnectingUsers, localSpeaking: callMedia.localSpeaking, speakingUsers: callMedia.speakingUsers,
     participantVolumes: {}, screenVolumes: {}, diagnostics: callMedia.diagnostics, setParticipantVolume: callMedia.setParticipantVolume, setScreenVolume: vi.fn(),
-    call: vi.fn(), accept: callMedia.accept, decline: vi.fn(), leave: vi.fn(), toggleMute: vi.fn(), toggleDeafen: callMedia.toggleDeafen,
+    call: vi.fn(), accept: callMedia.accept, decline: vi.fn(), leave: callMedia.leave, toggleMute: callMedia.toggleMute, toggleDeafen: callMedia.toggleDeafen,
     toggleCamera: vi.fn(), toggleScreen: vi.fn(), shareScreen: vi.fn(), stopScreen: vi.fn(), updateScreenQuality: vi.fn(),
     });
   },
@@ -39,21 +41,27 @@ const renderParticipantCount = (count: number, cameraParticipantIds: string[] = 
 };
 
 beforeEach(() => {
-  callMedia.state = 'active';
+  callMedia.state = 'connected';
   callMedia.createdAt = '2026-08-10T00:00:00.000Z';
   callMedia.startedAt = '2026-08-10T00:00:00.000Z';
   callMedia.error = '';
+  callMedia.muted = false;
+  callMedia.deafened = false;
+  callMedia.joined = true;
   callMedia.cameraStream = null;
   callMedia.screenStream = null;
   callMedia.remoteVideoStreams = [];
   callMedia.remoteMedia = {};
   callMedia.remoteVoiceStates = {};
+  callMedia.reconnectingUsers = {};
   callMedia.speakingUsers = {};
   callMedia.localSpeaking = false;
   callMedia.participants = [];
   callMedia.diagnostics = {};
   callMedia.setParticipantVolume.mockReset();
+  callMedia.toggleMute.mockReset();
   callMedia.toggleDeafen.mockReset();
+  callMedia.leave.mockReset();
   callMedia.accept.mockReset();
   callMedia.conversationIds = [];
   window.localStorage.clear();
@@ -91,6 +99,8 @@ describe('call layout', () => {
     const getRemoteTile = () => screen.getByText(cameraUser.name, { selector: '.mova-call-label' }).closest('.mova-call-tile');
 
     expect(getRemoteTile()).toHaveClass('has-video', 'is-camera');
+    expect(getRemoteTile()?.querySelector('[aria-label="Камера включена"]')).not.toBeInTheDocument();
+    expect(getRemoteTile()?.querySelector('[aria-label="Микрофон включён"]')).not.toBeInTheDocument();
     callMedia.remoteVideoStreams = [];
     view.rerender(<RealMessages conversation={{ ...conversation, id: 'group-2', kind: 'group', members: [currentUser, cameraUser] }} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
@@ -113,8 +123,19 @@ describe('call layout', () => {
     expect(screen.queryByRole('button', { name: /свернуть список чатов/i })).not.toBeInTheDocument();
   });
 
+  it('keeps the current call canvas visible while the connection is recovering', () => {
+    callMedia.state = 'reconnecting';
+    callMedia.error = 'Восстанавливаем соединение…';
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(container.querySelector('.mova-call-stage')).toBeInTheDocument();
+    expect(container.querySelector('.mova-call-grid.is-participants')).toBeInTheDocument();
+    expect(container.querySelector('.mova-call-error')).toHaveTextContent('Восстанавливаем соединение…');
+  });
+
   it('shows an active call under the chat header after leaving and lets the user reconnect', async () => {
     callMedia.state = 'available';
+    callMedia.joined = false;
     callMedia.startedAt = new Date(Date.now() - 83_000).toISOString();
     const user = userEvent.setup();
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
@@ -124,6 +145,66 @@ describe('call layout', () => {
     expect(container.querySelector('.mova-active-call-banner__icon')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Подключиться к звонку' }));
     expect(callMedia.accept).toHaveBeenCalledOnce();
+  });
+
+  it('mounts the return banner into the current chat host after the call canvas closes', async () => {
+    callMedia.state = 'connected';
+    const view = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+    expect(view.container.querySelector('.mova-call-stage')).toBeInTheDocument();
+
+    callMedia.state = 'available';
+    callMedia.joined = false;
+    view.rerender(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    const host = view.container.querySelector('.mova-active-call-host');
+    const banner = await screen.findByRole('region', { name: 'Активный звонок с Друг' });
+    expect(banner.parentElement).toBe(host);
+    expect(screen.getByRole('button', { name: 'Подключиться к звонку' })).toBeVisible();
+  });
+
+  it.each([
+    ['connecting', 'Подключение…'],
+    ['connected', 'Подключено'],
+    ['reconnecting', 'Переподключение…'],
+    ['disconnected', 'Соединение потеряно'],
+  ])('shows the %s state in the global voice dock', (state, label) => {
+    const call = {
+      state,
+      muted: false,
+      deafened: false,
+      toggleMute: callMedia.toggleMute,
+      toggleDeafen: callMedia.toggleDeafen,
+      leave: callMedia.leave,
+    } as unknown as Parameters<typeof VoiceDock>[0]['call'];
+    const { container } = render(<VoiceDock conversation={conversation} call={call} onReturn={vi.fn()} />);
+
+    expect(screen.getByRole('region', { name: 'Активный звонок с Друг' })).toHaveAttribute('data-call-state', state);
+    expect(container.querySelector('.mova-voice-dock__summary')).toHaveTextContent(label);
+    expect(container.querySelector('.mova-voice-dock__summary i')).not.toBeInTheDocument();
+  });
+
+  it('uses the call session controls from the global voice dock', async () => {
+    const user = userEvent.setup();
+    const onReturn = vi.fn();
+    const call = {
+      state: 'connected',
+      muted: false,
+      deafened: false,
+      toggleMute: callMedia.toggleMute,
+      toggleDeafen: callMedia.toggleDeafen,
+      leave: callMedia.leave,
+    } as unknown as Parameters<typeof VoiceDock>[0]['call'];
+    render(<VoiceDock conversation={conversation} call={call} onReturn={onReturn} />);
+
+    await user.click(screen.getByRole('button', { name: 'Выключить микрофон' }));
+    await user.click(screen.getByRole('button', { name: 'Выключить звук в наушниках' }));
+    await user.click(screen.getByRole('button', { name: 'Вернуться в звонок' }));
+    await user.click(screen.getByRole('button', { name: 'Выйти из звонка' }));
+
+    expect(callMedia.toggleMute).toHaveBeenCalledOnce();
+    expect(callMedia.toggleDeafen).toHaveBeenCalledOnce();
+    expect(onReturn).toHaveBeenCalledOnce();
+    expect(callMedia.leave).toHaveBeenCalledOnce();
   });
 
   it('renders a completed call as a system message with its duration', () => {
@@ -165,6 +246,68 @@ describe('call layout', () => {
     expect(container.querySelector('.mova-call-tile.is-speaking')).toHaveAttribute('data-speaking', 'true');
   });
 
+  it('shows participant connection and media presence directly on two-user tiles', () => {
+    callMedia.participants = ['friend'];
+    callMedia.diagnostics = { friend: { connectionState: 'connected' } };
+    callMedia.remoteVoiceStates = { friend: { muted: true, deafened: true } };
+    callMedia.remoteMedia = { friend: { screen: 'friend-screen' } };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+    const remoteTile = container.querySelector('[data-participant-id="friend"]')!;
+
+    expect(remoteTile).toHaveAttribute('data-participant-connection', 'connected');
+    expect(remoteTile.querySelector('.mova-call-participant-state')).not.toBeInTheDocument();
+    expect(remoteTile.querySelector('[aria-label="Микрофон выключен"]')).toBeInTheDocument();
+    expect(remoteTile.querySelector('[aria-label="Звук выключен"]')).toBeInTheDocument();
+    expect(remoteTile.querySelector('[aria-label="Камера выключена"]')).not.toBeInTheDocument();
+    expect(remoteTile.querySelector('[aria-label="Микрофон включён"]')).not.toBeInTheDocument();
+    expect(remoteTile.querySelector('[aria-label="Демонстрация экрана включена"]')).toBeInTheDocument();
+  });
+
+  it('shows a connecting state until the peer connection is established', () => {
+    callMedia.participants = ['friend'];
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(container.querySelector('[data-participant-id="friend"]')).toHaveAttribute('data-participant-connection', 'connecting');
+    expect(container.querySelector('[data-participant-id="friend"] [aria-label="Подключается"]')).toBeInTheDocument();
+  });
+
+  it('prioritizes the active speaker and keeps reconnecting participants last', () => {
+    const first = participant(1);
+    const speaker = participant(2);
+    const reconnecting = participant(3);
+    callMedia.participants = [first.id, reconnecting.id, speaker.id];
+    callMedia.speakingUsers = { [speaker.id]: true };
+    callMedia.reconnectingUsers = { [reconnecting.id]: true };
+    callMedia.diagnostics = {
+      [first.id]: { connectionState: 'connected' },
+      [speaker.id]: { connectionState: 'connected' },
+      [reconnecting.id]: { connectionState: 'disconnected' },
+    };
+    const groupConversation: AppConversation = { ...conversation, id: 'presence-order', kind: 'group', members: [currentUser, first, speaker, reconnecting] };
+    const { container } = render(<RealMessages conversation={groupConversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+    const remoteOrder = Array.from(container.querySelectorAll('.mova-call-primary-participant [data-participant-id],.mova-call-secondary-participants [data-participant-id]')).map((tile) => tile.getAttribute('data-participant-id'));
+
+    expect(remoteOrder).toEqual([speaker.id, first.id, reconnecting.id]);
+    expect(container.querySelector(`[data-participant-id="${speaker.id}"]`)).toHaveClass('is-speaking');
+    expect(container.querySelector(`[data-participant-id="${reconnecting.id}"]`)).toHaveAttribute('data-participant-connection', 'reconnecting');
+    expect(container.querySelector(`[data-participant-id="${reconnecting.id}"] [aria-label="Переподключается"]`)).toBeInTheDocument();
+  });
+
+  it('keeps a participant tile while reconnecting and restores its connected state', () => {
+    callMedia.participants = ['friend'];
+    callMedia.reconnectingUsers = { friend: true };
+    callMedia.diagnostics = { friend: { connectionState: 'disconnected' } };
+    const view = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(view.container.querySelector('[data-participant-id="friend"]')).toHaveAttribute('data-participant-connection', 'reconnecting');
+    callMedia.reconnectingUsers = {};
+    callMedia.diagnostics = { friend: { connectionState: 'connected' } };
+    view.rerender(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(view.container.querySelectorAll('[data-participant-id="friend"]')).toHaveLength(1);
+    expect(view.container.querySelector('[data-participant-id="friend"]')).toHaveAttribute('data-participant-connection', 'connected');
+  });
+
   it('shows connection quality as bars with latency only', async () => {
     callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'fair', roundTripTimeMs: 146 } };
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
@@ -172,7 +315,7 @@ describe('call layout', () => {
     const indicator = container.querySelector('.mova-network-quality');
     expect(indicator).toHaveClass('is-fair');
     expect(indicator).toHaveAttribute('data-tooltip', 'Задержка 146 мс');
-    expect(indicator).toHaveAttribute('title', 'Задержка 146 мс');
+    expect(indicator).not.toHaveAttribute('title');
     expect(indicator).not.toHaveTextContent('Задержка 146 мс');
     expect(indicator?.querySelectorAll('.mova-network-bars > i')).toHaveLength(4);
     expect(screen.queryByText(/Потери|джиттер|Хорошая сеть|Средняя сеть|Слабая сеть/)).not.toBeInTheDocument();

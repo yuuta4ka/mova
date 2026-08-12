@@ -1,18 +1,70 @@
 /* Composer and emoji picker are owned here. */
+.mova-tg-app>.mova-real-thread:has(>.mova-real-composer) {
+  background-color:color-mix(in srgb,var(--mova-background-color,#20293c) 72%,#0d121b);
+}
+.mova-tg-app>.mova-real-thread:not(.is-in-call) {
+  --mova-chat-header-overlay-height:70px;
+  --mova-chat-composer-overlay-height:68px;
+  overflow:hidden;
+}
+.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-real-thread__header {
+  position:absolute;
+  z-index:12;
+  top:0;
+  left:50%;
+  transform:translateX(-50%);
+}
+.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-real-messages {
+  position:absolute;
+  z-index:1;
+  inset:0;
+  box-sizing:border-box;
+  width:100%;
+  height:100%;
+  padding-top:calc(var(--mova-chat-header-overlay-height) + 18px);
+  padding-bottom:calc(var(--mova-chat-composer-overlay-height) + 18px);
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 calc(var(--mova-chat-header-overlay-height) - 12px),#000 calc(100% - var(--mova-chat-composer-overlay-height) + 12px),transparent 100%);
+  mask-image:linear-gradient(to bottom,transparent 0,#000 calc(var(--mova-chat-header-overlay-height) - 12px),#000 calc(100% - var(--mova-chat-composer-overlay-height) + 12px),transparent 100%);
+  -webkit-mask-repeat:no-repeat;
+  mask-repeat:no-repeat;
+  -webkit-mask-size:100% 100%;
+  mask-size:100% 100%;
+}
 .mova-tg-app .mova-real-composer {
   position:relative;
   display:flex;
-  width:calc(100% - 36px);
-  max-width:var(--mova-chat-content-width);
+  box-sizing:border-box;
+  width:calc(100% - 32px);
+  max-width:min(780px,var(--mova-chat-content-width));
   flex:0 0 auto;
   align-self:center;
   flex-direction:column;
   gap:0;
-  margin:0 0 12px;
+  margin:0 0 14px;
   padding:0;
   background:transparent;
   border:0;
   box-shadow:none;
+}
+.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-real-composer {
+  position:absolute;
+  z-index:12;
+  right:auto;
+  bottom:0;
+  left:50%;
+  transform:translateX(-50%);
+}
+.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-message-selection-bar {
+  z-index:13;
+}
+.mova-tg-app.is-mobile-navigation>.mova-real-thread:not(.is-call-chat-open)>.mova-real-composer {
+  width:min(780px,calc(100% - 16px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  max-width:none;
+  margin-bottom:max(8px,env(safe-area-inset-bottom));
+}
+.mova-tg-app.is-mobile-navigation>.mova-real-thread:not(.is-call-chat-open)>.mova-real-composer>.mova-composer-panel {
+  border-radius:17px;
+  box-shadow:0 5px 18px rgba(0,0,0,.16);
 }
 .mova-real-typing {
   display:flex;
@@ -22,36 +74,37 @@
   height:25px;
   flex:0 0 25px;
   padding:0 12px;
-  color:#d5d5d9;
+  color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 72%,white);
   font-size:12px;
   line-height:1;
 }
-.mova-real-typing.is-empty { visibility:hidden; }
+.mova-real-typing.is-empty { height:0;flex-basis:0;padding:0;visibility:hidden; }
 .mova-real-typing>span { display:flex;align-items:center;gap:3px; }
 .mova-real-typing i { width:4px;height:4px;background:var(--mova-accent-color,#8774e1);border-radius:50%;animation:mova-composer-typing 1.05s ease-in-out infinite; }
 .mova-real-typing i:nth-child(2) { animation-delay:.14s; }
 .mova-real-typing i:nth-child(3) { animation-delay:.28s; }
 .mova-real-typing strong { min-width:0;overflow:hidden;font-weight:500;text-overflow:ellipsis;white-space:nowrap; }
+.mova-typing-status { color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 72%,white)!important; }
 .mova-composer-panel {
   display:flex;
   min-width:0;
   flex-direction:column;
-  padding:5px;
-  background:rgba(26,28,34,.98);
-  border:1px solid rgba(255,255,255,.095);
-  border-radius:24px;
-  box-shadow:0 12px 34px rgba(0,0,0,.18);
+  padding:4px 5px;
+  background:color-mix(in srgb,var(--mova-background-color,#20293c) 22%,#181a20);
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:18px;
+  box-shadow:0 6px 20px rgba(0,0,0,.16);
   transition:border-color 160ms ease,background 160ms ease,box-shadow 160ms ease;
 }
-.mova-composer-panel:focus-within { background:#1d1f26;border-color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 48%,transparent);box-shadow:0 12px 34px rgba(0,0,0,.2),0 0 0 3px color-mix(in srgb,var(--mova-accent-color,#8774e1) 11%,transparent); }
+.mova-composer-panel:focus-within { background:color-mix(in srgb,var(--mova-background-color,#20293c) 28%,#1a1c22);border-color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 38%,rgba(255,255,255,.1));box-shadow:0 7px 22px rgba(0,0,0,.18),0 0 0 2px color-mix(in srgb,var(--mova-accent-color,#8774e1) 10%,transparent); }
 .mova-composer-context,.mova-attachment-draft {
   display:flex;
   align-items:center;
   gap:10px;
   min-width:0;
-  min-height:48px;
-  margin:0 3px;
-  padding:5px 5px 6px 7px;
+  min-height:44px;
+  margin:0 2px;
+  padding:4px 5px 5px 7px;
   border-bottom:1px solid rgba(255,255,255,.065);
 }
 .mova-composer-context { color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 48%,white); }
@@ -78,10 +131,10 @@
   cursor:pointer;
 }
 .mova-composer-row__remove:hover,.mova-emoji-picker__close:hover,.mova-emoji-picker__header label>button:hover { color:#f1eff6;background:rgba(255,255,255,.075); }
-.mova-composer-input-row { display:flex;align-items:flex-end;gap:2px;min-width:0; }
-.mova-composer-input-row>.mova-icon-button,.mova-composer-send { width:44px;height:44px;flex:0 0 44px;align-self:flex-end;border-radius:50%; }
-.mova-composer-input-row>.mova-icon-button { color:#aaa;background:transparent;transition:color 140ms ease,background 140ms ease,transform 140ms ease; }
-.mova-composer-input-row>.mova-icon-button:hover { color:#eee;background:rgba(255,255,255,.075); }
+.mova-composer-input-row { display:flex;align-items:flex-end;gap:3px;min-width:0; }
+.mova-composer-input-row>.mova-icon-button,.mova-composer-send { display:grid;place-items:center;width:40px;height:40px;flex:0 0 40px;align-self:flex-end;padding:0;border:1px solid transparent;border-radius:13px; }
+.mova-composer-input-row>.mova-icon-button { color:#aaa;background:transparent;transition:color 140ms ease,background 140ms ease,border-color 140ms ease,transform 140ms ease; }
+.mova-composer-input-row>.mova-icon-button:hover { color:#eee;background:rgba(255,255,255,.065);border-color:rgba(255,255,255,.055); }
 .mova-composer-input-row>.mova-icon-button:active { transform:scale(.92); }
 .mova-composer-input-row>.mova-icon-button.is-active { color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 36%,white);background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 16%,transparent); }
 .mova-composer-input-row textarea {
@@ -91,7 +144,7 @@
   max-height:120px;
   flex:1;
   margin:0;
-  padding:10px 5px;
+  padding:10px 6px;
   color:#f2f2f4;
   background:transparent;
   border:0;
@@ -102,15 +155,15 @@
   font-size:16px;
   line-height:22px;
   resize:none;
-  scrollbar-width:thin;
-  scrollbar-color:#565760 transparent;
+  scrollbar-width:none;
 }
+.mova-composer-input-row textarea::-webkit-scrollbar { width:0;height:0; }
 .mova-composer-input-row textarea::placeholder { color:#777881;opacity:1; }
 .mova-composer-input-row textarea:disabled { opacity:.58;cursor:not-allowed; }
-.mova-composer-send { display:grid;place-items:center;padding:0;color:#fff;background:var(--mova-accent-color,#8774e1);border:0;cursor:pointer;transition:filter 140ms ease,transform 140ms ease; }
-.mova-composer-send:not(:disabled):hover { filter:brightness(1.12);transform:scale(1.04); }
+.mova-composer-send { color:#fff;background:var(--mova-accent-color,#8774e1);cursor:pointer;transition:filter 140ms ease,background 140ms ease,border-color 140ms ease,transform 140ms ease; }
+.mova-composer-send:not(:disabled):hover { filter:brightness(1.1);transform:translateY(-1px); }
 .mova-composer-send:not(:disabled):active { transform:scale(.91); }
-.mova-composer-send:disabled { color:#85858c;background:transparent;cursor:default; }
+.mova-composer-send:disabled { color:#85858c;background:transparent;border-color:transparent;cursor:default; }
 .mova-composer-input-row>.mova-icon-button:focus-visible,.mova-composer-send:focus-visible,.mova-composer-row__remove:focus-visible,.mova-emoji-picker button:focus-visible { outline:2px solid color-mix(in srgb,var(--mova-accent-color,#8774e1) 72%,white);outline-offset:2px; }
 .mova-composer-errors { position:absolute;z-index:15;right:8px;bottom:58px;display:grid;justify-items:end;gap:5px;max-width:calc(100% - 16px);pointer-events:none; }
 .mova-send-error,.mova-attachment-error { display:block;max-width:min(440px,100%);padding:7px 10px;color:#ffb0ba;background:#332128;border:1px solid rgba(255,107,129,.2);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.22);font-size:12px;line-height:16px; }
@@ -163,10 +216,11 @@
 @keyframes mova-emoji-open { from{opacity:0;transform:translateY(7px) scale(.97)}to{opacity:1;transform:none} }
 
 @media(max-width:600px) {
-  .mova-tg-app .mova-real-composer { width:calc(100% - 12px);margin-bottom:max(6px,env(safe-area-inset-bottom)); }
+  .mova-tg-app .mova-real-composer { width:calc(100% - 16px);max-width:none;margin-bottom:max(8px,env(safe-area-inset-bottom));background:transparent; }
   .mova-real-typing { height:23px;flex-basis:23px;padding-inline:9px;font-size:11px; }
-  .mova-composer-panel { border-radius:22px; }
-  .mova-composer-context,.mova-attachment-draft { min-height:46px;margin-inline:2px; }
+  .mova-real-typing.is-empty { height:0;flex-basis:0;padding:0; }
+  .mova-composer-panel { border-width:1px;border-radius:17px;box-shadow:0 5px 18px rgba(0,0,0,.16); }
+  .mova-composer-context,.mova-attachment-draft { min-height:44px;margin-inline:2px; }
   .mova-emoji-picker[data-layout="sheet"] { position:fixed;right:0;bottom:0;left:0;width:100%;max-width:none;min-height:445px;padding:12px 12px max(12px,env(safe-area-inset-bottom));border-width:1px 0 0;border-radius:24px 24px 0 0;transform-origin:bottom center; }
   .mova-emoji-picker[data-layout="sheet"] .mova-emoji-picker__header label { height:44px; }
   .mova-emoji-picker[data-layout="sheet"] .mova-emoji-categories { gap:4px;justify-content:flex-start; }

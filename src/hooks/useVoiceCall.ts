@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, realtime, type AppUser, type RealtimeEvent } from '../lib/api';
+import { api, realtime, type AppUser, type RealtimeEvent, type VoiceRoomParticipant } from '../lib/api';
 import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
 
-export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'active' | 'available' | 'error';
+export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'available';
+export type LegacyCallState = CallState | 'active' | 'error';
+export type JoinedCallState = 'connected' | 'reconnecting' | 'disconnected';
+export const normalizeCallState = (state: LegacyCallState): CallState => (state === 'active' ? 'connected' : state === 'error' ? 'disconnected' : state);
+export const isJoinedCallState = (state: CallState): state is JoinedCallState => ['connected', 'reconnecting', 'disconnected'].includes(state);
 export interface ScreenShareQuality {
   width: number;
   height: number;
@@ -49,6 +53,7 @@ const activeCallKey = 'mova-active-call';
 const pendingCallKey = 'mova-pending-call';
 const participantVolumeKey = 'mova-call-participant-volumes';
 const screenVolumeKey = 'mova-call-screen-volumes';
+const reconnectTimeoutMs = 12_000;
 
 const clampVolume = (value: number) => Math.max(0, Math.min(200, Math.round(value)));
 function loadVolumes(key: string): Record<string, number> {
@@ -172,6 +177,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
+  const [joined, setJoined] = useState(false);
   const [participants, setParticipants] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [incomingFrom, setIncomingFrom] = useState<AppUser | null>(null);
@@ -180,6 +186,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const [remoteVideoStreams, setRemoteVideoStreams] = useState<Array<{ userId: string; streamId: string; stream: MediaStream }>>([]);
   const [remoteMedia, setRemoteMedia] = useState<Record<string, { camera?: string; screen?: string }>>({});
   const [remoteVoiceStates, setRemoteVoiceStates] = useState<Record<string, { muted: boolean; deafened: boolean }>>({});
+  const [reconnectingUsers, setReconnectingUsers] = useState<Record<string, boolean>>({});
   const [localSpeaking, setLocalSpeaking] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>(() => loadVolumes(participantVolumeKey));
@@ -211,12 +218,34 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const negotiateRef = useRef<(userId: string, restartIce?: boolean) => Promise<void>>(async () => undefined);
   const stopTone = useRef<() => void>(() => undefined);
   const ringTimeout = useRef<number | null>(null);
+  const reconnectTimeout = useRef<number | null>(null);
   const previousPeerStats = useRef(new Map<string, { outbound: number; stalledChecks: number; lastRecoveryAt: number }>());
 
   const updateState = useCallback((next: CallState) => {
     stateRef.current = next;
     setState(next);
   }, []);
+  const clearReconnectTimeout = useCallback(() => {
+    if (reconnectTimeout.current !== null) window.clearTimeout(reconnectTimeout.current);
+    reconnectTimeout.current = null;
+  }, []);
+  const markConnected = useCallback(() => {
+    clearReconnectTimeout();
+    updateState('connected');
+    setError((value) => (value.startsWith('Восстанавливаем соединение') || value.startsWith('Соединение потеряно') ? '' : value));
+  }, [clearReconnectTimeout, updateState]);
+  const beginReconnect = useCallback(() => {
+    if (!isJoinedCallState(stateRef.current)) return;
+    if (stateRef.current !== 'disconnected') updateState('reconnecting');
+    setError('Восстанавливаем соединение…');
+    if (reconnectTimeout.current === null)
+      reconnectTimeout.current = window.setTimeout(() => {
+        reconnectTimeout.current = null;
+        if (!isJoinedCallState(stateRef.current) || stateRef.current === 'connected') return;
+        updateState('disconnected');
+        setError('Соединение потеряно. Пытаемся подключиться снова…');
+      }, reconnectTimeoutMs);
+  }, [clearReconnectTimeout, updateState]);
   const updateRemoteMedia = useCallback((updater: (items: Record<string, { camera?: string; screen?: string }>) => Record<string, { camera?: string; screen?: string }>) => {
     setRemoteMedia((items) => {
       const next = updater(items);
@@ -373,18 +402,29 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       };
       peer.ontrack = (event) => attachRemoteTrack(userId, event);
       peer.onconnectionstatechange = () => {
-        if (peer.connectionState === 'connected') setError((value) => (value.startsWith('Не удалось восстановить') ? '' : value));
-        if (peer.connectionState === 'failed') void negotiateRef.current(userId, true).catch(() => setError('Не удалось восстановить медиасоединение. Проверьте сеть или настройте TURN-сервер.'));
-        if (peer.connectionState === 'disconnected')
+        if (peer.connectionState === 'connected') {
+          const allConnected = [...peers.current.values()].every((item) => ['connected', 'closed'].includes(item.connectionState));
+          if (allConnected && realtime.isConnected() && isJoinedCallState(stateRef.current)) markConnected();
+        }
+        if (peer.connectionState === 'failed') {
+          beginReconnect();
+          void negotiateRef.current(userId, true).catch(() => {
+            updateState('disconnected');
+            setError('Не удалось восстановить медиасоединение. Проверьте сеть или настройте TURN-сервер.');
+          });
+        }
+        if (peer.connectionState === 'disconnected') {
+          beginReconnect();
           window.setTimeout(() => {
             if (peer.connectionState === 'disconnected') void negotiateRef.current(userId, true);
           }, 2_500);
+        }
       };
       peers.current.set(userId, peer);
       setParticipants((items) => [...new Set([...items, userId])]);
       return peer;
     },
-    [addMissingLocalTracks, attachRemoteTrack, conversationId],
+    [addMissingLocalTracks, attachRemoteTrack, beginReconnect, conversationId, markConnected, updateState],
   );
 
   const negotiatePeer = useCallback(
@@ -399,7 +439,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           addMissingLocalTracks(peer);
           makingOffer.current.set(userId, true);
           try {
-            if (restartIce) peer.restartIce();
+            if (restartIce) {
+              beginReconnect();
+              peer.restartIce();
+            }
             const offer = await peer.createOffer({ iceRestart: restartIce });
             await peer.setLocalDescription(offer);
             realtime.send({
@@ -415,7 +458,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       negotiationQueues.current.set(userId, next);
       return next;
     },
-    [addMissingLocalTracks, conversationId],
+    [addMissingLocalTracks, beginReconnect, conversationId],
   );
   negotiateRef.current = negotiatePeer;
 
@@ -511,23 +554,21 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       deafened: deafenedRef.current,
     });
     const camera = cameraStreamRef.current;
-    if (camera)
-      realtime.send({
-        type: 'voice:media',
-        conversationId,
-        mediaKind: 'camera',
-        enabled: true,
-        streamId: camera.id,
-      });
+    realtime.send({
+      type: 'voice:media',
+      conversationId,
+      mediaKind: 'camera',
+      enabled: Boolean(camera),
+      streamId: camera?.id || '',
+    });
     const screen = screenStreamRef.current;
-    if (screen)
-      realtime.send({
-        type: 'voice:media',
-        conversationId,
-        mediaKind: 'screen',
-        enabled: true,
-        streamId: screen.id,
-      });
+    realtime.send({
+      type: 'voice:media',
+      conversationId,
+      mediaKind: 'screen',
+      enabled: Boolean(screen),
+      streamId: screen?.id || '',
+    });
   }, [conversationId]);
 
   const connectAudio = useCallback(async () => {
@@ -536,7 +577,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (localStream.current) {
       realtime.send({ type: 'voice:join', conversationId });
       announceLocalState();
-      updateState('active');
+      markConnected();
+      setJoined(true);
       setStoredCall(activeCallKey, conversationId);
       setStoredCall(pendingCallKey, null);
       return;
@@ -605,7 +647,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       const existingPeers = [...peers.current.keys()];
       peers.current.forEach(addMissingLocalTracks);
       realtime.send({ type: 'voice:join', conversationId });
-      updateState('active');
+      markConnected();
+      setJoined(true);
       playCallSound('connect');
       setStoredCall(activeCallKey, conversationId);
       setStoredCall(pendingCallKey, null);
@@ -629,13 +672,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       updateState('available');
       setError(message);
     }
-  }, [addMissingLocalTracks, announceLocalState, conversationId, updateState]);
+  }, [addMissingLocalTracks, announceLocalState, conversationId, markConnected, updateState]);
 
   const leave = useCallback(
     (notify = true, preserveStoredCall = false) => {
       const previousState = stateRef.current;
       if (conversationId) realtime.send({ type: 'voice:leave', conversationId });
-      if (!preserveStoredCall && previousState !== 'idle' && previousState !== 'error') playCallSound('disconnect');
+      if (!preserveStoredCall && previousState !== 'idle') playCallSound('disconnect');
+      clearReconnectTimeout();
       peers.current.forEach((peer) => peer.close());
       peers.current.clear();
       previousPeerStats.current.clear();
@@ -669,6 +713,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setRemoteVideoStreams([]);
       updateRemoteMedia(() => ({}));
       setRemoteVoiceStates({});
+      setReconnectingUsers({});
       localSpeakingRef.current = false;
       setLocalSpeaking(false);
       setSpeakingUsers({});
@@ -676,6 +721,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       localAudioContext.current = null;
       localGain.current = null;
       setParticipants([]);
+      setJoined(false);
       mutedRef.current = false;
       deafenedRef.current = false;
       setMuted(false);
@@ -689,7 +735,37 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       }
       if (notify && conversationId) window.setTimeout(() => realtime.send({ type: 'call:sync', conversationId }), 120);
     },
-    [conversationId, removeRemoteAudio, updateRemoteMedia, updateState],
+    [clearReconnectTimeout, conversationId, removeRemoteAudio, updateRemoteMedia, updateState],
+  );
+
+  const applyRoomSnapshot = useCallback(
+    (room: VoiceRoomParticipant[]) => {
+      const remoteParticipants = room.filter((participant) => participant.userId !== currentUserId);
+      const remoteIds = new Set(remoteParticipants.map((participant) => participant.userId));
+      setParticipants(remoteParticipants.map((participant) => participant.userId));
+      setRemoteVoiceStates(
+        Object.fromEntries(remoteParticipants.map((participant) => [participant.userId, { muted: participant.muted, deafened: participant.deafened }])),
+      );
+      setReconnectingUsers(
+        Object.fromEntries(remoteParticipants.filter((participant) => participant.connectionState === 'reconnecting').map((participant) => [participant.userId, true])),
+      );
+      updateRemoteMedia(() =>
+        Object.fromEntries(
+          remoteParticipants.map((participant) => [participant.userId, { ...participant.media }]),
+        ),
+      );
+      for (const [userId, peer] of peers.current) {
+        if (remoteIds.has(userId)) continue;
+        peer.close();
+        peers.current.delete(userId);
+        previousPeerStats.current.delete(userId);
+      }
+      for (const [key, entry] of remoteAudio.current) if (!remoteIds.has(entry.userId)) removeRemoteAudio(key);
+      setRemoteVideoStreams((items) => items.filter((item) => remoteIds.has(item.userId)));
+      setSpeakingUsers((items) => Object.fromEntries(Object.entries(items).filter(([userId]) => remoteIds.has(userId))));
+      setDiagnostics((items) => Object.fromEntries(Object.entries(items).filter(([userId]) => remoteIds.has(userId))));
+    },
+    [currentUserId, removeRemoteAudio, updateRemoteMedia],
   );
 
   useEffect(
@@ -697,9 +773,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       realtime.subscribe((event: RealtimeEvent) => {
         void (async () => {
           try {
+            if (event.type === 'realtime:disconnected') {
+              if (localStream.current && isJoinedCallState(stateRef.current)) beginReconnect();
+              return;
+            }
             if (event.type === 'ready') {
               if (conversationId) realtime.send({ type: 'call:sync', conversationId });
-              if (conversationId && localStream.current && stateRef.current === 'active') {
+              if (conversationId && localStream.current && isJoinedCallState(stateRef.current)) {
+                beginReconnect();
                 realtime.send({ type: 'voice:join', conversationId });
                 announceLocalState();
               }
@@ -709,8 +790,17 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             if (event.type === 'call:state') {
               setCreatedAt(event.createdAt || null);
               setStartedAt(event.startedAt || null);
-              setParticipants((items) => [...new Set([...items, ...event.participants.filter((id) => id !== currentUserId)])]);
+              const room = event.room ||
+                event.participants.map((userId) => ({
+                  userId,
+                  connectionState: 'connected' as const,
+                  muted: false,
+                  deafened: false,
+                  media: {},
+                }));
+              applyRoomSnapshot(room);
               if (event.status === 'idle') {
+                setJoined(false);
                 setCreatedAt(null);
                 setStartedAt(null);
                 if (stateRef.current !== 'idle') leave(false);
@@ -727,13 +817,22 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                 return;
               }
               if (event.status === 'active' && !localStream.current) {
-                if (storedCall(activeCallKey) === conversationId || storedCall(pendingCallKey) === conversationId || event.joined) await connectAudio();
-                else {
-                  stopTone.current();
-                  if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
-                  ringTimeout.current = null;
-                  updateState('available');
+                const localParticipant = room.find((participant) => participant.userId === currentUserId);
+                setJoined(Boolean(event.joined || localParticipant));
+                if (localParticipant) {
+                  mutedRef.current = localParticipant.muted;
+                  deafenedRef.current = localParticipant.deafened;
+                  setMuted(localParticipant.muted);
+                  setDeafened(localParticipant.deafened);
                 }
+                if (event.joined || localParticipant || storedCall(activeCallKey) === conversationId || storedCall(pendingCallKey) === conversationId) {
+                  setStoredCall(activeCallKey, conversationId);
+                  setStoredCall(pendingCallKey, null);
+                }
+                stopTone.current();
+                if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
+                ringTimeout.current = null;
+                updateState('available');
               }
               return;
             }
@@ -764,12 +863,30 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
               }
             }
             if (event.type === 'voice:peers') {
-              setParticipants((items) => [...new Set([...items, ...event.peers])]);
               for (const userId of event.peers) {
                 createPeer(userId);
                 await negotiatePeer(userId);
               }
               announceLocalState();
+              if (localStream.current && (!event.peers.length || [...peers.current.values()].every((peer) => peer.connectionState === 'connected'))) markConnected();
+            }
+            if (event.type === 'voice:snapshot') {
+              applyRoomSnapshot(event.participants);
+              const localParticipant = event.participants.find((participant) => participant.userId === currentUserId);
+              setJoined(Boolean(localStream.current || localParticipant));
+              if (localParticipant && !localStream.current && !isJoinedCallState(stateRef.current)) {
+                mutedRef.current = localParticipant.muted;
+                deafenedRef.current = localParticipant.deafened;
+                setMuted(localParticipant.muted);
+                setDeafened(localParticipant.deafened);
+                setStoredCall(activeCallKey, conversationId);
+                setStoredCall(pendingCallKey, null);
+                stopTone.current();
+                if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
+                ringTimeout.current = null;
+                updateState('available');
+              }
+              if (localStream.current && isJoinedCallState(stateRef.current) && localParticipant?.connectionState === 'connected' && (!peers.current.size || [...peers.current.values()].every((peer) => peer.connectionState === 'connected'))) markConnected();
             }
             if (event.type === 'voice:offer') {
               const peer = createPeer(event.fromUserId);
@@ -864,7 +981,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           }
         })();
       }),
-    [announceLocalState, applyRemoteVolume, connectAudio, conversationId, createPeer, currentUserId, leave, negotiatePeer, removeRemoteAudio, updateRemoteMedia, updateState],
+    [announceLocalState, applyRemoteVolume, applyRoomSnapshot, beginReconnect, connectAudio, conversationId, createPeer, currentUserId, leave, markConnected, negotiatePeer, removeRemoteAudio, updateRemoteMedia, updateState],
   );
 
   useEffect(() => {
@@ -873,7 +990,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   }, [conversationId, leave]);
 
   useEffect(() => {
-    if (state !== 'active') return;
+    if (!isJoinedCallState(state)) return;
     void inspectPeerConnections();
     const timer = window.setInterval(() => void inspectPeerConnections(), 3_000);
     return () => window.clearInterval(timer);
@@ -977,7 +1094,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     await Promise.all([...peers.current.keys()].map((userId) => negotiatePeer(userId)));
   };
   const toggleCamera = async () => {
-    if (!conversationId || stateRef.current !== 'active') return;
+    if (!conversationId || !isJoinedCallState(stateRef.current)) return;
     if (cameraStreamRef.current) {
       const old = cameraStreamRef.current;
       peers.current.forEach((peer) =>
@@ -1073,7 +1190,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       frameRate: 30,
     },
   ) => {
-    if (!conversationId || stateRef.current !== 'active') return;
+    if (!conversationId || !isJoinedCallState(stateRef.current)) return;
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -1152,6 +1269,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     startedAt,
     muted,
     deafened,
+    joined,
     participants,
     error,
     incomingFrom,
@@ -1160,6 +1278,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     remoteVideoStreams,
     remoteMedia,
     remoteVoiceStates,
+    reconnectingUsers,
     localSpeaking,
     speakingUsers,
     participantVolumes,

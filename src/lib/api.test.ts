@@ -86,6 +86,7 @@ describe('realtime reconnect', () => {
     expect(sockets[0].url).toContain('/ws?token=realtime-token');
     sockets[0].open();
     sockets[0].close();
+    expect(listener).toHaveBeenCalledWith({ type: 'realtime:disconnected' });
     vi.advanceTimersByTime(500);
 
     expect(sockets).toHaveLength(2);

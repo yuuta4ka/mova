@@ -67,6 +67,16 @@ export interface AppConversation {
 export interface RtcConfig {
   iceServers: RTCIceServer[];
 }
+export interface VoiceRoomParticipant {
+  userId: string;
+  connectionState: 'connected' | 'reconnecting';
+  muted: boolean;
+  deafened: boolean;
+  media: {
+    camera?: string;
+    screen?: string;
+  };
+}
 export interface MaintenanceState {
   active: boolean;
   deploymentId?: string;
@@ -171,6 +181,7 @@ export const api = {
 
 export type RealtimeEvent =
   | { type: 'ready'; user: AppUser }
+  | { type: 'realtime:disconnected' }
   | { type: 'heartbeat:ack'; sentAt: number }
   | { type: 'message:new'; message: AppMessage }
   | { type: 'message:update'; message: AppMessage }
@@ -201,8 +212,10 @@ export type RealtimeEvent =
       createdAt?: string;
       startedAt?: string;
       participants: string[];
+      room?: VoiceRoomParticipant[];
       joined: boolean;
     }
+  | { type: 'voice:snapshot'; conversationId: string; participants: VoiceRoomParticipant[] }
   | { type: 'voice:peers'; conversationId: string; peers: string[] }
   | { type: 'voice:joined'; conversationId: string; user: AppUser }
   | { type: 'voice:left'; conversationId: string; userId: string }
@@ -299,6 +312,7 @@ export class RealtimeClient {
       if (this.socket !== socket) return;
       this.stopHeartbeat();
       this.socket = null;
+      this.listeners.forEach((listener) => listener({ type: 'realtime:disconnected' }));
       if (this.closedByUser || !session.get()) return;
       const delay = Math.min(8_000, 500 * 2 ** this.reconnectAttempts++);
       this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
@@ -316,6 +330,9 @@ export class RealtimeClient {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+  isConnected() {
+    return this.socket?.readyState === WebSocket.OPEN;
   }
   close() {
     this.closedByUser = true;
