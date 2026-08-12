@@ -128,7 +128,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   me: () => request<{ user: AppUser }>('/api/me'),
-  maintenance: () => request<MaintenanceState>('/api/maintenance'),
+  maintenance: (signal?: AbortSignal) => request<MaintenanceState>('/api/maintenance', { signal }),
   updateProfile: (data: Pick<AppUser, 'name' | 'handle' | 'bio' | 'avatarDataUrl' | 'bannerDataUrl' | 'activity'>) =>
     request<{ user: AppUser }>('/api/profile', {
       method: 'PATCH',

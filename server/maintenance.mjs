@@ -7,9 +7,25 @@ const inactiveState = { active: false };
 export class MaintenanceStore {
   constructor(filePath) {
     this.filePath = filePath;
+    this.cached = inactiveState;
+    this.cacheExpiresAt = 0;
+    this.readInFlight = null;
   }
 
   async read() {
+    if (this.cacheExpiresAt > Date.now()) return this.cached;
+    if (this.readInFlight) return this.readInFlight;
+    this.readInFlight = this.readFile();
+    try {
+      this.cached = await this.readInFlight;
+      this.cacheExpiresAt = Date.now() + 1_000;
+      return this.cached;
+    } finally {
+      this.readInFlight = null;
+    }
+  }
+
+  async readFile() {
     try {
       const stored = JSON.parse(await readFile(this.filePath, 'utf8'));
       if (!stored?.active) return inactiveState;
@@ -43,6 +59,8 @@ export class MaintenanceStore {
     const temporaryPath = join(dirname(this.filePath), `.maintenance-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
     await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });
     await rename(temporaryPath, this.filePath);
-    return next.active ? next : inactiveState;
+    this.cached = next.active ? next : inactiveState;
+    this.cacheExpiresAt = Date.now() + 1_000;
+    return this.cached;
   }
 }

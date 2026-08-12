@@ -47,4 +47,21 @@ describe('deployment maintenance banner', () => {
     await waitFor(() => expect(api.maintenance).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('status')).toBeInTheDocument();
   });
+
+  it('never overlaps maintenance requests while the backend is unavailable', async () => {
+    let resolveRequest: ((value: { active: boolean }) => void) | undefined;
+    const maintenance = vi.spyOn(api, 'maintenance').mockImplementation(
+      () => new Promise((resolve) => { resolveRequest = resolve; }),
+    );
+    render(<MaintenanceBanner />);
+    await waitFor(() => expect(maintenance).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('online'));
+    });
+
+    expect(maintenance).toHaveBeenCalledTimes(1);
+    resolveRequest?.({ active: false });
+  });
 });

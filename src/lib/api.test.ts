@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, session } from './api';
+import { api, RealtimeClient, session } from './api';
 
 const originalUserAgent = navigator.userAgent;
 
@@ -55,5 +55,46 @@ describe('session storage', () => {
     expect(localStorage.getItem('mova-session')).toBe('desktop-token');
     expect(sessionStorage.getItem('mova-session')).toBeNull();
     expect(session.get()).toBe('desktop-token');
+  });
+});
+
+describe('realtime reconnect', () => {
+  it('reconnects with the same authorization and delivers incoming call events after a brief disconnect', () => {
+    vi.useFakeTimers();
+    session.set('realtime-token');
+    const sockets: MockSocket[] = [];
+    class MockSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      readyState = MockSocket.CONNECTING;
+      onopen: (() => void) | null = null;
+      onmessage: ((message: { data: string }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      sent: string[] = [];
+      constructor(readonly url: string) { sockets.push(this); }
+      open() { this.readyState = MockSocket.OPEN; this.onopen?.(); }
+      receive(event: object) { this.onmessage?.({ data: JSON.stringify(event) }); }
+      send(message: string) { this.sent.push(message); }
+      close() { this.readyState = 3; this.onclose?.(); }
+    }
+    vi.stubGlobal('WebSocket', MockSocket);
+    const client = new RealtimeClient();
+    const listener = vi.fn();
+    client.subscribe(listener);
+
+    client.connect();
+    expect(sockets[0].url).toContain('/ws?token=realtime-token');
+    sockets[0].open();
+    sockets[0].close();
+    vi.advanceTimersByTime(500);
+
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1].url).toContain('/ws?token=realtime-token');
+    sockets[1].open();
+    sockets[1].receive({ type: 'call:invite', conversationId: 'chat', from: { id: 'friend' }, createdAt: '2026-08-12T00:00:00.000Z' });
+
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: 'call:invite', conversationId: 'chat' }));
+    client.close();
+    vi.useRealTimers();
   });
 });
