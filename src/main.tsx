@@ -15,6 +15,7 @@ import './desktop-shell.css';
 import './composer.css';
 import './media-viewer.css';
 import './common-ui.css';
+import './maintenance.css';
 import { RealApp } from './RealApp';
 import { LandingPage } from './LandingPage';
 import { DesktopTitlebar } from './DesktopTitlebar';

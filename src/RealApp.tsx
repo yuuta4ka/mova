@@ -14,6 +14,7 @@ import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } f
 import { requestMessageNotificationPermission, showMessageNotification } from './lib/messageNotifications';
 import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
 import { getMessageStructure } from './lib/messageGrouping';
+import { MaintenanceFrame } from './MaintenanceBanner';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
@@ -3588,15 +3589,16 @@ export function RealApp() {
       .catch(() => session.clear())
       .finally(() => setChecking(false));
   }, []);
+  let content: ReactNode;
   if (checking)
-    return (
+    content = (
       <div className="mova-boot">
         <img src="/mova-logo.png" alt="" />
         <p>Открываем Mova…</p>
       </div>
     );
-  if (!currentUser)
-    return (
+  else if (!currentUser)
+    content = (
       <AuthScreen
         onAuth={(user) => {
           setCurrentUser(user);
@@ -3604,16 +3606,18 @@ export function RealApp() {
         }}
       />
     );
-  return (
-    <Product
-      currentUser={currentUser}
-      onUserUpdate={setCurrentUser}
-      onLogout={() => {
-        realtime.close();
-        clearClientCache();
-        session.clear();
-        setCurrentUser(null);
-      }}
-    />
-  );
+  else
+    content = (
+      <Product
+        currentUser={currentUser}
+        onUserUpdate={setCurrentUser}
+        onLogout={() => {
+          realtime.close();
+          clearClientCache();
+          session.clear();
+          setCurrentUser(null);
+        }}
+      />
+    );
+  return <MaintenanceFrame>{content}</MaintenanceFrame>;
 }

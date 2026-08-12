@@ -2,17 +2,19 @@ import { createServer } from 'node:http';
 import { randomBytes, scrypt, timingSafeEqual, createHmac } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { dirname, extname, resolve, sep } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
 import { openDatabase, resolveDataPaths } from './database.mjs';
+import { MaintenanceStore } from './maintenance.mjs';
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(serverRoot, '..');
 const publicRoot = resolve(projectRoot, 'dist');
 const dataPaths = resolveDataPaths(projectRoot);
+const maintenance = new MaintenanceStore(process.env.MOVA_MAINTENANCE_PATH ? resolve(process.env.MOVA_MAINTENANCE_PATH) : join(dirname(dataPaths.sqlitePath), 'maintenance.json'));
 const port = Number(process.env.PORT || process.env.MOVA_PORT || 8787);
 const host = process.env.HOST || '0.0.0.0';
 const secret = process.env.MOVA_SESSION_SECRET || 'mova-local-development-secret';
@@ -54,6 +56,13 @@ function rtcIceServers() {
 }
 
 const id = (prefix) => `${prefix}_${randomBytes(10).toString('hex')}`;
+const instanceId = id('instance');
+const instanceStartedAt = new Date().toISOString();
+const secureEqual = (left, right) => {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  return leftBuffer.length === rightBuffer.length && leftBuffer.length > 0 && timingSafeEqual(leftBuffer, rightBuffer);
+};
 const publicUser = (storedUser) => {
   if (!storedUser) return null;
   const { passwordHash, ...user } = storedUser;
@@ -285,9 +294,19 @@ async function handleApi(request, response) {
   try {
     const url = new URL(request.url, 'http://localhost');
     if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
+    if (request.method === 'GET' && url.pathname === '/api/maintenance') return json(response, 200, await maintenance.read());
     if (request.method === 'GET' && url.pathname === '/api/ready') {
       database.sqlite.prepare('SELECT 1').get();
-      return json(response, 200, { ok: true, storage: 'sqlite', journalMode: 'wal' });
+      return json(response, 200, { ok: true, storage: 'sqlite', journalMode: 'wal', instanceId, startedAt: instanceStartedAt });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/maintenance') {
+      const hookSecret = process.env.MOVA_DEPLOY_HOOK_SECRET || '';
+      const providedSecret = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+      if (!hookSecret || !secureEqual(providedSecret, hookSecret)) return json(response, 401, { error: 'Deploy hook is not authorized' });
+      const data = await body(request);
+      if (typeof data.active !== 'boolean') return json(response, 400, { error: 'active must be boolean' });
+      const state = await maintenance.update(data);
+      return json(response, 200, state);
     }
     if (request.method === 'POST' && url.pathname === '/api/register') {
       if (!allowRequest(`register:${requestIp(request)}`, 5, 60_000)) throw Object.assign(new Error('Слишком много попыток регистрации'), { statusCode: 429 });

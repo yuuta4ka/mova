@@ -34,10 +34,29 @@ else
   git commit -m "$MOVA_COMMIT_MESSAGE"
 fi
 
+if { [ -n "${MOVA_DEPLOY_URL:-}" ] && [ -z "${MOVA_DEPLOY_HOOK_SECRET:-}" ]; } || { [ -z "${MOVA_DEPLOY_URL:-}" ] && [ -n "${MOVA_DEPLOY_HOOK_SECRET:-}" ]; }; then
+  echo "❌ Для maintenance banner нужны одновременно MOVA_DEPLOY_URL и MOVA_DEPLOY_HOOK_SECRET."
+  exit 1
+fi
+
+MOVA_DEPLOYMENT_ID="deploy-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
+if [ -n "${MOVA_DEPLOY_URL:-}" ]; then
+  echo "Включаем maintenance ($MOVA_DEPLOYMENT_ID)..."
+  node scripts/maintenance.mjs on "$MOVA_DEPLOYMENT_ID"
+fi
+
 echo "Отправляем код в GitHub..."
 if ! git push origin "$MOVA_BRANCH"; then
-  echo "❌ GitHub отклонил отправку. Проверьте сообщение Git выше и повторите попытку."
+  echo "❌ GitHub отклонил отправку. Maintenance оставлен включённым."
   exit 1
 fi
 echo ""
 echo "✅ Код отправлен в origin/$MOVA_BRANCH."
+if [ -n "${MOVA_DEPLOY_URL:-}" ]; then
+  echo "Ждём readiness нового backend..."
+  if ! node scripts/maintenance.mjs wait-ready "$MOVA_DEPLOYMENT_ID" "${MOVA_DEPLOY_READY_TIMEOUT:-900}"; then
+    echo "❌ Новый backend не подтвердил readiness. Maintenance оставлен включённым."
+    exit 1
+  fi
+  echo "✅ Новый backend готов, maintenance выключен."
+fi

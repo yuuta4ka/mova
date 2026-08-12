@@ -67,6 +67,12 @@ export interface AppConversation {
 export interface RtcConfig {
   iceServers: RTCIceServer[];
 }
+export interface MaintenanceState {
+  active: boolean;
+  deploymentId?: string;
+  previousInstanceId?: string;
+  startedAt?: string;
+}
 
 const tokenKey = 'mova-session';
 const sessionStore = () => (navigator.userAgent.includes('MovaDesktop/') ? localStorage : sessionStorage);
@@ -122,6 +128,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   me: () => request<{ user: AppUser }>('/api/me'),
+  maintenance: () => request<MaintenanceState>('/api/maintenance'),
   updateProfile: (data: Pick<AppUser, 'name' | 'handle' | 'bio' | 'avatarDataUrl' | 'bannerDataUrl' | 'activity'>) =>
     request<{ user: AppUser }>('/api/profile', {
       method: 'PATCH',

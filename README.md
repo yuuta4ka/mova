@@ -101,3 +101,21 @@ pnpm build-storybook
 pnpm build
 MOVA_SESSION_SECRET=local-production-check pnpm start
 ```
+
+### Banner во время deployment
+
+Maintenance-состояние хранится на persistent volume рядом с SQLite (`/data/maintenance.json` в Amvera). На backend задайте отдельный длинный секрет `MOVA_DEPLOY_HOOK_SECRET`. Deployment process должен использовать тот же секрет и публичный URL:
+
+```bash
+export MOVA_DEPLOY_URL="https://<ваш-домен>"
+export MOVA_DEPLOY_HOOK_SECRET="<секрет из backend environment>"
+MOVA_DEPLOYMENT_ID="deploy-$(date -u +%Y%m%dT%H%M%SZ)"
+
+pnpm maintenance on "$MOVA_DEPLOYMENT_ID"
+# Здесь выполняется фактический deploy новой версии.
+pnpm maintenance wait-ready "$MOVA_DEPLOYMENT_ID" 900
+```
+
+`wait-ready` ждёт успешный `/api/ready` от нового `instanceId` и только после этого выключает banner. При ошибке или timeout команда завершается с кодом 1, а maintenance остаётся включённым. Для ручного снятия после проверки: `pnpm maintenance off "$MOVA_DEPLOYMENT_ID"`.
+
+Локальный `scripts/deploy.sh` выполняет эту последовательность автоматически, если перед запуском заданы `MOVA_DEPLOY_URL` и `MOVA_DEPLOY_HOOK_SECRET`. Первый rollout самой поддержки maintenance нужно выполнить обычным способом, потому что старая версия backend ещё не содержит hook endpoint.
