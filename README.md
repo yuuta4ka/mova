@@ -118,4 +118,4 @@ pnpm maintenance wait-ready "$MOVA_DEPLOYMENT_ID" 900
 
 `wait-ready` ждёт успешный `/api/ready` от нового `instanceId` и только после этого выключает banner. При ошибке или timeout команда завершается с кодом 1, а maintenance остаётся включённым. Для ручного снятия после проверки: `pnpm maintenance off "$MOVA_DEPLOYMENT_ID"`.
 
-Локальный `scripts/deploy.sh` выполняет эту последовательность автоматически, если перед запуском заданы `MOVA_DEPLOY_URL` и `MOVA_DEPLOY_HOOK_SECRET`. Первый rollout самой поддержки maintenance нужно выполнить обычным способом, потому что старая версия backend ещё не содержит hook endpoint.
+`scripts/deploy.sh` выполняет всю последовательность автоматически одной командой. По умолчанию он использует `https://hola-mova.ru` и получает secret из `MOVA_DEPLOY_HOOK_SECRET` или macOS Keychain (`service: mova-deploy-hook`). Secret в файлах проекта не хранится. Первый rollout поддержки maintenance выполняется обычным способом, потому что старая версия backend ещё не содержит hook endpoint.

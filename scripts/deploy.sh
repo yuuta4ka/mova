@@ -3,6 +3,12 @@ set -e
 cd "$(dirname "$0")/.." || exit 1
 
 MOVA_COMMIT_MESSAGE="${1:-Deploy: Mova updates}"
+MOVA_DEPLOY_URL="${MOVA_DEPLOY_URL:-https://hola-mova.ru}"
+export MOVA_DEPLOY_URL
+if [ -z "${MOVA_DEPLOY_HOOK_SECRET:-}" ] && command -v security >/dev/null 2>&1; then
+  MOVA_DEPLOY_HOOK_SECRET="$(security find-generic-password -a "$(id -un)" -s mova-deploy-hook -w 2>/dev/null || true)"
+fi
+export MOVA_DEPLOY_HOOK_SECRET
 
 echo "=========================================="
 echo "  Mova — деплой через GitHub"
@@ -34,16 +40,14 @@ else
   git commit -m "$MOVA_COMMIT_MESSAGE"
 fi
 
-if { [ -n "${MOVA_DEPLOY_URL:-}" ] && [ -z "${MOVA_DEPLOY_HOOK_SECRET:-}" ]; } || { [ -z "${MOVA_DEPLOY_URL:-}" ] && [ -n "${MOVA_DEPLOY_HOOK_SECRET:-}" ]; }; then
-  echo "❌ Для maintenance banner нужны одновременно MOVA_DEPLOY_URL и MOVA_DEPLOY_HOOK_SECRET."
+if [ -z "${MOVA_DEPLOY_HOOK_SECRET:-}" ]; then
+  echo "❌ Deploy secret не найден в MOVA_DEPLOY_HOOK_SECRET или macOS Keychain (service: mova-deploy-hook)."
   exit 1
 fi
 
 MOVA_DEPLOYMENT_ID="deploy-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
-if [ -n "${MOVA_DEPLOY_URL:-}" ]; then
-  echo "Включаем maintenance ($MOVA_DEPLOYMENT_ID)..."
-  node scripts/maintenance.mjs on "$MOVA_DEPLOYMENT_ID"
-fi
+echo "Включаем maintenance ($MOVA_DEPLOYMENT_ID)..."
+node scripts/maintenance.mjs on "$MOVA_DEPLOYMENT_ID"
 
 echo "Отправляем код в GitHub..."
 if ! git push origin "$MOVA_BRANCH"; then
@@ -52,11 +56,9 @@ if ! git push origin "$MOVA_BRANCH"; then
 fi
 echo ""
 echo "✅ Код отправлен в origin/$MOVA_BRANCH."
-if [ -n "${MOVA_DEPLOY_URL:-}" ]; then
-  echo "Ждём readiness нового backend..."
-  if ! node scripts/maintenance.mjs wait-ready "$MOVA_DEPLOYMENT_ID" "${MOVA_DEPLOY_READY_TIMEOUT:-900}"; then
-    echo "❌ Новый backend не подтвердил readiness. Maintenance оставлен включённым."
-    exit 1
-  fi
-  echo "✅ Новый backend готов, maintenance выключен."
+echo "Ждём readiness нового backend..."
+if ! node scripts/maintenance.mjs wait-ready "$MOVA_DEPLOYMENT_ID" "${MOVA_DEPLOY_READY_TIMEOUT:-900}"; then
+  echo "❌ Новый backend не подтвердил readiness. Maintenance оставлен включённым."
+  exit 1
 fi
+echo "✅ Новый backend готов, maintenance выключен."
