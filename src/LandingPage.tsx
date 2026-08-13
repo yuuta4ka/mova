@@ -14,10 +14,11 @@ import {
   Video,
 } from 'lucide-react';
 
-const version = '0.1.5';
+const version = '0.1.5.1';
+const releaseTag = '0.1.6';
 const githubUrl = 'https://github.com/yuuta4ka/mova';
 const donationUrl = 'https://donatex.gg/donate/yuuta';
-const releaseBase = `https://github.com/yuuta4ka/mova/releases/download/v${version}`;
+const releaseBase = `https://github.com/yuuta4ka/mova/releases/download/v${releaseTag}`;
 
 const downloads = [
   {

@@ -22,6 +22,7 @@ describe('Windows desktop titlebar', () => {
     window.movaDesktopShell = api;
     const { container } = render(<DesktopTitlebar />);
 
+    expect(container.querySelector('.mova-desktop-titlebar__identity img')).toHaveAttribute('src', '/icon-192.png');
     fireEvent.click(screen.getByRole('button', { name: 'Свернуть' }));
     fireEvent.click(screen.getByRole('button', { name: 'Развернуть окно' }));
     fireEvent.doubleClick(container.querySelector('.mova-desktop-titlebar__identity')!);

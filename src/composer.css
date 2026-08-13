@@ -137,8 +137,17 @@
 .mova-composer-input-row>.mova-icon-button:hover { color:#eee;background:rgba(255,255,255,.065);border-color:rgba(255,255,255,.055); }
 .mova-composer-input-row>.mova-icon-button:active { transform:scale(.92); }
 .mova-composer-input-row>.mova-icon-button.is-active { color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 36%,white);background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 16%,transparent); }
+.mova-composer-textarea {
+  position:relative;
+  min-width:0;
+  flex:1;
+}
 .mova-composer-input-row textarea {
   appearance:none;
+  position:relative;
+  z-index:1;
+  display:block;
+  width:100%;
   min-width:0;
   min-height:44px;
   max-height:120px;
@@ -157,6 +166,32 @@
   resize:none;
   scrollbar-width:none;
 }
+.mova-composer-textarea__mirror {
+  position:absolute;
+  z-index:0;
+  inset:0;
+  padding:10px 6px;
+  color:#f2f2f4;
+  font:inherit;
+  font-size:16px;
+  line-height:22px;
+  white-space:pre-wrap;
+  overflow-wrap:break-word;
+  overflow:hidden;
+  pointer-events:none;
+}
+.mova-composer-textarea__mirror .mova-apple-text img.emoji {
+  width:1em;
+  height:1em;
+  margin:0;
+  vertical-align:-.15em;
+}
+.mova-composer-textarea.has-value textarea {
+  color:transparent;
+  caret-color:#f2f2f4;
+  -webkit-text-fill-color:transparent;
+}
+.mova-composer-textarea.has-value textarea::selection { background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 42%,transparent); }
 .mova-composer-input-row textarea::-webkit-scrollbar { width:0;height:0; }
 .mova-composer-input-row textarea::placeholder { color:#777881;opacity:1; }
 .mova-composer-input-row textarea:disabled { opacity:.58;cursor:not-allowed; }

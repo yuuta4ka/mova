@@ -58,7 +58,7 @@ export function DesktopTitlebar() {
       shell.toggleMaximize();
     }}>
       <div className="mova-desktop-titlebar__identity" aria-hidden="true">
-        <span>M</span>
+        <img src="/icon-192.png" alt="" />
         <strong>Mova</strong>
       </div>
       <div className="mova-desktop-titlebar__controls">

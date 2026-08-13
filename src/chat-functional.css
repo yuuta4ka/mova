@@ -39,6 +39,7 @@
 
 /* Message actions, Telegram-style replies and resilient long-text wrapping. */
 .mova-tg-app .mova-real-message>.mova-message-body{position:relative;min-width:0}
+.mova-message-quick-actions{position:absolute;z-index:5;top:0;right:-72px;display:flex;gap:3px;padding:3px;color:#b8b9c0;background:rgba(32,33,39,.94);border:1px solid rgba(255,255,255,.08);border-radius:11px;box-shadow:0 8px 20px rgba(0,0,0,.25);opacity:0;visibility:hidden;transform:translateX(-4px);transition:opacity 120ms ease,transform 120ms ease,visibility 120ms}.mova-real-message.is-own .mova-message-quick-actions{right:auto;left:-72px;transform:translateX(4px)}.mova-message-quick-actions>button{display:grid;place-items:center;width:29px;height:29px;padding:0;color:inherit;background:transparent;border:0;border-radius:8px;cursor:pointer}.mova-message-quick-actions>button:hover,.mova-message-quick-actions>button:focus-visible{color:#fff;background:rgba(255,255,255,.1);outline:0}.mova-real-message:hover .mova-message-quick-actions,.mova-real-message:focus-within .mova-message-quick-actions{opacity:1;visibility:visible;transform:none}
 .mova-tg-app .mova-real-bubble{min-width:0;max-width:100%}
 .mova-tg-app .mova-real-bubble p{min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}
 .mova-tg-app .mova-real-bubble.has-reply{display:grid;grid-template-columns:minmax(0,1fr) auto}

@@ -2212,6 +2212,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   });
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
+  const composerMirror = useRef<HTMLDivElement>(null);
   const emojiButton = useRef<HTMLButtonElement>(null);
   const composerSelection = useRef({ start: 0, end: 0 });
   const threadRef = useRef<HTMLElement>(null);
@@ -3188,6 +3189,18 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 )}
                 <div className="mova-message-body">
                   {showGroupAvatarSlot && structure.startsGroup && <strong><AppleEmoji text={message.author.name} /></strong>}
+                  {!selectingMessages && (
+                    <div className="mova-message-quick-actions" aria-label="Действия с сообщением">
+                      <button type="button" aria-label="Ответить на сообщение" title="Ответить" onClick={(event) => { event.stopPropagation(); replyToMessage(message); }}>
+                        <Reply size={15} aria-hidden="true" />
+                      </button>
+                      {own && onEdit && Boolean(message.content.trim()) && (!message.kind || message.kind === 'user') && (
+                        <button type="button" aria-label="Редактировать сообщение" title="Редактировать" onClick={(event) => { event.stopPropagation(); editOwnMessage(message); }}>
+                          <Pencil size={14} aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment ? ' has-file' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
                   {message.replyTo && (
                     <button
@@ -3309,50 +3322,62 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
               <Paperclip size={19} aria-hidden="true" />
             </IconButton>
-            <textarea
-              ref={composerInput}
-              rows={1}
-              value={value}
-              disabled={blocked}
-              onChange={(event) => {
-                setValue(event.target.value);
-                composerSelection.current = { start: event.target.selectionStart, end: event.target.selectionEnd };
-                if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
-              }}
-              onSelect={rememberComposerSelection}
-              onClick={rememberComposerSelection}
-              onKeyUp={rememberComposerSelection}
-              onBlur={() => { rememberComposerSelection(); announceTyping(false); }}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape' && emojiOpen) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  closeEmojiPicker(true);
-                  return;
-                }
-                if (event.key === 'Escape' && (editingMessage || replyingTo)) {
-                  event.preventDefault();
-                  setEditingMessage(null);
-                  setReplyingTo(null);
-                  setValue('');
-                  return;
-                }
-                if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
-                  const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
-                  if (latestEditableMessage) {
+            <div className={`mova-composer-textarea${value ? ' has-value' : ''}`}>
+              {value && (
+                <div ref={composerMirror} className="mova-composer-textarea__mirror" aria-hidden="true">
+                  <AppleEmoji text={value} />
+                </div>
+              )}
+              <textarea
+                ref={composerInput}
+                rows={1}
+                value={value}
+                disabled={blocked}
+                onChange={(event) => {
+                  setValue(event.target.value);
+                  composerSelection.current = { start: event.target.selectionStart, end: event.target.selectionEnd };
+                  if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
+                }}
+                onScroll={(event) => {
+                  if (!composerMirror.current) return;
+                  composerMirror.current.scrollTop = event.currentTarget.scrollTop;
+                  composerMirror.current.scrollLeft = event.currentTarget.scrollLeft;
+                }}
+                onSelect={rememberComposerSelection}
+                onClick={rememberComposerSelection}
+                onKeyUp={rememberComposerSelection}
+                onBlur={() => { rememberComposerSelection(); announceTyping(false); }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && emojiOpen) {
                     event.preventDefault();
-                    editOwnMessage(latestEditableMessage);
+                    event.stopPropagation();
+                    closeEmojiPicker(true);
                     return;
                   }
-                }
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  void send();
-                }
-              }}
-              aria-label={`Сообщение в ${conversation.title}`}
-              placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
-            />
+                  if (event.key === 'Escape' && (editingMessage || replyingTo)) {
+                    event.preventDefault();
+                    setEditingMessage(null);
+                    setReplyingTo(null);
+                    setValue('');
+                    return;
+                  }
+                  if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
+                    const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
+                    if (latestEditableMessage) {
+                      event.preventDefault();
+                      editOwnMessage(latestEditableMessage);
+                      return;
+                    }
+                  }
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void send();
+                  }
+                }}
+                aria-label={`Сообщение в ${conversation.title}`}
+                placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
+              />
+            </div>
             <IconButton
               ref={emojiButton}
               label="Эмодзи"
@@ -3381,7 +3406,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           document.body,
         )}
       {createPortal(
-          <div className="mova-message-context-layer" style={{ pointerEvents: messageMenu ? 'auto' : 'none' }} onPointerDown={() => setMessageMenu(null)} onContextMenu={(event) => event.preventDefault()}>
+          <div className="mova-message-context-layer" style={{ pointerEvents: messageMenu ? 'auto' : 'none' }} onPointerDown={(event) => { if (event.target === event.currentTarget) setMessageMenu(null); }} onContextMenu={(event) => event.preventDefault()}>
             <PopoverSurface open={Boolean(messageMenu)} className="mova-message-context-menu" ariaLabel="Действия с сообщением" style={messageMenu ? { left: messageMenu.x, top: messageMenu.y } : undefined}>
               <button type="button" role="menuitem" onClick={() => messageMenu && replyToMessage(messageMenu.message)}>
                 <Reply size={16} />

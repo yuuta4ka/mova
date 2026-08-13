@@ -1163,6 +1163,19 @@ describe('RealMessages composer behavior', () => {
     expect(composer).toHaveStyle({ height: '44px', overflowY: 'hidden' });
   });
 
+  it('renders Apple emoji in the composer while keeping the textarea editable', () => {
+    const { container } = renderChat();
+    const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
+
+    fireEvent.change(composer, { target: { value: 'Привет 😀' } });
+
+    expect(composer).toHaveValue('Привет 😀');
+    expect(container.querySelector('.mova-composer-textarea')).toHaveClass('has-value');
+    const renderedEmoji = container.querySelector('.mova-composer-textarea__mirror img.emoji');
+    expect(renderedEmoji).toHaveAttribute('alt', '😀');
+    expect(renderedEmoji).toHaveAttribute('src', expect.stringContaining('emoji-datasource-apple'));
+  });
+
   it('sends with Enter and leaves Shift+Enter for a new line', () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={onSend} />);
@@ -1518,16 +1531,16 @@ describe('RealMessages context actions and selection', () => {
     content: 'Собственное сообщение',
   };
 
-  it('does not render quick actions after message hover or focus', () => {
-    const { container } = renderChat([incoming]);
-    const article = container.querySelector('.mova-real-message')!;
+  it('opens Reply and Edit from visible message actions', async () => {
+    const user = userEvent.setup();
+    const onEdit = vi.fn().mockResolvedValue(undefined);
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming, own]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={onEdit} />);
 
-    fireEvent.mouseEnter(article);
-    fireEvent.focus(article);
-
-    expect(container.querySelector('.mova-message-quick-actions')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Ответить на сообщение' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Редактировать сообщение' })).not.toBeInTheDocument();
+    await user.click(screen.getAllByRole('button', { name: 'Ответить на сообщение' })[0]);
+    expect(screen.getByText('В ответ Друг')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Отменить ответ' }));
+    await user.click(screen.getByRole('button', { name: 'Редактировать сообщение' }));
+    expect(screen.getByText('Редактирование сообщения')).toBeVisible();
   });
 
   it('keeps Reply and Edit keyboard-accessible in the existing context menu', async () => {
