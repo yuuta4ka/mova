@@ -321,6 +321,19 @@ describe('call layout', () => {
     expect(screen.queryByText(/Потери|джиттер|Хорошая сеть|Средняя сеть|Слабая сеть/)).not.toBeInTheDocument();
   });
 
+  it('copies an anonymized call report for support', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'fair', roundTripTimeMs: 146, candidateType: 'host → relay' } };
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Скопировать отчёт о звонке' }));
+
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"peer": "peer-1"'));
+    expect(writeText.mock.calls[0][0]).not.toContain('friend');
+    expect(await screen.findByRole('button', { name: 'Отчёт о звонке скопирован' })).toBeInTheDocument();
+  });
+
   it('reports TURN routing and the actual outbound screen FPS', () => {
     callMedia.screenStream = screenStream('local-screen', { width: 1920, height: 1080, aspectRatio: 16 / 9 });
     callMedia.diagnostics = {

@@ -1,0 +1,50 @@
+groups:
+  - name: mova-production
+    rules:
+      - alert: MovaHighHttpErrorRate
+        expr: sum(rate(mova_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(mova_http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Mova returns more than 5% HTTP 5xx responses
+
+      - alert: MovaSlowHttpResponses
+        expr: histogram_quantile(0.95, sum by (le) (rate(mova_http_request_duration_ms_bucket[5m]))) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Mova HTTP p95 latency is above one second
+
+      - alert: MovaEventLoopBlocked
+        expr: mova_event_loop_delay_p99_ms > 250
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Mova event loop p99 delay is above 250 ms
+
+      - alert: MovaBackupFailed
+        expr: increase(mova_backups_total{result="failed"}[1h]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A scheduled Mova backup failed
+
+      - alert: MovaBackupStale
+        expr: mova_backups_enabled == 1 and mova_backup_last_success_timestamp_seconds > 0 and time() - mova_backup_last_success_timestamp_seconds > 172800
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Mova has no successful backup for 48 hours
+
+      - alert: MovaWebSocketRejections
+        expr: sum(rate(mova_rejections_total{kind=~"websocket.*"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Mova is rejecting more than one WebSocket operation per second

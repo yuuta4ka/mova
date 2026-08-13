@@ -1,10 +1,24 @@
 # Технический аудит и дорожная карта Mova
 
-Дата аудита: 11 августа 2026 года.
+Дата аудита: 11 августа 2026 года. Обновление статуса: 13 августа 2026 года.
 
 Этот документ описывает текущее состояние репозитория, а не желаемую архитектуру «с нуля». Выводы сделаны по `README.md`, `AGENTS.md`, `package.json`, коду в `src/`, `server/`, `desktop/`, `public/` и по всем проверочным пунктам переданного MD-файла. Отдельного второго файла со списком багов в задаче не было, поэтому раздел «Разбор MD» ниже охватывает все конкретные пункты из полученного файла.
 
-На этом проходе поведение Mova не менялось.
+## Статус после reliability и observability-спринтов 13 августа
+
+Первая группа критичных рисков закрыта в коде и тестах:
+
+- `clientId` хранится в SQLite и защищён уникальным индексом на автора; повтор отправки не создаёт дубль, а failed-сообщение можно повторить из интерфейса;
+- история активного чата синхронизируется с сервером после повторного `ready` WebSocket;
+- сообщения загружаются курсорными страницами по `(createdAt, id)`, более ранние страницы добавляются с сохранением позиции прокрутки;
+- SQLite и зарегистрированные вложения входят в атомарную ежедневную резервную копию с SHA-256, `PRAGMA integrity_check`, retention и безопасным восстановлением в пустую папку;
+- регрессии покрыты unit/UI/integration-тестами, включая reply/edit, повтор отправки, cursor pagination, reconnect merge и backup/restore.
+- cache чатов, пользователей и истории перенесён в IndexedDB; outbox с текстом, reply, вложением и неизменяемым `clientId` переживает reload, автоматически отправляется после reconnect и очищается только после серверного подтверждения;
+- production UI проверен в настоящем браузере с остановкой/запуском backend: queued-состояние, восстановление после reload, автоматический flush и отсутствие дублей подтверждены также прямой проверкой SQLite.
+- сервер выдаёт `x-request-id`, пишет структурированные JSON-логи с redaction и экспортирует Prometheus histogram/counters по нормализованным HTTP-маршрутам, WebSocket-событиям, rejection, звонкам и backup;
+- WebRTC-диагностика дополнена interval bitrate, codec, FPS, encoded/decoded/dropped frames и freeze metrics; из интерфейса можно скопировать анонимизированный отчёт без ID, IP, ICE-адресов, названий устройств и содержимого медиа.
+
+Следующий приоритет этой дорожной карты — production-проверка TURN, alert rules для новых метрик и управление активными сессиями пользователя.
 
 ## Короткое резюме
 
@@ -166,7 +180,7 @@ Electron не содержит отдельную копию backend/frontend. P
 - **Черновики отсутствуют.** Текст, reply и вложение сбрасываются при переходе в другой чат.
 - **Загрузка непрозрачна.** Пользователь не видит progress, не может отменить или повторить только upload; data URL временно удваивает расход памяти на больших файлах.
 - **TURN поддержан кодом, но факт production-доступности не доказан репозиторием.** Нужен runtime-тест relay candidate через мобильную сеть/сложный NAT.
-- **Диагностика звонков неполная.** Нет interval bitrate, FPS, dropped frames, encoder/decoder metrics, истории и экспортируемого отчёта.
+- **Диагностика звонков теперь экспортируется локально.** Есть interval bitrate, codec, FPS, dropped/encoded/decoded frames и freeze metrics; ещё нужны внешний TURN probe, история инцидентов и alert rules.
 - **Mute уведомлений содержит функциональный разрыв.** `mova-muted-<chat>` меняет UI-настройку, но обработчик входящего `message:new` не проверяет её и всё равно показывает notification/звук.
 - **Некоторые UI-действия только локальные.** «Удалить чат» убирает чат из React-state без server API, поэтому он вернётся после reload. «Заблокировать» также является локальным флагом, а не серверным правилом.
 - **Два крупных файла концентрируют слишком много обязанностей.** `src/RealApp.tsx` превышает 3 000 строк, `server/index.mjs` — 900. Это не повод для rewrite, но каждую следующую серьёзную функцию нужно постепенно выделять в модули.
@@ -193,7 +207,7 @@ Electron не содержит отдельную копию backend/frontend. P
 | Upload progress | Не реализовано | Используется `fetch`; progress/cancel/retry отдельной загрузки не показываются. | `src/lib/api.ts`, `src/RealApp.tsx`, новый upload helper |
 | Звонки и WebRTC reconnect | Реализовано частично | ICE restart, call sync и rejoin есть; состояние комнаты хранится только в памяти сервера, recovery-сценарии покрыты не полностью. | `src/hooks/useVoiceCall.ts`, `server/index.mjs`, `server/call-e2e.mjs` |
 | TURN | Реализовано частично, требует исследования | Runtime TURN config поддержан и тестируется синтетически. Наличие и работоспособность production TURN из репозитория не определить. | `server/index.mjs`, deployment secrets/README, `server/integration.mjs`, отдельный production smoke test |
-| Диагностика плохих звонков | Реализовано частично | Есть RTT/jitter/loss/candidate/protocol/bytes и quality UI. Нет bitrate/FPS/dropped/codec/encode/decode и отчёта. | `src/hooks/useVoiceCall.ts`, `src/RealApp.tsx`, call tests |
+| Диагностика плохих звонков | Реализовано частично | Есть RTT/jitter/loss, interval bitrate, codec, FPS, frames/freeze, quality UI и анонимизированный отчёт. Не реализован внешний TURN probe. | `src/hooks/useVoiceCall.ts`, `src/lib/callDiagnostics.ts`, `src/RealApp.tsx`, call tests |
 | Уведомления | Реализовано частично, есть баг | Web Notification и звук есть, когда окно неактивно. Нет работы при полностью закрытом приложении; mute чата не применяется обработчиком. | `src/lib/messageNotifications.ts`, `src/RealApp.tsx`, tests; позже Electron integration при необходимости |
 | Desktop Electron | Уже реализовано, можно улучшать | Безопасная remote shell, session, permissions, screen capture, single instance. Нет tray/badge/deep link/background lifecycle. | `desktop/main.mjs`, при необходимости отдельный app preload |
 | Автообновления | Реализовано частично, требует release-проверки | `electron-updater` настроен на GitHub, скачивает и предлагает restart. Проверка выполняется один раз после запуска; успех зависит от корректных release-файлов и подписей. | `desktop/main.mjs`, `package.json`, release pipeline; при релизе `src/LandingPage.tsx` |
@@ -291,6 +305,8 @@ Electron не содержит отдельную копию backend/frontend. P
 - Не отправлять телеметрию на сервер без отдельного продуктового решения.
 
 Файлы: `src/hooks/useVoiceCall.ts`, `src/RealApp.tsx`, call tests, deployment/README.
+
+Статус 13 августа: клиентская часть отчёта и расширенная WebRTC-статистика реализованы; production TURN probe остаётся открытым пунктом.
 
 ### Этап 9 — расширенные сценарии восстановления звонка
 

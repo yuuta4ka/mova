@@ -1,9 +1,11 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, CloudOff, Copy, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
+import { useVoiceRecorder } from './hooks/useVoiceRecorder';
 import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, useToast } from './components/Primitives';
+import { formatVoiceDuration, isVoiceAttachment, VoiceMessage } from './components/VoiceMessage';
 import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
 import { EmojiPicker } from './components/EmojiPicker';
 import { buildMediaGallery, MediaViewer } from './components/MediaViewer';
@@ -15,9 +17,12 @@ import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } f
 import { enableMessageNotifications, restoreMessageNotifications, shouldPromptForNotifications, showIncomingCallNotification, showMessageNotification, unregisterMessageNotifications } from './lib/messageNotifications';
 import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
 import { getMessageStructure } from './lib/messageGrouping';
+import { clearPersistentUserData, deletePersistentConversation, loadPersistentClientState, persistConversations, persistMessages, persistOutbox, persistUsers, removeOutbox, type OutboxEntry } from './lib/persistentClientStore';
+import { buildCallDiagnosticReport, copyDiagnosticReport } from './lib/callDiagnostics';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
+const attachmentLabel = (attachment?: MessageAttachment | null) => isVoiceAttachment(attachment) ? 'Голосовое сообщение' : attachment?.name || '';
 const activityTime = (startedAt?: string) => {
   if (!startedAt) return '';
   const minutes = Math.max(1, Math.floor((Date.now() - new Date(startedAt).getTime()) / 60000));
@@ -147,11 +152,48 @@ function MessageText({ text }: { text: string }) {
 interface ClientCache<T> {
   value: T;
   updatedAt: number;
+  hasMore?: boolean;
+  nextCursor?: string | null;
+}
+interface ConversationDraft {
+  text: string;
+  updatedAt: string;
+}
+type ConversationDrafts = Record<string, ConversationDraft>;
+const conversationDraftStorageKey = (userId: string) => `mova-composer-drafts:${userId}`;
+export const loadConversationDrafts = (userId: string): ConversationDrafts => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(conversationDraftStorageKey(userId)) || '{}') as Record<string, Partial<ConversationDraft>>;
+    return Object.fromEntries(Object.entries(stored).flatMap(([conversationId, draft]) => {
+      const text = typeof draft?.text === 'string' ? draft.text.slice(0, 4_000) : '';
+      const updatedAt = typeof draft?.updatedAt === 'string' && Number.isFinite(new Date(draft.updatedAt).getTime()) ? draft.updatedAt : '';
+      return text.trim() && updatedAt ? [[conversationId, { text, updatedAt }]] : [];
+    }));
+  } catch {
+    return {};
+  }
+};
+const persistConversationDrafts = (userId: string, drafts: ConversationDrafts) => {
+  if (Object.keys(drafts).length) localStorage.setItem(conversationDraftStorageKey(userId), JSON.stringify(drafts));
+  else localStorage.removeItem(conversationDraftStorageKey(userId));
+};
+class MirroredCacheMap<K, V> extends Map<K, V> {
+  constructor(private readonly mirror: (key: K, value: V) => Promise<void>) {
+    super();
+  }
+  override set(key: K, value: V) {
+    super.set(key, value);
+    void this.mirror(key, value).catch(() => undefined);
+    return this;
+  }
 }
 const CLIENT_CACHE_TTL = 60_000;
-const conversationCache = new Map<string, ClientCache<AppConversation[]>>();
-const userCache = new Map<string, ClientCache<AppUser[]>>();
-const messageCache = new Map<string, ClientCache<AppMessage[]>>();
+const conversationCache = new MirroredCacheMap<string, ClientCache<AppConversation[]>>(persistConversations);
+const userCache = new MirroredCacheMap<string, ClientCache<AppUser[]>>(persistUsers);
+const messageCache = new MirroredCacheMap<string, ClientCache<AppMessage[]>>((key, value) => {
+  const separator = key.indexOf(':');
+  return persistMessages(key.slice(0, separator), key.slice(separator + 1), value);
+});
 const isFresh = <T,>(entry?: ClientCache<T>) => Boolean(entry && Date.now() - entry.updatedAt < CLIENT_CACHE_TTL);
 const messageCacheKey = (userId: string, conversationId: string) => `${userId}:${conversationId}`;
 const conversationActivityAt = (conversation: AppConversation) => new Date(conversation.lastMessage?.createdAt || conversation.createdAt).getTime();
@@ -183,13 +225,22 @@ const conversationPreviewText = (conversation: AppConversation, currentUserId: s
     if (message.friendRequest.status === 'cancelled') return 'Заявка в друзья отменена';
     return message.friendRequest.requestedBy === currentUserId ? 'Заявка в друзья отправлена' : 'Хочет добавить тебя в друзья';
   }
-  return message?.content || (message?.attachment ? (message.attachment.type.startsWith('image/') ? 'Фотография' : message.attachment.name) : conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор');
+  return message?.content || (message?.attachment ? (message.attachment.type.startsWith('image/') ? 'Фотография' : attachmentLabel(message.attachment)) : conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор');
 };
 export const reconcileClientMessage = (items: AppMessage[], message: AppMessage) => {
   const matchingClientId = message.clientId ? items.findIndex((item) => item.clientId === message.clientId) : -1;
   if (matchingClientId >= 0) return items.map((item, index) => (index === matchingClientId ? message : item));
   if (items.some((item) => item.id === message.id)) return items.map((item) => (item.id === message.id ? message : item));
   return [...items, message];
+};
+export const mergeMessageHistory = (current: AppMessage[], incoming: AppMessage[]) => {
+  const messages = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) {
+    const optimistic = message.clientId ? [...messages.values()].find((item) => item.clientId === message.clientId) : undefined;
+    if (optimistic && optimistic.id !== message.id) messages.delete(optimistic.id);
+    messages.set(message.id, message);
+  }
+  return [...messages.values()].sort((first, second) => first.createdAt.localeCompare(second.createdAt) || first.id.localeCompare(second.id));
 };
 const preferredConversation = (items: AppConversation[]) => {
   const visibleItems = items.filter((item) => !item.isDraft);
@@ -251,6 +302,14 @@ const clearClientCache = () => {
 };
 
 function MessageStatus({ message, conversation, onRetry, retrying = false }: { message: AppMessage; conversation: AppConversation; onRetry?: () => void; retrying?: boolean }) {
+  if (message.deliveryState === 'queued')
+    return (
+      <span className="mova-message-status-slot">
+        <span className="mova-message-status is-queued" role="img" aria-label="В очереди — отправится после подключения" title="В очереди — отправится после подключения">
+          <CloudOff size={13} aria-hidden="true" />
+        </span>
+      </span>
+    );
   if (message.deliveryState === 'sending')
     return (
       <span className="mova-message-status-slot">
@@ -1408,6 +1467,8 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
   const [screenAudioToastVisible, setScreenAudioToastVisible] = useState(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(() => loadScreenShareSettings());
   const [activeSeconds, setActiveSeconds] = useState(0);
+  const [diagnosticCopyState, setDiagnosticCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const diagnosticCopyTimer = useRef<number | null>(null);
   const screenAudioToastSession = useRef<MediaStream | null>(null);
   const screenAudioToastShown = useRef(false);
   const screenAudioToastHideTimer = useRef<number | null>(null);
@@ -1418,6 +1479,19 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     screenAudioToastHideTimer.current = null;
     screenAudioToastRemoveTimer.current = null;
   }, []);
+  useEffect(() => () => {
+    if (diagnosticCopyTimer.current !== null) window.clearTimeout(diagnosticCopyTimer.current);
+  }, []);
+  const copyCallDiagnostics = useCallback(async () => {
+    try {
+      await copyDiagnosticReport(buildCallDiagnosticReport({ state: callState, startedAt: call.startedAt, diagnostics: call.diagnostics }));
+      setDiagnosticCopyState('copied');
+    } catch {
+      setDiagnosticCopyState('error');
+    }
+    if (diagnosticCopyTimer.current !== null) window.clearTimeout(diagnosticCopyTimer.current);
+    diagnosticCopyTimer.current = window.setTimeout(() => setDiagnosticCopyState('idle'), 2_500);
+  }, [call.diagnostics, call.startedAt, callState]);
   useEffect(() => {
     const update = (event: Event) => setScreenQuality((event as CustomEvent<ScreenShareSettings>).detail || loadScreenShareSettings());
     window.addEventListener('mova-screen-share-settings', update);
@@ -1631,6 +1705,13 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                     <i />
                   </span>
                 </div>
+                <IconButton
+                  label={diagnosticCopyState === 'copied' ? 'Отчёт о звонке скопирован' : diagnosticCopyState === 'error' ? 'Не удалось скопировать отчёт' : 'Скопировать отчёт о звонке'}
+                  className={`mova-call-diagnostics-copy${diagnosticCopyState === 'copied' ? ' is-copied' : diagnosticCopyState === 'error' ? ' is-error' : ''}`}
+                  onClick={() => void copyCallDiagnostics()}
+                >
+                  {diagnosticCopyState === 'copied' ? <Check size={17} /> : <Copy size={17} />}
+                </IconButton>
               </div>
               <span>
                 <strong>{callConversation.title}</strong>
@@ -2150,6 +2231,9 @@ interface RealMessagesProps {
   unreadCount?: number;
   loading?: boolean;
   historyError?: boolean;
+  hasOlderMessages?: boolean;
+  loadingOlderMessages?: boolean;
+  olderHistoryError?: boolean;
   typingUserIds?: string[];
   mobileActive?: boolean;
   onMobileBack?: () => void;
@@ -2157,10 +2241,14 @@ interface RealMessagesProps {
   onSend: (content: string, attachment?: MessageAttachment, replyToId?: string) => Promise<void>;
   onRetry?: (message: AppMessage) => Promise<void>;
   onRetryHistory?: () => void;
+  onLoadOlder?: () => Promise<void>;
   onEdit?: (messageId: string, content: string) => Promise<void>;
   onDeleteConversation?: () => void;
   onRelationshipChange?: (user: AppUser) => void;
   onMarkRead?: (throughMessageId: string) => Promise<void>;
+  onVoiceListen?: (messageId: string) => Promise<void>;
+  draftText?: string;
+  onDraftChange?: (text: string) => void;
 }
 
 interface RealMessagesViewProps extends RealMessagesProps {
@@ -2172,7 +2260,7 @@ interface RealMessagesViewProps extends RealMessagesProps {
   onStartCall: (video: boolean) => void;
 }
 
-function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onEdit, onDeleteConversation = () => undefined, onRelationshipChange, onMarkRead }: RealMessagesViewProps) {
+function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, onDeleteConversation = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange }: RealMessagesViewProps) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -2205,6 +2293,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [callBannerHost, setCallBannerHost] = useState<HTMLElement | null>(null);
   const [callChatOpen, setCallChatOpen] = useState(false);
   const [callChatUnread, setCallChatUnread] = useState(0);
+  const voiceRecorder = useVoiceRecorder();
   const [callChatWidth, setCallChatWidth] = useState(() => {
     const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-call-chat-width');
     const saved = stored === null ? NaN : Number(stored);
@@ -2221,6 +2310,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const messagesContainer = useRef<HTMLDivElement>(null);
   const messageElements = useRef(new Map<string, HTMLElement>());
   const previousMessageCount = useRef(0);
+  const pendingHistoryPrepend = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const positionedAtBottom = useRef(false);
   const dragDepth = useRef(0);
   const typingStopTimer = useRef<number | null>(null);
@@ -2345,6 +2435,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     const nextValue = `${value.slice(0, safeStart)}${selectedEmoji}${value.slice(safeEnd)}`;
     const nextCursor = safeStart + selectedEmoji.length;
     setValue(nextValue);
+    if (!editingMessage) onDraftChange?.(nextValue);
     composerSelection.current = { start: nextCursor, end: nextCursor };
     if (!editingMessage) announceTyping(true);
     window.setTimeout(() => {
@@ -2360,6 +2451,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setReplyingTo(message);
     setEditingMessage(null);
     setValue('');
+    onDraftChange?.('');
     window.setTimeout(() => composerInput.current?.focus(), 0);
   };
   const editOwnMessage = (message: AppMessage) => {
@@ -2406,13 +2498,22 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     };
     replyScrollAnimation.current = window.requestAnimationFrame(animate);
   }, []);
+  const loadOlderHistory = useCallback(() => {
+    const container = messagesContainer.current;
+    if (!container || !onLoadOlder || !hasOlderMessages || loadingOlderMessages || pendingHistoryPrepend.current) return;
+    pendingHistoryPrepend.current = { scrollHeight: container.scrollHeight, scrollTop: container.scrollTop };
+    void onLoadOlder().catch(() => undefined).finally(() => {
+      if (pendingHistoryPrepend.current && messagesContainer.current?.scrollHeight === pendingHistoryPrepend.current.scrollHeight) pendingHistoryPrepend.current = null;
+    });
+  }, [hasOlderMessages, loadingOlderMessages, onLoadOlder]);
   const syncMessageBottom = useCallback(() => {
     const container = messagesContainer.current;
     if (!container) return;
     const bottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 32;
     positionedAtBottom.current = bottom;
     setAtMessageBottom(bottom);
-  }, []);
+    if (container.scrollTop <= 160) loadOlderHistory();
+  }, [loadOlderHistory]);
   const scrollToLatestMessage = useCallback(() => {
     const container = messagesContainer.current;
     if (!container) return;
@@ -2479,6 +2580,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       const outgoingAttachment = attachment;
       const replyToId = replyingTo?.id;
       setValue('');
+      onDraftChange?.('');
       setAttachment(undefined);
       setReplyingTo(null);
       setEmojiOpen(false);
@@ -2500,6 +2602,29 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
     } finally {
       setSending(false);
+    }
+  };
+  const startVoiceRecording = async () => {
+    if (blocked || value.trim() || attachment || editingMessage) return;
+    setSendError('');
+    setAttachmentError('');
+    setEmojiOpen(false);
+    announceTyping(false);
+    await voiceRecorder.start();
+  };
+  const sendVoiceRecording = async () => {
+    setSendError('');
+    const recording = await voiceRecorder.finish();
+    if (!recording) {
+      if (!voiceRecorder.error) setSendError('Запись слишком короткая');
+      return;
+    }
+    const replyToId = replyingTo?.id;
+    setReplyingTo(null);
+    try {
+      await onSend('', recording.attachment, replyToId);
+    } catch (sendFailure) {
+      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить голосовое сообщение');
     }
   };
   const retryFailedMessage = async (message: AppMessage) => {
@@ -2596,7 +2721,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setDetailsOpen(false);
     setSearchOpen(false);
     setSearchQuery('');
-    setValue('');
+    setValue(draftText);
     setAttachment(undefined);
     setAttachmentError('');
     setSendError('');
@@ -2612,6 +2737,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     positionedAtBottom.current = false;
     setAtMessageBottom(true);
     previousMessageCount.current = 0;
+    void voiceRecorder.cancel();
+  }, [conversation.id]);
+  useLayoutEffect(() => {
+    pendingHistoryPrepend.current = null;
   }, [conversation.id]);
   useEffect(() => {
     if (!profileInfoOpen) return;
@@ -2647,6 +2776,14 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     }
     previousMessageCount.current = messageCount;
   }, [messages, currentUser.id]);
+  useLayoutEffect(() => {
+    const pending = pendingHistoryPrepend.current;
+    const container = messagesContainer.current;
+    if (!pending || !container || container.scrollHeight === pending.scrollHeight) return;
+    container.scrollTop = pending.scrollTop + container.scrollHeight - pending.scrollHeight;
+    previousMessageCount.current = messages.length;
+    pendingHistoryPrepend.current = null;
+  }, [messages]);
   useEffect(() => {
     const markRead = () => {
       if (!onMarkRead || !mobileActive || !atMessageBottom || document.visibilityState !== 'visible') return;
@@ -3050,6 +3187,11 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
         </div>
       )}
       <div className="mova-real-messages" ref={messagesContainer} onScroll={syncMessageBottom}>
+        {(hasOlderMessages || loadingOlderMessages || olderHistoryError) && (
+          <div className="mova-history-pagination" role="status">
+            {olderHistoryError ? <button type="button" onClick={loadOlderHistory}>Не удалось загрузить ранние сообщения · Повторить</button> : loadingOlderMessages ? <span>Загружаем ранние сообщения…</span> : <button type="button" onClick={loadOlderHistory}>Загрузить ранние сообщения</button>}
+          </div>
+        )}
         <div className="mova-real-thread-intro">
           <ConversationAvatar conversation={conversation} currentUser={currentUser} />
           <h1><AppleEmoji text={conversation.title} /></h1>
@@ -3157,6 +3299,11 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           const continuesGroup = !structure.endsGroup;
           const showGroupAvatarSlot = conversation.kind === 'group' && !own;
           const imageAttachment = Boolean(message.attachment?.type.startsWith('image/'));
+          const voiceAttachment = isVoiceAttachment(message.attachment);
+          const voiceRecipients = voiceAttachment ? conversation.members.filter((member) => member.id !== message.authorId) : [];
+          const voiceUnlistened = voiceAttachment && (own
+            ? voiceRecipients.some((member) => !message.listenedBy?.some((receipt) => receipt.userId === member.id))
+            : !message.listenedBy?.some((receipt) => receipt.userId === currentUser.id));
           const imageCaption = imageAttachment && Boolean(message.content.trim() || message.replyTo);
           const selectedForAction = selectedMessages.includes(message.id);
           return (
@@ -3167,7 +3314,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                   if (element) messageElements.current.set(message.id, element);
                   else messageElements.current.delete(message.id);
                 }}
-                className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${message.deliveryState === 'sending' ? 'is-sending' : message.deliveryState === 'failed' ? 'is-failed' : ''} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
+                className={`mova-real-message ${own ? 'is-own' : ''} ${grouped ? 'is-grouped' : 'is-group-start'} ${continuesGroup ? '' : 'is-group-end'} ${message.deliveryState === 'queued' ? 'is-queued' : message.deliveryState === 'sending' ? 'is-sending' : message.deliveryState === 'failed' ? 'is-failed' : ''} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''} ${message.id === replyHighlightId ? 'is-reply-target' : ''} ${selectingMessages ? 'is-selectable' : ''} ${selectedForAction ? 'is-selected' : ''}`}
                 onClick={selectingMessages ? () => setSelectedMessages((items) => (selectedForAction ? items.filter((id) => id !== message.id) : [...items, message.id])) : undefined}
                 onContextMenu={(event) => {
                   if (selectingMessages) return;
@@ -3189,19 +3336,14 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 )}
                 <div className="mova-message-body">
                   {showGroupAvatarSlot && structure.startsGroup && <strong><AppleEmoji text={message.author.name} /></strong>}
-                  {!selectingMessages && (
+                  {!selectingMessages && own && onEdit && Boolean(message.content.trim()) && (!message.kind || message.kind === 'user') && (
                     <div className="mova-message-quick-actions" aria-label="Действия с сообщением">
-                      <button type="button" aria-label="Ответить на сообщение" title="Ответить" onClick={(event) => { event.stopPropagation(); replyToMessage(message); }}>
-                        <Reply size={15} aria-hidden="true" />
+                      <button type="button" aria-label="Редактировать сообщение" title="Редактировать" onClick={(event) => { event.stopPropagation(); editOwnMessage(message); }}>
+                        <Pencil size={14} aria-hidden="true" />
                       </button>
-                      {own && onEdit && Boolean(message.content.trim()) && (!message.kind || message.kind === 'user') && (
-                        <button type="button" aria-label="Редактировать сообщение" title="Редактировать" onClick={(event) => { event.stopPropagation(); editOwnMessage(message); }}>
-                          <Pencil size={14} aria-hidden="true" />
-                        </button>
-                      )}
                     </div>
                   )}
-                  <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment ? ' has-file' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
+                  <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment && !voiceAttachment ? ' has-file' : ''}${voiceAttachment ? ' has-voice' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
                   {message.replyTo && (
                     <button
                       type="button"
@@ -3212,7 +3354,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                       {message.replyTo.attachment?.type.startsWith('image/') && <img src={attachmentSource(message.replyTo.attachment)} alt="" />}
                       <span>
                         <strong><AppleEmoji text={message.replyTo.author.name} /></strong>
-                        <small><AppleEmoji text={message.replyTo.content || message.replyTo.attachmentName || 'Вложение'} /></small>
+                        <small><AppleEmoji text={message.replyTo.content || attachmentLabel(message.replyTo.attachment) || message.replyTo.attachmentName || 'Вложение'} /></small>
                       </span>
                     </button>
                   )}
@@ -3231,6 +3373,12 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                           }}
                         />
                       </button>
+                    ) : voiceAttachment ? (
+                      <VoiceMessage
+                        attachment={message.attachment}
+                        unlistened={voiceUnlistened}
+                        onListen={!own && voiceUnlistened && onVoiceListen ? () => onVoiceListen(message.id) : undefined}
+                      />
                     ) : (
                       <a className="mova-message-file" href={attachmentSource(message.attachment)} download={message.attachment.name}>
                         <FileText size={20} />
@@ -3296,9 +3444,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               {!editingMessage && replyingTo?.attachment?.type.startsWith('image/') && <img src={attachmentSource(replyingTo.attachment)} alt="" />}
               <span className="mova-composer-row__copy">
                 <strong>{editingMessage ? 'Редактирование сообщения' : `В ответ ${replyingTo?.author.name}`}</strong>
-                <small><AppleEmoji text={(editingMessage || replyingTo)?.content || (editingMessage || replyingTo)?.attachment?.name || 'Вложение'} /></small>
+                <small><AppleEmoji text={(editingMessage || replyingTo)?.content || attachmentLabel((editingMessage || replyingTo)?.attachment) || 'Вложение'} /></small>
               </span>
-              <button type="button" className="mova-composer-row__remove" aria-label={editingMessage ? 'Отменить редактирование' : 'Отменить ответ'} onClick={() => { setEditingMessage(null); setReplyingTo(null); setValue(''); }}>
+              <button type="button" className="mova-composer-row__remove" aria-label={editingMessage ? 'Отменить редактирование' : 'Отменить ответ'} onClick={() => { setEditingMessage(null); setReplyingTo(null); setValue(''); if (!editingMessage) onDraftChange?.(''); }}>
                 <X size={16} aria-hidden="true" />
               </button>
             </div>
@@ -3317,87 +3465,113 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               </button>
             </div>
           )}
-          <div className="mova-composer-input-row">
+          <div className={`mova-composer-input-row${voiceRecorder.state !== 'idle' ? ' is-recording' : ''}`}>
             <input ref={fileInput} type="file" hidden onChange={(event) => { void chooseFile(event.target.files?.[0]); event.target.value = ''; }} />
-            <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
-              <Paperclip size={19} aria-hidden="true" />
-            </IconButton>
-            <div className={`mova-composer-textarea${value ? ' has-value' : ''}`}>
-              {value && (
-                <div ref={composerMirror} className="mova-composer-textarea__mirror" aria-hidden="true">
-                  <AppleEmoji text={value} />
+            {voiceRecorder.state !== 'idle' ? (
+              <div className="mova-voice-recorder" role="status" aria-label="Запись голосового сообщения">
+                <button type="button" className="mova-voice-recorder__cancel" aria-label="Удалить запись" disabled={voiceRecorder.state === 'stopping'} onClick={() => void voiceRecorder.cancel()}>
+                  <Trash2 size={20} aria-hidden="true" />
+                </button>
+                <span className="mova-voice-recorder__status"><i aria-hidden="true" /><strong>{voiceRecorder.state === 'requesting' ? 'Микрофон…' : formatVoiceDuration(voiceRecorder.durationMs)}</strong></span>
+                <span className="mova-voice-recorder__waveform" aria-hidden="true">
+                  {voiceRecorder.liveWaveform.map((height, index) => <i key={index} style={{ '--mova-live-height': height } as CSSProperties} />)}
+                </span>
+                <button type="button" className="mova-voice-recorder__send" aria-label="Отправить голосовое сообщение" disabled={voiceRecorder.state !== 'recording'} onClick={() => void sendVoiceRecording()}>
+                  <Send size={18} aria-hidden="true" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
+                  <Paperclip size={19} aria-hidden="true" />
+                </IconButton>
+                <div className={`mova-composer-textarea${value ? ' has-value' : ''}`}>
+                  {value && (
+                    <div ref={composerMirror} className="mova-composer-textarea__mirror" aria-hidden="true">
+                      <AppleEmoji text={value} />
+                    </div>
+                  )}
+                  <textarea
+                    ref={composerInput}
+                    rows={1}
+                    value={value}
+                    disabled={blocked}
+                    onChange={(event) => {
+                      setValue(event.target.value);
+                      if (!editingMessage) onDraftChange?.(event.target.value);
+                      composerSelection.current = { start: event.target.selectionStart, end: event.target.selectionEnd };
+                      if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
+                    }}
+                    onScroll={(event) => {
+                      if (!composerMirror.current) return;
+                      composerMirror.current.scrollTop = event.currentTarget.scrollTop;
+                      composerMirror.current.scrollLeft = event.currentTarget.scrollLeft;
+                    }}
+                    onSelect={rememberComposerSelection}
+                    onClick={rememberComposerSelection}
+                    onKeyUp={rememberComposerSelection}
+                    onBlur={() => { rememberComposerSelection(); announceTyping(false); }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape' && emojiOpen) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeEmojiPicker(true);
+                        return;
+                      }
+                      if (event.key === 'Escape' && (editingMessage || replyingTo)) {
+                        event.preventDefault();
+                        setEditingMessage(null);
+                        setReplyingTo(null);
+                        setValue('');
+                        if (!editingMessage) onDraftChange?.('');
+                        return;
+                      }
+                      if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
+                        const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
+                        if (latestEditableMessage) {
+                          event.preventDefault();
+                          editOwnMessage(latestEditableMessage);
+                          return;
+                        }
+                      }
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        void send();
+                      }
+                    }}
+                    aria-label={`Сообщение в ${conversation.title}`}
+                    placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
+                  />
                 </div>
-              )}
-              <textarea
-                ref={composerInput}
-                rows={1}
-                value={value}
-                disabled={blocked}
-                onChange={(event) => {
-                  setValue(event.target.value);
-                  composerSelection.current = { start: event.target.selectionStart, end: event.target.selectionEnd };
-                  if (!editingMessage) announceTyping(Boolean(event.target.value.trim()));
-                }}
-                onScroll={(event) => {
-                  if (!composerMirror.current) return;
-                  composerMirror.current.scrollTop = event.currentTarget.scrollTop;
-                  composerMirror.current.scrollLeft = event.currentTarget.scrollLeft;
-                }}
-                onSelect={rememberComposerSelection}
-                onClick={rememberComposerSelection}
-                onKeyUp={rememberComposerSelection}
-                onBlur={() => { rememberComposerSelection(); announceTyping(false); }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape' && emojiOpen) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    closeEmojiPicker(true);
-                    return;
-                  }
-                  if (event.key === 'Escape' && (editingMessage || replyingTo)) {
-                    event.preventDefault();
-                    setEditingMessage(null);
-                    setReplyingTo(null);
-                    setValue('');
-                    return;
-                  }
-                  if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
-                    const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
-                    if (latestEditableMessage) {
-                      event.preventDefault();
-                      editOwnMessage(latestEditableMessage);
-                      return;
-                    }
-                  }
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    void send();
-                  }
-                }}
-                aria-label={`Сообщение в ${conversation.title}`}
-                placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
-              />
-            </div>
-            <IconButton
-              ref={emojiButton}
-              label="Эмодзи"
-              className={emojiOpen ? 'is-active' : ''}
-              aria-haspopup="dialog"
-              aria-expanded={emojiOpen}
-              onPointerDown={rememberComposerSelection}
-              onClick={() => setEmojiOpen((open) => !open)}
-            >
-              <Smile size={19} aria-hidden="true" />
-            </IconButton>
-            <button className="mova-composer-send" type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
-              <Send size={18} aria-hidden="true" />
-            </button>
+                <IconButton
+                  ref={emojiButton}
+                  label="Эмодзи"
+                  className={emojiOpen ? 'is-active' : ''}
+                  aria-haspopup="dialog"
+                  aria-expanded={emojiOpen}
+                  onPointerDown={rememberComposerSelection}
+                  onClick={() => setEmojiOpen((open) => !open)}
+                >
+                  <Smile size={19} aria-hidden="true" />
+                </IconButton>
+                {value.trim() || attachment || editingMessage ? (
+                  <button className="mova-composer-send" type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
+                    <Send size={18} aria-hidden="true" />
+                  </button>
+                ) : (
+                  <IconButton label="Записать голосовое сообщение" className="mova-composer-mic" disabled={blocked} onClick={() => void startVoiceRecording()}>
+                    <Mic size={20} aria-hidden="true" />
+                  </IconButton>
+                )}
+              </>
+            )}
           </div>
         </div>
         {emojiOpen && <EmojiPicker onSelect={insertEmoji} onClose={() => closeEmojiPicker(true)} />}
         <div className="mova-composer-errors" aria-live="polite">
           {attachmentError && <span className="mova-attachment-error">{attachmentError}</span>}
           {sendError && <span className="mova-send-error" role="alert">{sendError}</span>}
+          {voiceRecorder.error && <span className="mova-send-error" role="alert">{voiceRecorder.error}</span>}
         </div>
       </form>
       {imagePreviewId && mediaGallery.some((item) => item.id === imagePreviewId) &&
@@ -3541,16 +3715,24 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const SIDEBAR_COLLAPSE_THRESHOLD = 220;
   const initialConversations = conversationCache.get(currentUser.id)?.value || [];
   const initialSelectedId = preferredConversation(initialConversations);
+  const initialMessageCache = initialSelectedId ? messageCache.get(messageCacheKey(currentUser.id, initialSelectedId)) : undefined;
   const initialVoiceConversationId = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || initialSelectedId;
   const [conversations, setConversations] = useState<AppConversation[]>(initialConversations);
   const [users, setUsers] = useState<AppUser[]>(userCache.get(currentUser.id)?.value || []);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
-  const [messages, setMessages] = useState<AppMessage[]>(() => (initialSelectedId ? messageCache.get(messageCacheKey(currentUser.id, initialSelectedId))?.value || [] : []));
+  const [messages, setMessages] = useState<AppMessage[]>(() => initialMessageCache?.value || []);
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string[]>>({});
+  const [drafts, setDrafts] = useState<ConversationDrafts>(() => loadConversationDrafts(currentUser.id));
   const [loading, setLoading] = useState(!isFresh(conversationCache.get(currentUser.id)) || !isFresh(userCache.get(currentUser.id)));
   const [messagesLoading, setMessagesLoading] = useState(() => Boolean(initialSelectedId && !isFresh(messageCache.get(messageCacheKey(currentUser.id, initialSelectedId)))));
   const [messagesErrorFor, setMessagesErrorFor] = useState<string | null>(null);
   const [messagesLoadAttempt, setMessagesLoadAttempt] = useState(0);
+  const [messageHistoryCursor, setMessageHistoryCursor] = useState<string | null>(() => initialMessageCache?.nextCursor || null);
+  const [hasOlderMessages, setHasOlderMessages] = useState(() => Boolean(initialMessageCache?.hasMore));
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const [olderHistoryError, setOlderHistoryError] = useState(false);
+  const [persistentReady, setPersistentReady] = useState(false);
+  const [networkAvailable, setNetworkAvailable] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
   const [backgroundColor, setBackgroundColor] = useState(loadBackgroundColor);
   const [accentColor, setAccentColor] = useState(loadAccentColor);
   const [createOpen, setCreateOpen] = useState(false);
@@ -3577,6 +3759,15 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     return Number.isFinite(saved) ? (saved < 220 ? 76 : Math.min(560, Math.max(260, saved))) : 360;
   });
   const sidebarCompact = sidebarWidth === SIDEBAR_COMPACT_WIDTH;
+  const updateConversationDraft = useCallback((conversationId: string, text: string) => {
+    setDrafts((current) => {
+      const next = { ...current };
+      if (text.trim()) next[conversationId] = { text: text.slice(0, 4_000), updatedAt: new Date().toISOString() };
+      else delete next[conversationId];
+      persistConversationDrafts(currentUser.id, next);
+      return next;
+    });
+  }, [currentUser.id]);
   const voiceSession = useVoiceCall(voiceConversationId, currentUser.id);
   const voiceState = normalizeCallState(voiceSession.state);
   const voiceConversation = conversations.find((conversation) => conversation.id === voiceConversationId) || null;
@@ -3592,6 +3783,11 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const overviewSyncInFlight = useRef<Promise<void> | null>(null);
   const realtimeReadyCount = useRef(0);
   const retryingClientIds = useRef(new Set<string>());
+  const outboxEntries = useRef(new Map<string, OutboxEntry>());
+  const flushOutboxRef = useRef<() => Promise<void>>(async () => undefined);
+  const acknowledgeMessageRef = useRef<(message: AppMessage) => Promise<void>>(async () => undefined);
+  const outboxFlushInFlight = useRef<Promise<void> | null>(null);
+  const firstHistoryRevalidation = useRef(true);
   const notifiedRealtimeMessageIds = useRef(new Set<string>());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingCallStart = useRef<{ conversationId: string; video: boolean } | null>(null);
@@ -3612,6 +3808,31 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   mobileNavigationRef.current = mobileNavigation;
   mobileViewRef.current = mobileView;
   productOverlayOpenRef.current = createOpen || profileOpen || settingsOpen || notificationPromptOpen || accountOpen || composeMenuOpen || searchActive;
+  useEffect(() => {
+    let active = true;
+    void loadPersistentClientState(currentUser.id).then((state) => {
+      if (!active) return;
+      if (state.users) userCache.set(currentUser.id, state.users);
+      for (const [conversationId, cache] of state.messages) messageCache.set(messageCacheKey(currentUser.id, conversationId), cache);
+      outboxEntries.current = new Map(state.outbox.map((entry) => {
+        const restoredMessage = { ...entry.message, deliveryState: 'queued' as const };
+        const restoredEntry = { ...entry, message: restoredMessage };
+        const key = messageCacheKey(currentUser.id, entry.conversationId);
+        const cached = messageCache.get(key);
+        messageCache.set(key, { ...cached, value: mergeMessageHistory(cached?.value || [], [restoredMessage]), updatedAt: cached?.updatedAt || 0 });
+        void persistOutbox(restoredEntry).catch(() => undefined);
+        return [entry.clientId, restoredEntry];
+      }));
+      const restoredConversations = state.conversations?.value || conversationCache.get(currentUser.id)?.value || [];
+      const withPendingPreviews = state.outbox.reduce((items, entry) => updateConversationLastMessage(items, { ...entry.message, deliveryState: 'queued' }), restoredConversations);
+      if (state.conversations) conversationCache.set(currentUser.id, { ...state.conversations, value: withPendingPreviews });
+      setConversations(withPendingPreviews);
+      setUsers(state.users?.value || userCache.get(currentUser.id)?.value || []);
+      setSelectedId(preferredConversation(withPendingPreviews));
+      setPersistentReady(true);
+    }).catch(() => active && setPersistentReady(true));
+    return () => { active = false; };
+  }, [currentUser.id]);
   const setMobileNavigationView = useCallback((view: MobileNavigationView) => {
     mobileViewRef.current = view;
     setMobileView(view);
@@ -3830,6 +4051,8 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   }, []);
   const removeConversationFromClient = useCallback((conversationId: string) => {
     messageCache.delete(messageCacheKey(currentUserRef.current.id, conversationId));
+    void deletePersistentConversation(currentUserRef.current.id, conversationId).catch(() => undefined);
+    for (const [clientId, entry] of outboxEntries.current) if (entry.conversationId === conversationId) outboxEntries.current.delete(clientId);
     setConversations((items) => {
       const next = items.filter((item) => item.id !== conversationId);
       conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
@@ -4015,6 +4238,8 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     }
     if (voiceState === 'ringing' || voiceState === 'incoming' || voiceState === 'connecting') setCallCanvasOpen(true);
   }, [selectedId, voiceConversationId, voiceState]);
+  const withOutboxPreviews = useCallback((items: AppConversation[]) =>
+    [...outboxEntries.current.values()].reduce((conversations, entry) => updateConversationLastMessage(conversations, entry.message), items), []);
   const reloadConversations = useCallback(async (force = false) => {
     const cached = conversationCache.get(currentUser.id);
     if (!force && isFresh(cached)) {
@@ -4023,18 +4248,18 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return;
     }
     const result = await api.conversations();
-    const nextConversations = sortConversationsByActivity(result.conversations);
+    const nextConversations = withOutboxPreviews(sortConversationsByActivity(result.conversations));
     conversationCache.set(currentUser.id, { value: nextConversations, updatedAt: Date.now() });
     setConversations(nextConversations);
     setSelectedId((current) => {
       return current && nextConversations.some((item) => item.id === current) ? current : preferredConversation(nextConversations);
     });
-  }, [currentUser.id]);
+  }, [currentUser.id, withOutboxPreviews]);
   const syncOverview = useCallback(() => {
     if (overviewSyncInFlight.current) return overviewSyncInFlight.current;
     const sync = Promise.all([api.conversations(), api.users()])
       .then(([conversationResult, userResult]) => {
-        const nextConversations = sortConversationsByActivity(conversationResult.conversations);
+        const nextConversations = withOutboxPreviews(sortConversationsByActivity(conversationResult.conversations));
         const updatedAt = Date.now();
         conversationCache.set(currentUser.id, { value: nextConversations, updatedAt });
         userCache.set(currentUser.id, { value: userResult.users, updatedAt });
@@ -4052,24 +4277,74 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       });
     overviewSyncInFlight.current = sync;
     return sync;
+  }, [currentUser.id, withOutboxPreviews]);
+  const syncActiveMessages = useCallback(async () => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId) return;
+    const result = await api.messages(conversationId);
+    if (selectedIdRef.current !== conversationId) return;
+    setMessages((items) => {
+      const cacheKey = messageCacheKey(currentUser.id, conversationId);
+      const cached = messageCache.get(cacheKey);
+      const next = mergeMessageHistory(items, result.messages);
+      const hadExpandedHistory = items.length > result.messages.length;
+      messageCache.set(cacheKey, {
+        value: next,
+        updatedAt: Date.now(),
+        hasMore: hadExpandedHistory ? cached?.hasMore : Boolean(result.hasMore),
+        nextCursor: hadExpandedHistory ? cached?.nextCursor : result.nextCursor || null,
+      });
+      if (!hadExpandedHistory) {
+        setHasOlderMessages(Boolean(result.hasMore));
+        setMessageHistoryCursor(result.nextCursor || null);
+      }
+      return next;
+    });
   }, [currentUser.id]);
+  const applyVoiceListenReceipt = useCallback((result: { conversationId: string; messageId: string; userId: string; listenedAt: string }) => {
+    const update = (items: AppMessage[]) => items.map((message) =>
+      message.id === result.messageId && !message.listenedBy?.some((receipt) => receipt.userId === result.userId)
+        ? { ...message, listenedBy: [...(message.listenedBy || []), { userId: result.userId, listenedAt: result.listenedAt }] }
+        : message,
+    );
+    const cacheKey = messageCacheKey(currentUserRef.current.id, result.conversationId);
+    const cached = messageCache.get(cacheKey);
+    if (cached) messageCache.set(cacheKey, { ...cached, value: update(cached.value), updatedAt: Date.now() });
+    if (selectedIdRef.current === result.conversationId) setMessages(update);
+    setConversations((items) => {
+      const next = items.map((conversation) => conversation.id === result.conversationId && conversation.lastMessage?.id === result.messageId
+        ? {
+            ...conversation,
+            lastMessage: {
+              ...conversation.lastMessage,
+              listenedBy: conversation.lastMessage.listenedBy?.some((receipt) => receipt.userId === result.userId)
+                ? conversation.lastMessage.listenedBy
+                : [...(conversation.lastMessage.listenedBy || []), { userId: result.userId, listenedAt: result.listenedAt }],
+            },
+          }
+        : conversation);
+      conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  }, []);
   useEffect(() => {
+    if (!persistentReady) return;
     const loadUsers = async () => {
-      const cached = userCache.get(currentUser.id);
-      if (isFresh(cached)) return setUsers(cached!.value);
       const result = await api.users();
       userCache.set(currentUser.id, { value: result.users, updatedAt: Date.now() });
       setUsers(result.users);
     };
-    Promise.all([reloadConversations(), loadUsers()]).finally(() => setLoading(false));
+    Promise.all([reloadConversations(true), loadUsers()]).catch(() => undefined).finally(() => setLoading(false));
     realtime.connect();
     const unsubscribe = realtime.subscribe((event: RealtimeEvent) => {
+      if (event.type === 'realtime:disconnected') setNetworkAvailable(false);
       if (event.type === 'message:new') {
+        if (event.message.clientId && event.message.authorId === currentUserRef.current.id) void acknowledgeMessageRef.current(event.message);
         updateTypingUser(event.message.conversationId, event.message.authorId, false);
         const cacheKey = messageCacheKey(currentUserRef.current.id, event.message.conversationId);
         const cachedEntry = messageCache.get(cacheKey);
         const cached = cachedEntry?.value || [];
-        messageCache.set(cacheKey, { value: reconcileClientMessage(cached, event.message), updatedAt: cachedEntry ? Date.now() : 0 });
+        messageCache.set(cacheKey, { ...cachedEntry, value: reconcileClientMessage(cached, event.message), updatedAt: cachedEntry ? Date.now() : 0 });
         setMessages((items) => (event.message.conversationId === selectedIdRef.current ? reconcileClientMessage(items, event.message) : items));
         setConversations((items) => {
           const alreadyCounted = items.some((conversation) => conversation.id === event.message.conversationId && conversation.lastMessage?.id === event.message.id);
@@ -4086,7 +4361,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       if (event.type === 'message:update') {
         const cacheKey = messageCacheKey(currentUserRef.current.id, event.message.conversationId);
         const cachedEntry = messageCache.get(cacheKey);
-        if (cachedEntry) messageCache.set(cacheKey, { value: cachedEntry.value.map((message) => (message.id === event.message.id ? event.message : message)), updatedAt: Date.now() });
+        if (cachedEntry) messageCache.set(cacheKey, { ...cachedEntry, value: cachedEntry.value.map((message) => (message.id === event.message.id ? event.message : message)), updatedAt: Date.now() });
         if (event.message.conversationId === selectedIdRef.current) setMessages((items) => items.map((message) => (message.id === event.message.id ? event.message : message)));
         setConversations((items) => {
           const next = updateConversationLastMessage(items, event.message, true);
@@ -4108,6 +4383,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           ),
         );
       }
+      if (event.type === 'message:voice-listened') applyVoiceListenReceipt(event);
       if (event.type === 'call:invite') {
         if (voiceStateRef.current !== 'idle' && voiceConversationIdRef.current !== event.conversationId) {
           const activeTitle = conversationsRef.current.find((conversation) => conversation.id === voiceConversationIdRef.current)?.title || 'другом чате';
@@ -4147,8 +4423,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       if (event.type === 'conversation:new') void reloadConversations(true);
       if (event.type === 'conversation:delete') removeConversationFromClient(event.conversationId);
       if (event.type === 'ready') {
+        setNetworkAvailable(true);
+        void flushOutboxRef.current();
         realtimeReadyCount.current += 1;
-        if (realtimeReadyCount.current > 1) void syncOverview();
+        if (realtimeReadyCount.current > 1) {
+          void syncOverview();
+          void syncActiveMessages().catch(() => undefined);
+        }
       }
       if (event.type === 'relationship:update') applyRelationshipUser(event.user);
       if (event.type === 'profile:update' || event.type === 'presence:update') {
@@ -4169,23 +4450,28 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       }
     });
     const refreshOverview = () => {
-      if (document.visibilityState === 'visible') void syncOverview();
+      setNetworkAvailable(navigator.onLine);
+      if (navigator.onLine) void flushOutboxRef.current();
+      if (navigator.onLine && document.visibilityState === 'visible') void syncOverview();
     };
+    const markOffline = () => setNetworkAvailable(false);
     const refreshTimer = window.setInterval(refreshOverview, 5 * 60_000);
     window.addEventListener('focus', refreshOverview);
     window.addEventListener('online', refreshOverview);
+    window.addEventListener('offline', markOffline);
     document.addEventListener('visibilitychange', refreshOverview);
     return () => {
       unsubscribe();
       window.clearInterval(refreshTimer);
       window.removeEventListener('focus', refreshOverview);
       window.removeEventListener('online', refreshOverview);
+      window.removeEventListener('offline', markOffline);
       document.removeEventListener('visibilitychange', refreshOverview);
       typingExpiryTimers.current.forEach((timer) => window.clearTimeout(timer));
       typingExpiryTimers.current.clear();
       realtime.close();
     };
-  }, [applyRelationshipUser, reloadConversations, removeConversationFromClient, selectConversation, currentUser.id, syncOverview, toast, updateTypingUser]);
+  }, [applyRelationshipUser, applyVoiceListenReceipt, reloadConversations, removeConversationFromClient, selectConversation, currentUser.id, persistentReady, syncActiveMessages, syncOverview, toast, updateTypingUser]);
   useEffect(() => {
     const markActive = () => {
       lastActivity.current = Date.now();
@@ -4212,6 +4498,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     return () => window.clearTimeout(timer);
   }, [currentUser.presence, currentUser.dndUntil, onUserUpdate]);
   useEffect(() => {
+    if (!persistentReady) return;
     if (!selectedId) {
       setMessages([]);
       setMessagesLoading(false);
@@ -4222,8 +4509,14 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     const cached = messageCache.get(key);
     if (cached) setMessages(cached.value);
     else setMessages([]);
+    setHasOlderMessages(Boolean(cached?.hasMore));
+    setMessageHistoryCursor(cached?.nextCursor || null);
+    setLoadingOlderMessages(false);
+    setOlderHistoryError(false);
     setMessagesErrorFor(null);
-    if (isFresh(cached)) {
+    const mustRevalidate = firstHistoryRevalidation.current;
+    firstHistoryRevalidation.current = false;
+    if (isFresh(cached) && !mustRevalidate) {
       setMessagesLoading(false);
       return;
     }
@@ -4231,8 +4524,14 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     setMessagesLoading(true);
     api.messages(selectedId)
       .then((result) => {
-        messageCache.set(key, { value: result.messages, updatedAt: Date.now() });
-        if (!cancelled) setMessages(result.messages);
+        const pending = [...outboxEntries.current.values()].filter((entry) => entry.conversationId === selectedId).map((entry) => entry.message);
+        const nextMessages = mergeMessageHistory(result.messages, pending);
+        messageCache.set(key, { value: nextMessages, updatedAt: Date.now(), hasMore: Boolean(result.hasMore), nextCursor: result.nextCursor || null });
+        if (!cancelled) {
+          setMessages(nextMessages);
+          setHasOlderMessages(Boolean(result.hasMore));
+          setMessageHistoryCursor(result.nextCursor || null);
+        }
       })
       .catch(() => {
         if (!cancelled) setMessagesErrorFor(selectedId);
@@ -4241,7 +4540,29 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     return () => {
       cancelled = true;
     };
-  }, [selectedId, currentUser.id, messagesLoadAttempt]);
+  }, [selectedId, currentUser.id, messagesLoadAttempt, persistentReady]);
+  const loadOlderMessages = useCallback(async () => {
+    const conversationId = selectedIdRef.current;
+    if (!conversationId || !messageHistoryCursor || loadingOlderMessages || !hasOlderMessages) return;
+    setLoadingOlderMessages(true);
+    setOlderHistoryError(false);
+    try {
+      const result = await api.messages(conversationId, { before: messageHistoryCursor });
+      if (selectedIdRef.current !== conversationId) return;
+      setMessages((items) => {
+        const next = mergeMessageHistory(items, result.messages);
+        messageCache.set(messageCacheKey(currentUser.id, conversationId), { value: next, updatedAt: Date.now(), hasMore: Boolean(result.hasMore), nextCursor: result.nextCursor || null });
+        return next;
+      });
+      setHasOlderMessages(Boolean(result.hasMore));
+      setMessageHistoryCursor(result.nextCursor || null);
+    } catch {
+      if (selectedIdRef.current === conversationId) setOlderHistoryError(true);
+      throw new Error('Не удалось загрузить ранние сообщения');
+    } finally {
+      if (selectedIdRef.current === conversationId) setLoadingOlderMessages(false);
+    }
+  }, [currentUser.id, hasOlderMessages, loadingOlderMessages, messageHistoryCursor]);
   const markConversationRead = useCallback(async (conversationId: string, throughMessageId: string) => {
     if (markingReadThrough.current === throughMessageId || document.visibilityState !== 'visible') return;
     markingReadThrough.current = throughMessageId;
@@ -4255,7 +4576,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       );
       const cacheKey = messageCacheKey(currentUserRef.current.id, conversationId);
       const cached = messageCache.get(cacheKey);
-      if (cached) messageCache.set(cacheKey, { value: applyReceipts(cached.value), updatedAt: Date.now() });
+      if (cached) messageCache.set(cacheKey, { ...cached, value: applyReceipts(cached.value), updatedAt: Date.now() });
       if (selectedIdRef.current === conversationId) setMessages(applyReceipts);
       setConversations((items) => {
         const next = items.map((conversation) => conversation.id === conversationId
@@ -4268,11 +4589,16 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       if (markingReadThrough.current === throughMessageId) markingReadThrough.current = null;
     }
   }, []);
+  const markVoiceListened = useCallback(async (conversationId: string, messageId: string) => {
+    const result = await api.markVoiceListened(conversationId, messageId);
+    applyVoiceListenReceipt(result);
+  }, [applyVoiceListenReceipt]);
   const updatePendingMessage = (conversationId: string, clientId: string, patch: Partial<AppMessage>) => {
     const update = (items: AppMessage[]) => items.map((message) => (message.clientId === clientId && !message.sentAt ? { ...message, ...patch } : message));
     const cacheKey = messageCacheKey(currentUser.id, conversationId);
     const cached = messageCache.get(cacheKey)?.value || [];
-    messageCache.set(cacheKey, { value: update(cached), updatedAt: Date.now() });
+    const cachedEntry = messageCache.get(cacheKey);
+    messageCache.set(cacheKey, { ...cachedEntry, value: update(cached), updatedAt: Date.now() });
     setMessages((items) => (selectedIdRef.current === conversationId ? update(items) : items));
     setConversations((items) => {
       const next = items.map((conversation) =>
@@ -4283,18 +4609,36 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
       return next;
     });
+    const entry = outboxEntries.current.get(clientId);
+    if (!entry) return Promise.resolve();
+    const nextEntry = { ...entry, message: { ...entry.message, ...patch }, updatedAt: Date.now() };
+    outboxEntries.current.set(clientId, nextEntry);
+    return persistOutbox(nextEntry).catch(() => undefined);
   };
-  const acknowledgeMessage = (message: AppMessage) => {
+  const acknowledgeMessage = async (message: AppMessage) => {
+    const persistence: Promise<void>[] = [];
+    if (message.clientId) {
+      for (const entry of outboxEntries.current.values()) {
+        if (entry.message.replyToId !== message.clientId) continue;
+        const replyTo = entry.message.replyTo ? { ...entry.message.replyTo, id: message.id } : entry.message.replyTo;
+        persistence.push(updatePendingMessage(entry.conversationId, entry.clientId, { replyToId: message.id, replyTo }));
+      }
+      outboxEntries.current.delete(message.clientId);
+      persistence.push(removeOutbox(message.clientId).catch(() => undefined));
+    }
     const cacheKey = messageCacheKey(currentUser.id, message.conversationId);
     const cached = messageCache.get(cacheKey)?.value || [];
-    messageCache.set(cacheKey, { value: reconcileClientMessage(cached, message), updatedAt: Date.now() });
+    const cachedEntry = messageCache.get(cacheKey);
+    messageCache.set(cacheKey, { ...cachedEntry, value: reconcileClientMessage(cached, message), updatedAt: Date.now() });
     setMessages((items) => (selectedIdRef.current === message.conversationId ? reconcileClientMessage(items, message) : items));
     setConversations((items) => {
       const next = updateConversationLastMessage(items, message);
       conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
       return next;
     });
+    await Promise.all(persistence);
   };
+  acknowledgeMessageRef.current = acknowledgeMessage;
   const sendMessageAttempt = (message: AppMessage) =>
     api.sendMessage(message.conversationId, message.content, message.attachment, message.replyToId || message.replyTo?.id, message.clientId, (uploadedAttachment) =>
       updatePendingMessage(message.conversationId, message.clientId || message.id, { attachment: uploadedAttachment }),
@@ -4327,11 +4671,14 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
         : {}),
       createdAt,
       readBy: [],
-      deliveryState: 'sending',
+      deliveryState: navigator.onLine ? 'sending' : 'queued',
     };
+    const outboxEntry: OutboxEntry = { clientId, userId: currentUser.id, conversationId, message: optimisticMessage, attempts: 0, updatedAt: Date.now() };
+    outboxEntries.current.set(clientId, outboxEntry);
     setMessages((items) => {
       const next = [...items, optimisticMessage];
-      messageCache.set(messageCacheKey(currentUser.id, conversationId), { value: next, updatedAt: Date.now() });
+      const cacheKey = messageCacheKey(currentUser.id, conversationId);
+      messageCache.set(cacheKey, { ...messageCache.get(cacheKey), value: next, updatedAt: Date.now() });
       return next;
     });
     setConversations((items) => {
@@ -4339,31 +4686,109 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
       return next;
     });
+    await persistOutbox(outboxEntry).catch(() => undefined);
+    if (!navigator.onLine) {
+      setNetworkAvailable(false);
+      return;
+    }
     try {
+      outboxEntry.attempts += 1;
+      outboxEntry.updatedAt = Date.now();
+      await persistOutbox(outboxEntry).catch(() => undefined);
       const result = await sendMessageAttempt(optimisticMessage);
-      acknowledgeMessage(result.message);
+      await acknowledgeMessage(result.message);
     } catch (sendFailure) {
-      updatePendingMessage(conversationId, clientId, { deliveryState: 'failed' });
+      const queued = !navigator.onLine || sendFailure instanceof TypeError;
+      await updatePendingMessage(conversationId, clientId, { deliveryState: queued ? 'queued' : 'failed' });
+      if (queued) {
+        setNetworkAvailable(false);
+        return;
+      }
       throw sendFailure;
     }
   };
   const retry = async (message: AppMessage) => {
     const clientId = message.clientId;
     if (!clientId || retryingClientIds.current.has(clientId)) return;
+    const existingEntry = outboxEntries.current.get(clientId);
+    const pendingMessage = existingEntry?.message || message;
+    let initialPersistence: Promise<void> = Promise.resolve();
+    if (!existingEntry) {
+      const entry = { clientId, userId: currentUser.id, conversationId: message.conversationId, message, attempts: 0, updatedAt: Date.now() };
+      outboxEntries.current.set(clientId, entry);
+      initialPersistence = persistOutbox(entry).catch(() => undefined);
+    }
+    if (!navigator.onLine) {
+      await updatePendingMessage(message.conversationId, clientId, { deliveryState: 'queued' });
+      setNetworkAvailable(false);
+      return;
+    }
     retryingClientIds.current.add(clientId);
-    updatePendingMessage(message.conversationId, clientId, { deliveryState: 'sending' });
+    const sendingPersistence = updatePendingMessage(message.conversationId, clientId, { deliveryState: 'sending' });
     try {
-      const result = await sendMessageAttempt(message);
-      acknowledgeMessage(result.message);
+      const entry = outboxEntries.current.get(clientId);
+      let attemptPersistence: Promise<void> = Promise.resolve();
+      if (entry) {
+        entry.attempts += 1;
+        entry.updatedAt = Date.now();
+        attemptPersistence = persistOutbox(entry).catch(() => undefined);
+      }
+      const sendPromise = sendMessageAttempt(pendingMessage);
+      await Promise.all([initialPersistence, sendingPersistence, attemptPersistence]);
+      const result = await sendPromise;
+      await acknowledgeMessage(result.message);
     } catch (retryFailure) {
-      updatePendingMessage(message.conversationId, clientId, { deliveryState: 'failed' });
+      const queued = !navigator.onLine || retryFailure instanceof TypeError;
+      await updatePendingMessage(message.conversationId, clientId, { deliveryState: queued ? 'queued' : 'failed' });
+      if (queued) {
+        setNetworkAvailable(false);
+        return;
+      }
       throw retryFailure;
     } finally {
       retryingClientIds.current.delete(clientId);
     }
   };
+  const flushOutbox = useCallback(() => {
+    if (outboxFlushInFlight.current) return outboxFlushInFlight.current;
+    const flush = (async () => {
+      if (!navigator.onLine) return;
+      const entries = [...outboxEntries.current.values()].sort((first, second) => first.message.createdAt.localeCompare(second.message.createdAt));
+      for (const entry of entries) {
+        if (retryingClientIds.current.has(entry.clientId)) continue;
+        retryingClientIds.current.add(entry.clientId);
+        await updatePendingMessage(entry.conversationId, entry.clientId, { deliveryState: 'sending' });
+        try {
+          const currentEntry = outboxEntries.current.get(entry.clientId) || entry;
+          const attemptedEntry = { ...currentEntry, attempts: currentEntry.attempts + 1, updatedAt: Date.now() };
+          outboxEntries.current.set(entry.clientId, attemptedEntry);
+          await persistOutbox(attemptedEntry).catch(() => undefined);
+          const result = await sendMessageAttempt(attemptedEntry.message);
+          await acknowledgeMessage(result.message);
+        } catch (error) {
+          await updatePendingMessage(entry.conversationId, entry.clientId, { deliveryState: !navigator.onLine || error instanceof TypeError ? 'queued' : 'failed' });
+          if (!navigator.onLine) break;
+        } finally {
+          retryingClientIds.current.delete(entry.clientId);
+        }
+      }
+    })().finally(() => {
+      if (outboxFlushInFlight.current === flush) outboxFlushInFlight.current = null;
+    });
+    outboxFlushInFlight.current = flush;
+    return flush;
+  }, [currentUser.id]);
+  flushOutboxRef.current = flushOutbox;
+  useEffect(() => {
+    if (persistentReady && navigator.onLine) void flushOutbox();
+  }, [flushOutbox, persistentReady]);
   const edit = async (messageId: string, content: string) => {
     if (!selectedId) return;
+    const pending = outboxEntries.current.get(messageId);
+    if (pending) {
+      await updatePendingMessage(selectedId, messageId, { content });
+      return;
+    }
     const result = await api.editMessage(selectedId, messageId, content);
     setMessages((items) => {
       const next = items.map((message) => (message.id === result.message.id ? result.message : message));
@@ -4423,7 +4848,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       active = false;
     };
   }, [conversations, currentUser.id, searchActive, searchQueryReady, searchTab]);
-  const listedConversations = useMemo(() => conversations.filter((conversation) => !conversation.isDraft), [conversations]);
+  const listedConversations = useMemo(() => conversations.filter((conversation) => !conversation.isDraft || Boolean(drafts[conversation.id]?.text.trim())).sort((left, right) => {
+    const relationshipOrder = conversationRelationshipRank(left) - conversationRelationshipRank(right);
+    if (relationshipOrder) return relationshipOrder;
+    const leftActivity = new Date(drafts[left.id]?.updatedAt || left.lastMessage?.createdAt || left.createdAt).getTime();
+    const rightActivity = new Date(drafts[right.id]?.updatedAt || right.lastMessage?.createdAt || right.createdAt).getTime();
+    return rightActivity - leftActivity;
+  }), [conversations, drafts]);
   const visible = useMemo(
     () => listedConversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(normalizedSearchQuery)),
     [listedConversations, normalizedSearchQuery],
@@ -4439,9 +4870,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const searchChats = useMemo(
     () => searchQueryReady ? listedConversations.filter((conversation) => {
       const members = conversation.members.map((member) => `${member.name} ${member.handle}`).join(' ');
-      return `${conversation.title} ${members} ${conversation.lastMessage?.content || ''}`.toLocaleLowerCase().includes(normalizedSearchQuery);
+      return `${conversation.title} ${members} ${conversation.lastMessage?.content || ''} ${drafts[conversation.id]?.text || ''}`.toLocaleLowerCase().includes(normalizedSearchQuery);
     }) : [],
-    [listedConversations, normalizedSearchQuery, searchQueryReady],
+    [drafts, listedConversations, normalizedSearchQuery, searchQueryReady],
   );
   const searchLinks = useMemo(
     () => searchQueryReady ? listedConversations.flatMap((conversation) => {
@@ -4482,6 +4913,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   return (
     <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}${accountOpen ? ' is-account-menu-open' : ''}${voiceDockVisible ? ' has-voice-dock' : ''}${mobileNavigationClass}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor, '--mova-accent-color': accentColor } as CSSProperties} data-mobile-view={mobileNavigation ? mobileView : undefined}>
       <div className="mova-real-aurora" />
+      {!networkAvailable && <div className="mova-offline-notice" role="status"><CloudOff size={15} /> {navigator.onLine ? 'Связь восстанавливается · сообщения защищены очередью' : 'Нет соединения · новые сообщения останутся в очереди'}</div>}
       <aside className="mova-real-sidebar mova-tg-sidebar" aria-hidden={mobileNavigation && mobileView === 'chat'} inert={mobileNavigation && mobileView === 'chat' ? true : undefined}>
         <div className="mova-tg-search-row">
           {searchActive ? (
@@ -4527,7 +4959,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
               {searchTab === 'chats' && searchChats.map((conversation) => (
                 <button type="button" className="mova-search-result" key={conversation.id} onClick={() => openSearchConversation(conversation.id)}>
                   <ConversationAvatar conversation={conversation} currentUser={currentUser} />
-                  <span><strong><AppleEmoji text={conversation.title} /></strong><small>{conversation.lastMessage?.content || (conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Личный чат')}</small></span>
+                  <span><strong><AppleEmoji text={conversation.title} /></strong><small>{conversationPreviewText(conversation, currentUser.id)}</small></span>
                 </button>
               ))}
               {searchTab === 'links' && searchLinks.map(({ conversation, message, url }, index) => (
@@ -4557,12 +4989,16 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
               </div>
             ) : visible.map((conversation) => {
               const typingLabel = conversationTypingLabel(conversation, currentUser.id, typingByConversation[conversation.id] || []);
+              const draft = drafts[conversation.id];
+              const draftPreview = draft?.text.trim().replace(/\s+/g, ' ');
               const incomingFriendRequest = conversation.kind === 'direct' && conversation.members.some((member) => member.relationship === 'incoming');
               return (
                 <button type="button" key={conversation.id} aria-label={sidebarCompact ? conversation.title : undefined} title={sidebarCompact ? conversation.title : undefined} className={selectedId === conversation.id ? 'is-active' : ''} onClick={() => selectConversation(conversation.id)}>
                   <ConversationAvatar conversation={conversation} currentUser={currentUser} />
-                  <span><span><strong><AppleEmoji text={conversation.title} /></strong>{incomingFriendRequest && <b className="mova-chat-friend-request-label">Заявка</b>}<time>{conversation.lastMessage ? new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(conversation.lastMessage.createdAt)) : ''}</time></span>
-                    <small className={typingLabel ? 'mova-typing-status' : undefined} aria-live="polite"><AppleEmoji text={typingLabel || conversationPreviewText(conversation, currentUser.id)} /></small>
+                  <span><span><strong><AppleEmoji text={conversation.title} /></strong>{incomingFriendRequest && <b className="mova-chat-friend-request-label">Заявка</b>}<time>{draft || conversation.lastMessage ? new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(draft?.updatedAt || conversation.lastMessage!.createdAt)) : ''}</time></span>
+                    <small className={typingLabel ? 'mova-typing-status' : draftPreview ? 'mova-chat-draft-preview' : undefined} aria-live="polite">
+                      {typingLabel ? <AppleEmoji text={typingLabel} /> : draftPreview ? <><b>Черновик:</b><span><AppleEmoji text={draftPreview} /></span></> : <AppleEmoji text={conversationPreviewText(conversation, currentUser.id)} />}
+                    </small>
                     {(conversation.unreadCount || 0) > 0 && <b className="mova-chat-unread-count" aria-label={`Непрочитанных сообщений: ${conversation.unreadCount}`}>{(conversation.unreadCount || 0) > 9 ? '9+' : conversation.unreadCount}</b>}
                   </span>
                 </button>
@@ -4643,6 +5079,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           unreadCount={selected.unreadCount || 0}
           loading={messagesLoading}
           historyError={messagesErrorFor === selected.id}
+          hasOlderMessages={hasOlderMessages}
+          loadingOlderMessages={loadingOlderMessages}
+          olderHistoryError={olderHistoryError}
           typingUserIds={typingByConversation[selected.id] || []}
           mobileActive={!mobileNavigation || mobileView === 'chat'}
           onMobileBack={mobileNavigation ? navigateToMobileList : undefined}
@@ -4650,9 +5089,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           onSend={send}
           onRetry={retry}
           onRetryHistory={() => setMessagesLoadAttempt((attempt) => attempt + 1)}
+          onLoadOlder={loadOlderMessages}
           onEdit={edit}
           onRelationshipChange={applyRelationshipUser}
           onMarkRead={(throughMessageId) => markConversationRead(selected.id, throughMessageId)}
+          onVoiceListen={(messageId) => markVoiceListened(selected.id, messageId)}
+          draftText={drafts[selected.id]?.text || ''}
+          onDraftChange={(text) => updateConversationDraft(selected.id, text)}
           onDeleteConversation={() => void deleteConversation(selected.id)}
         />
       ) : (
@@ -4736,6 +5179,7 @@ export function RealApp() {
       onUserUpdate={setCurrentUser}
       onLogout={() => {
         void unregisterMessageNotifications();
+        void clearPersistentUserData(currentUser.id);
         realtime.close();
         clearClientCache();
         session.clear();

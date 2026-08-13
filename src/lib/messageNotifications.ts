@@ -10,6 +10,8 @@ export function messageNotificationCopy(message: AppMessage, conversation?: AppC
     content ||
     (message.attachment?.type.startsWith('image/')
       ? 'Фотография'
+      : message.attachment?.type.startsWith('audio/') && message.attachment.durationMs
+        ? 'Голосовое сообщение'
       : message.attachment
         ? `Файл: ${message.attachment.name}`
         : 'Новое сообщение');

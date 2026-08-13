@@ -14,6 +14,7 @@ import './brand.css';
 import './desktop-shell.css';
 import './desktop-share-picker.css';
 import './composer.css';
+import './voice-message.css';
 import './media-viewer.css';
 import './common-ui.css';
 import './maintenance.css';

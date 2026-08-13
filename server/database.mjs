@@ -21,7 +21,22 @@ const extensionByMime = {
   'image/webp': '.webp',
   'application/pdf': '.pdf',
   'text/plain': '.txt',
+  'audio/mp4': '.m4a',
+  'audio/ogg': '.ogg',
+  'audio/webm': '.webm',
 };
+
+function attachmentMediaMetadata(attachment, mime) {
+  if (!String(mime).startsWith('audio/')) return {};
+  const durationMs = Math.round(Number(attachment.durationMs || 0));
+  const waveform = Array.isArray(attachment.waveform)
+    ? attachment.waveform.slice(0, 80).map(Number).filter(Number.isFinite).map((value) => Math.round(Math.max(0.08, Math.min(1, value)) * 100) / 100)
+    : [];
+  return {
+    ...(durationMs >= 300 && durationMs <= 2 * 60 * 60_000 ? { durationMs } : {}),
+    ...(waveform.length >= 8 ? { waveform } : {}),
+  };
+}
 
 function sniffImageMime(contents) {
   if (contents.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
@@ -159,6 +174,12 @@ export async function openDatabase(paths) {
       sent_at TEXT NOT NULL,
       edited_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS voice_message_listens (
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      listened_at TEXT NOT NULL,
+      PRIMARY KEY (message_id, user_id)
+    );
     CREATE TABLE IF NOT EXISTS uploads (
       file_name TEXT PRIMARY KEY,
       owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -192,6 +213,7 @@ export async function openDatabase(paths) {
     CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id, conversation_id);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(reply_to_id);
+    CREATE INDEX IF NOT EXISTS idx_voice_message_listens_user ON voice_message_listens(user_id, listened_at);
     CREATE INDEX IF NOT EXISTS idx_friendships_requested_by ON friendships(requested_by, status);
     CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id, blocker_id);
     CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id, updated_at);
@@ -320,6 +342,7 @@ export class MovaDatabase {
         type: String(attachment.type || 'application/octet-stream').slice(0, 120),
         size: Number(attachment.size || 0),
         url: attachment.url,
+        ...attachmentMediaMetadata(attachment, attachment.type),
       };
     }
     if (!attachment.dataUrl) throw Object.assign(new Error('Сначала загрузите файл'), { statusCode: 400 });
@@ -627,8 +650,31 @@ export class MovaDatabase {
       .map(rowMessage);
   }
 
+  messagePage(conversationId, { limit = 80, before } = {}) {
+    const safeLimit = Math.max(1, Math.min(200, Number(limit) || 80));
+    const parameters = before ? [conversationId, before.createdAt, before.createdAt, before.id, safeLimit + 1] : [conversationId, safeLimit + 1];
+    const where = before ? 'conversation_id=? AND (created_at<? OR (created_at=? AND id<?))' : 'conversation_id=?';
+    const rows = this.sqlite.prepare(`SELECT * FROM messages WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...parameters);
+    const hasMore = rows.length > safeLimit;
+    const page = rows.slice(0, safeLimit);
+    const oldest = page.at(-1);
+    return {
+      messages: page.reverse().map(rowMessage),
+      hasMore,
+      nextCursor: hasMore && oldest ? Buffer.from(JSON.stringify({ v: 1, createdAt: oldest.created_at, id: oldest.id })).toString('base64url') : null,
+    };
+  }
+
   readStates(conversationId) {
     return this.sqlite.prepare('SELECT user_id, last_read_at FROM memberships WHERE conversation_id=? AND last_read_at IS NOT NULL').all(conversationId).map((row) => ({ userId: row.user_id, readAt: row.last_read_at }));
+  }
+
+  voiceListens(messageId) {
+    return this.sqlite.prepare('SELECT user_id, listened_at FROM voice_message_listens WHERE message_id=? ORDER BY listened_at').all(messageId).map((row) => ({ userId: row.user_id, listenedAt: row.listened_at }));
+  }
+
+  markVoiceListened(messageId, userId, listenedAt) {
+    return this.sqlite.prepare('INSERT OR IGNORE INTO voice_message_listens(message_id,user_id,listened_at) VALUES(?,?,?)').run(messageId, userId, listenedAt).changes > 0;
   }
 
   unreadCount(conversationId, userId) {

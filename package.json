@@ -4,7 +4,7 @@
   "description": "Десктопный клиент мессенджера Mova",
   "author": "Mova",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -21,6 +21,7 @@
     "test:call": "node server/call-e2e.mjs",
     "test:watch": "vitest",
     "maintenance": "node scripts/maintenance.mjs",
+    "backup": "node scripts/backup.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "desktop:dev": "concurrently -k -n mova,electron -c cyan,magenta \"pnpm dev\" \"wait-on http-get://127.0.0.1:5173/api/health && electron .\"",
@@ -58,6 +59,7 @@
     "concurrently": "latest",
     "electron": "^43.3.0",
     "electron-builder": "^26.15.3",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "latest",
     "playwright": "latest",
     "storybook": "latest",
@@ -80,10 +82,10 @@
     "mac": {
       "category": "public.app-category.social-networking",
       "icon": "desktop/assets/icon.icns",
-      "artifactName": "Mova-0.1.5.1-${arch}.${ext}",
+      "artifactName": "Mova-${version}-${arch}.${ext}",
       "hardenedRuntime": true,
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Mova использует микрофон для голосовых звонков.",
+        "NSMicrophoneUsageDescription": "Mova использует микрофон для голосовых сообщений и звонков.",
         "NSCameraUsageDescription": "Mova использует камеру для видеозвонков.",
         "NSDesktopCaptureUsageDescription": "Mova использует запись экрана для демонстрации собеседникам."
       },
@@ -97,7 +99,7 @@
     },
     "win": {
       "icon": "desktop/assets/icon.png",
-      "artifactName": "Mova-Setup-0.1.5.1.${ext}",
+      "artifactName": "Mova Setup ${version}.${ext}",
       "target": "nsis"
     },
     "nsis": {

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatPresenceStatus, PendingCallStage, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage } from './RealApp';
+import { formatPresenceStatus, loadConversationDrafts, mergeMessageHistory, PendingCallStage, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage } from './RealApp';
 import { api, realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 import { ToastProvider } from './components/Primitives';
 
@@ -245,6 +245,42 @@ describe('conversation overview updates', () => {
     const strangerConversation: AppConversation = { ...newerConversation, id: 'stranger-rank-chat', members: [currentUser, stranger] };
 
     expect(sortConversationsByActivity([strangerConversation, requestConversation, olderConversation]).map((item) => item.id)).toEqual(['older', 'request-chat', 'stranger-rank-chat']);
+  });
+});
+
+describe('message history pagination', () => {
+  const historyMessage = (id: string, createdAt: string, clientId?: string): AppMessage => ({
+    id,
+    clientId,
+    conversationId: conversation.id,
+    authorId: currentUser.id,
+    author: currentUser,
+    content: id,
+    createdAt,
+  });
+
+  it('merges overlapping pages by server or client id and keeps chronological order', () => {
+    const result = mergeMessageHistory(
+      [historyMessage('new', '2026-08-13T10:02:00.000Z'), historyMessage('optimistic', '2026-08-13T10:01:00.000Z', 'same-client')],
+      [historyMessage('old', '2026-08-13T10:00:00.000Z'), historyMessage('confirmed', '2026-08-13T10:01:00.000Z', 'same-client')],
+    );
+
+    expect(result.map((message) => message.id)).toEqual(['old', 'confirmed', 'new']);
+  });
+
+  it('exposes manual loading and retry states for older messages', async () => {
+    const onLoadOlder = vi.fn().mockResolvedValue(undefined);
+    const rendered = render(
+      <RealMessages conversation={conversation} currentUser={currentUser} messages={[historyMessage('new', '2026-08-13T10:02:00.000Z')]} hasOlderMessages onLoadOlder={onLoadOlder} onSend={vi.fn()} />,
+    );
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Загрузить ранние сообщения' }));
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+
+    rendered.rerender(
+      <RealMessages conversation={conversation} currentUser={currentUser} messages={[historyMessage('new', '2026-08-13T10:02:00.000Z')]} hasOlderMessages olderHistoryError onLoadOlder={onLoadOlder} onSend={vi.fn()} />,
+    );
+    expect(screen.getByRole('button', { name: 'Не удалось загрузить ранние сообщения · Повторить' })).toBeVisible();
   });
 });
 
@@ -752,6 +788,9 @@ describe('Product mobile chat navigation', () => {
     await user.click(screen.getByRole('button', { name: 'К списку диалогов' }));
     await waitFor(() => expect(app).toHaveAttribute('data-mobile-view', 'list'));
     expect(composer).toHaveValue('Черновик остаётся');
+    expect(within(chatButton).getByText('Черновик:')).toBeVisible();
+    expect(chatButton).toHaveTextContent('Черновик остаётся');
+    expect(loadConversationDrafts(setup.user.id)[setup.chat.id].text).toBe('Черновик остаётся');
 
     await user.click(chatButton);
     expect(app).toHaveAttribute('data-mobile-view', 'chat');
@@ -1142,9 +1181,88 @@ describe('RealMessages attachments', () => {
     await user.click(screen.getByRole('button', { name: 'Закрыть изображение' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
+
+  it('renders audio attachments as voice messages with waveform and playback speed', async () => {
+    const user = userEvent.setup();
+    const message: AppMessage = {
+      id: 'voice-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: '',
+      attachment: {
+        name: 'Голосовое сообщение.webm',
+        type: 'audio/webm;codecs=opus',
+        size: 2048,
+        url: '/uploads/voice.webm',
+        durationMs: 12_400,
+        waveform: [0.2, 0.6, 0.35, 0.8, 0.45, 1, 0.4, 0.7],
+      },
+      createdAt: '2026-08-10T00:01:00.000Z',
+      author: friend,
+    };
+    const { container } = renderChat([message]);
+
+    expect(screen.getByRole('button', { name: 'Воспроизвести голосовое сообщение' })).toBeVisible();
+    expect(screen.getByText('0:12')).toBeVisible();
+    expect(screen.getByRole('img', { name: 'Голосовое сообщение ещё не прослушано' })).toBeVisible();
+    expect(container.querySelector('.mova-real-bubble')).toHaveClass('has-voice');
+    expect(screen.queryByRole('link', { name: /Голосовое сообщение/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Скорость воспроизведения 1×' }));
+    expect(screen.getByRole('button', { name: 'Скорость воспроизведения 1.5×' })).toBeVisible();
+  });
+
+  it('hides the voice dot after the current user has listened', () => {
+    const message: AppMessage = {
+      id: 'listened-voice-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: '',
+      attachment: {
+        name: 'Голосовое сообщение.webm',
+        type: 'audio/webm;codecs=opus',
+        size: 2048,
+        url: '/uploads/listened-voice.webm',
+        durationMs: 4_000,
+        waveform: [0.2, 0.6, 0.35, 0.8, 0.45, 1, 0.4, 0.7],
+      },
+      listenedBy: [{ userId: currentUser.id, listenedAt: '2026-08-14T00:00:00.000Z' }],
+      createdAt: '2026-08-10T00:01:00.000Z',
+      author: friend,
+    };
+
+    renderChat([message]);
+
+    expect(screen.queryByRole('img', { name: 'Голосовое сообщение ещё не прослушано' })).not.toBeInTheDocument();
+  });
 });
 
 describe('RealMessages composer behavior', () => {
+  it('restores a persisted draft and clears it when the message is submitted', async () => {
+    const onDraftChange = vi.fn();
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} draftText="Сохранённый черновик" onDraftChange={onDraftChange} onSend={onSend} />);
+    const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
+
+    await waitFor(() => expect(composer).toHaveValue('Сохранённый черновик'));
+    fireEvent.change(composer, { target: { value: 'Обновлённый черновик' } });
+    expect(onDraftChange).toHaveBeenLastCalledWith('Обновлённый черновик');
+    fireEvent.keyDown(composer, { key: 'Enter' });
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('Обновлённый черновик', undefined, undefined));
+    expect(onDraftChange).toHaveBeenLastCalledWith('');
+  });
+
+  it('uses the reference mic action for an empty composer and switches to send for text', () => {
+    renderChat();
+    const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
+
+    expect(screen.getByRole('button', { name: 'Записать голосовое сообщение' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Отправить' })).not.toBeInTheDocument();
+    fireEvent.change(composer, { target: { value: 'Готово' } });
+    expect(screen.queryByRole('button', { name: 'Записать голосовое сообщение' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled();
+  });
+
   it('auto-grows, caps, scrolls, and shrinks the textarea', () => {
     let scrollHeight = 82;
     vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockImplementation(() => scrollHeight);
@@ -1531,14 +1649,12 @@ describe('RealMessages context actions and selection', () => {
     content: 'Собственное сообщение',
   };
 
-  it('opens Reply and Edit from visible message actions', async () => {
+  it('keeps only Edit in visible actions and moves Reply to the context menu', async () => {
     const user = userEvent.setup();
     const onEdit = vi.fn().mockResolvedValue(undefined);
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming, own]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={onEdit} />);
 
-    await user.click(screen.getAllByRole('button', { name: 'Ответить на сообщение' })[0]);
-    expect(screen.getByText('В ответ Друг')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Отменить ответ' }));
+    expect(screen.queryByRole('button', { name: 'Ответить на сообщение' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Редактировать сообщение' }));
     expect(screen.getByText('Редактирование сообщения')).toBeVisible();
   });
@@ -1710,7 +1826,7 @@ describe('RealMessages send failures', () => {
 
     expect(composer).toHaveValue('');
     expect(await screen.findByRole('alert')).toHaveTextContent('Сервер временно недоступен');
-    expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Записать голосовое сообщение' })).toBeVisible();
   });
 
   it('does not keep text in the composer while the request is pending', async () => {
@@ -1929,6 +2045,73 @@ describe('Product message retry', () => {
   });
 });
 
+describe('Product persistent offline outbox', () => {
+  it('restores edited offline messages after remount and resolves queued reply dependencies without duplicates', async () => {
+    let online = false;
+    vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => online);
+    const offlineUser: AppUser = { ...currentUser, id: 'offline-user', email: 'offline-user@mova.test' };
+    const offlineFriend: AppUser = { ...friend, id: 'offline-friend', email: 'offline-friend@mova.test' };
+    const offlineConversation: AppConversation = { ...conversation, id: 'offline-chat', members: [offlineUser, offlineFriend] };
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [offlineConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [offlineFriend] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+    const sendMessage = vi.spyOn(api, 'sendMessage');
+    const editMessage = vi.spyOn(api, 'editMessage');
+
+    const first = render(<Product currentUser={offlineUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+    const composer = await screen.findByRole('textbox', { name: 'Сообщение в Друг' });
+    await userEvent.setup().type(composer, 'Сообщение из офлайна{Enter}');
+
+    expect(await screen.findByLabelText('В очереди — отправится после подключения')).toBeVisible();
+    expect(screen.getByText('Нет соединения · новые сообщения останутся в очереди')).toBeVisible();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const queuedArticle = screen.getAllByText('Сообщение из офлайна').map((element) => element.closest('article')).find(Boolean)!;
+    await userEvent.setup().click(within(queuedArticle).getByRole('button', { name: 'Редактировать сообщение' }));
+    await userEvent.setup().clear(composer);
+    await userEvent.setup().type(composer, 'Отредактировано в офлайне{Enter}');
+    expect((await screen.findAllByText('Отредактировано в офлайне')).length).toBeGreaterThan(0);
+    expect(editMessage).not.toHaveBeenCalled();
+
+    const editedArticle = screen.getAllByText('Отредактировано в офлайне').map((element) => element.closest('article')).find(Boolean)!;
+    fireEvent.contextMenu(editedArticle);
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: 'Ответить' }));
+    await userEvent.setup().type(composer, 'Offline-ответ на queued-сообщение{Enter}');
+    expect((await screen.findAllByText('Offline-ответ на queued-сообщение')).length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText('В очереди — отправится после подключения')).toHaveLength(2);
+    first.unmount();
+
+    online = true;
+    sendMessage.mockImplementation(async (conversationId, content, attachment, replyToId, clientId) => {
+      if (content === 'Offline-ответ на queued-сообщение') expect(replyToId).toBe('offline-server-parent');
+      return { message: {
+        id: content === 'Offline-ответ на queued-сообщение' ? 'offline-server-reply' : 'offline-server-parent',
+        clientId,
+        conversationId,
+        authorId: offlineUser.id,
+        author: offlineUser,
+        content,
+        attachment,
+        replyToId,
+        createdAt: '2026-08-13T02:00:00.000Z',
+        sentAt: '2026-08-13T02:00:01.000Z',
+      } };
+    });
+    render(<Product currentUser={offlineUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+
+    expect((await screen.findAllByText('Offline-ответ на queued-сообщение')).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getAllByLabelText('Отправлено')).toHaveLength(2));
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.calls[0][1]).toBe('Отредактировано в офлайне');
+    const sentClientId = sendMessage.mock.calls[0][4];
+    expect(sentClientId).toMatch(/^client_/u);
+    expect(document.querySelectorAll('article.mova-real-message')).toHaveLength(2);
+    expect(screen.queryByLabelText('В очереди — отправится после подключения')).not.toBeInTheDocument();
+  });
+});
+
 describe('Product message history errors', () => {
   it('keeps cached history visible and retries the existing history request', async () => {
     let now = new Date('2026-08-10T12:00:00.000Z').getTime();
@@ -1978,6 +2161,32 @@ describe('Product message history errors', () => {
     expect(await screen.findByText(refreshedMessage.content)).toBeVisible();
     expect(messagesSpy).toHaveBeenCalledTimes(3);
     expect(screen.queryByText('Не удалось загрузить сообщения')).not.toBeInTheDocument();
+  });
+});
+
+describe('Product reconnect history sync', () => {
+  it('merges messages missed while the active chat websocket was disconnected', async () => {
+    const reconnectUser: AppUser = { ...currentUser, id: 'reconnect-user', email: 'reconnect-user@mova.test' };
+    const reconnectFriend: AppUser = { ...friend, id: 'reconnect-friend', email: 'reconnect-friend@mova.test' };
+    const reconnectConversation: AppConversation = { ...conversation, id: 'reconnect-chat', members: [reconnectUser, reconnectFriend] };
+    const initial: AppMessage = { id: 'before-disconnect', conversationId: reconnectConversation.id, authorId: reconnectUser.id, author: reconnectUser, content: 'До разрыва', createdAt: '2026-08-13T10:00:00.000Z' };
+    const missed: AppMessage = { id: 'missed-during-disconnect', conversationId: reconnectConversation.id, authorId: reconnectFriend.id, author: reconnectFriend, content: 'Пропущено во время разрыва', createdAt: '2026-08-13T10:01:00.000Z' };
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [reconnectConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [reconnectFriend] });
+    const messages = vi.spyOn(api, 'messages').mockResolvedValueOnce({ messages: [initial] }).mockResolvedValue({ messages: [initial, missed] });
+    vi.spyOn(api, 'markConversationRead').mockResolvedValue({ conversationId: reconnectConversation.id, userId: reconnectUser.id, messageIds: [missed.id], readAt: '2026-08-13T10:02:00.000Z' });
+    const rendered = render(<Product currentUser={reconnectUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+    expect(await screen.findByText(initial.content)).toBeVisible();
+
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'ready', user: reconnectUser })));
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'ready', user: reconnectUser })));
+
+    expect(await screen.findByText(missed.content)).toBeVisible();
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('article.mova-real-message')).toHaveLength(2);
+    rendered.unmount();
   });
 });
 

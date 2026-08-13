@@ -14,6 +14,7 @@ const server = spawn(process.execPath, ['server/index.mjs'], {
     ...process.env,
     MOVA_PORT: String(port),
     MOVA_DATABASE_PATH: join(testDirectory, 'db.json'),
+    MOVA_BACKUPS_ENABLED: 'false',
     MOVA_TURN_URLS: 'turn:turn.example.test:3478,turns:turn.example.test:443',
     MOVA_TURN_USERNAME: 'integration-user',
     MOVA_TURN_CREDENTIAL: 'integration-secret',
@@ -105,6 +106,11 @@ const settleRealtime = () => new Promise((resolve) => setTimeout(resolve, 120));
 
 try {
   await waitForServer();
+  const tracedHealth = await fetch(`${base}/api/health`, { headers: { 'x-request-id': 'integration-request-123' } });
+  if (tracedHealth.headers.get('x-request-id') !== 'integration-request-123') throw new Error('HTTP request correlation id was not preserved');
+  const metricsResponse = await fetch(`${base}/metrics`);
+  const metricsText = await metricsResponse.text();
+  if (!metricsResponse.ok || !metricsText.includes('mova_http_request_duration_ms_bucket') || !metricsText.includes('mova_process_uptime_seconds')) throw new Error('Production metrics were not exposed');
   const suffix = Date.now();
   const first = await call('/api/register', 'POST', {
     name: 'Первый',
@@ -158,8 +164,20 @@ try {
   const storedAttachmentResponse = await fetch(`${base}${attachmentMessage.message.attachment.url}`);
   const storedAttachmentContents = await storedAttachmentResponse.text();
   if (!storedAttachmentResponse.ok || storedAttachmentContents !== 'mova test' || attachmentMessage.message.attachment.dataUrl) throw new Error('Binary attachment was not stored outside the database');
+  const uploadedVoice = await upload('voice.webm', 'audio/webm', 'voice test', first.token);
+  const voiceWaveform = [0.2, 0.8, 0.4, 0.7, 0.3, 0.9, 0.5, 0.6];
+  const voiceMessage = await call(
+    `/api/conversations/${conversation.conversation.id}/messages`,
+    'POST',
+    { content: '', clientId: 'integration-voice-message', attachment: { ...uploadedVoice, durationMs: 1_800, waveform: voiceWaveform } },
+    first.token,
+  );
+  if (voiceMessage.message.attachment.durationMs !== 1_800 || JSON.stringify(voiceMessage.message.attachment.waveform) !== JSON.stringify(voiceWaveform)) throw new Error('Voice message metadata was not preserved');
   const firstSocket = await openSocket(first.token);
   const secondSocket = await openSocket(second.token);
+  const voiceListenedPromise = waitFor(firstSocket, 'message:voice-listened');
+  const voiceListenedReceipt = await call(`/api/conversations/${conversation.conversation.id}/messages/${voiceMessage.message.id}/listened`, 'POST', undefined, second.token);
+  const voiceListenedEvent = await voiceListenedPromise;
   const attachmentRetryEvents = captureEvents(secondSocket, 'message:new', (event) => event.message.clientId === 'integration-attachment-message');
   const attachmentRetry = await call(
     `/api/conversations/${conversation.conversation.id}/messages`,
@@ -225,6 +243,10 @@ try {
   const idempotentHistory = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
   const countByClientId = (clientId) => idempotentHistory.messages.filter((message) => message.clientId === clientId).length;
   if (countByClientId('integration-sequential') !== 1 || countByClientId('integration-concurrent') !== 1 || countByClientId(sharedClientId) !== 2) throw new Error('Re-read message DTOs did not preserve unique client ids');
+  const newestPage = await call(`/api/conversations/${conversation.conversation.id}/messages?limit=2`, 'GET', undefined, first.token);
+  const olderPage = await call(`/api/conversations/${conversation.conversation.id}/messages?limit=2&before=${encodeURIComponent(newestPage.nextCursor)}`, 'GET', undefined, first.token);
+  const pageIds = [...olderPage.messages, ...newestPage.messages].map((message) => message.id);
+  if (!newestPage.hasMore || !newestPage.nextCursor || new Set(pageIds).size !== pageIds.length || pageIds.some((id, index) => index > 0 && id === pageIds[index - 1])) throw new Error('Cursor message pagination was not stable');
   const sqliteVerification = new DatabaseSync(join(testDirectory, 'db.sqlite'), { readOnly: true });
   const sequentialRows = sqliteVerification.prepare('SELECT COUNT(*) AS count FROM messages WHERE author_id=? AND client_id=?').get(first.user.id, 'integration-sequential').count;
   const concurrentRows = sqliteVerification.prepare('SELECT COUNT(*) AS count FROM messages WHERE author_id=? AND client_id=?').get(first.user.id, 'integration-concurrent').count;
@@ -257,6 +279,7 @@ try {
   await call(`/api/conversations/${conversation.conversation.id}/read`, 'POST', { throughMessageId: attachmentMessage.message.id }, second.token);
   const readReceipt = await readPromise;
   const messagesAfterRead = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
+  const storedVoiceMessage = messagesAfterRead.messages.find((message) => message.id === voiceMessage.message.id);
   const incomingPromise = waitFor(secondSocket, 'call:invite');
   firstSocket.send(
     JSON.stringify({
@@ -371,6 +394,8 @@ try {
       attachmentRetry: attachmentRetry.message.id === attachmentMessage.message.id && attachmentRetryEvents.events.length === 0,
       persistedClientIdDto: countByClientId('integration-sequential') === 1,
       attachmentUrl: attachmentMessage.message.attachment.url.startsWith('/uploads/'),
+      voiceMetadata: voiceMessage.message.attachment.durationMs === 1_800,
+      voiceListened: voiceListenedReceipt.userId === second.user.id && voiceListenedEvent.messageId === voiceMessage.message.id && storedVoiceMessage.listenedBy[0].userId === second.user.id,
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id && replyEvent.message.replyTo.attachment.name === 'mova-test.txt',
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),
       typing: typingStarted.active === true && typingStopped.active === false,

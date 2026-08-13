@@ -12,6 +12,20 @@ afterEach(() => {
 });
 
 describe('message attachments', () => {
+  it('marks a voice message as listened through its dedicated receipt endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      conversationId: 'chat',
+      messageId: 'voice',
+      userId: 'me',
+      listenedAt: '2026-08-14T00:00:00.000Z',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.markVoiceListened('chat', 'voice');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/conversations/chat/messages/voice/listened', expect.objectContaining({ method: 'POST' }));
+  });
+
   it('exposes the uploaded URL before posting so a failed message can retry the same upload', async () => {
     const uploadedAttachment = { name: 'retry.txt', type: 'text/plain', size: 5, url: '/uploads/retry.txt' };
     const serverMessage = {
@@ -36,6 +50,25 @@ describe('message attachments', () => {
 
     expect(onAttachmentUploaded).toHaveBeenCalledWith(uploadedAttachment);
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ content: 'Файл', attachment: uploadedAttachment, clientId: 'client-retry' });
+  });
+
+  it('preserves voice duration and waveform after the binary upload', async () => {
+    const uploadedAttachment = { name: 'Голосовое сообщение.webm', type: 'audio/webm;codecs=opus', size: 5, url: '/uploads/voice.webm' };
+    const voiceAttachment = { name: uploadedAttachment.name, type: uploadedAttachment.type, size: uploadedAttachment.size, dataUrl: 'data:audio/webm;base64,dm9pY2U=', durationMs: 1_800, waveform: [0.2, 0.8, 0.4, 0.7, 0.3, 0.9, 0.5, 0.6] };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(new Blob(['voice'], { type: 'audio/webm' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ attachment: uploadedAttachment }), { status: 201, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: { id: 'voice', attachment: uploadedAttachment } }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.sendMessage('chat', '', voiceAttachment, undefined, 'voice-client');
+
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).attachment).toEqual({
+      ...uploadedAttachment,
+      durationMs: 1_800,
+      waveform: voiceAttachment.waveform,
+    });
   });
 });
 

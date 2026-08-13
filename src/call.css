@@ -105,6 +105,7 @@ body:has(>.mova-call-tile.is-expanded) .mova-open-chat.is-call-chat-open>.mova-r
 .mova-call-header-tools{position:absolute;left:0;top:5px;display:flex;align-items:center;gap:8px}
 .mova-call-control-icon svg,.mova-call-action-icon svg{display:block;overflow:visible;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;shape-rendering:geometricPrecision}
 .mova-call-header-tools .mova-network-quality{position:static;left:auto;top:auto;box-shadow:none}
+.mova-call-diagnostics-copy{width:42px;height:42px;color:#aeb4c0;background:rgba(24,29,38,.88);border:1px solid rgba(255,255,255,.08);border-radius:13px;box-shadow:none}.mova-call-diagnostics-copy:hover{color:#fff;background:#30343d}.mova-call-diagnostics-copy.is-copied{color:#8edcb4}.mova-call-diagnostics-copy.is-error{color:#ff8494}
 .mova-open-chat.is-in-call .mova-call-stage>header>span>small{font-size:11px;font-variant-numeric:tabular-nums}
 
 .mova-call-grid.is-participants>.mova-call-primary-participant,.mova-call-grid.is-participants>.mova-call-secondary-participants,.mova-call-grid.is-participants>.mova-call-self-view{display:contents}
@@ -147,6 +148,7 @@ body:has(>.mova-call-tile.is-expanded) .mova-open-chat.is-call-chat-open>.mova-r
   .mova-open-chat.is-in-call .mova-call-stage>header strong{overflow:hidden;display:block;font-size:15px;text-overflow:ellipsis;white-space:nowrap}
   .mova-call-header-tools{left:0;top:6px}
   .mova-call-header-tools .mova-network-quality{width:42px;height:42px;border-radius:50%}
+  .mova-call-diagnostics-copy{border-radius:50%}
   .mova-open-chat.is-in-call .mova-call-grid.is-participants{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) 94px;gap:8px;width:100%;padding:5px 0 9px;overflow:hidden}
   .mova-open-chat.is-in-call .mova-call-grid.is-participants:not(:has(>.mova-call-secondary-participants)){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
   .mova-call-grid.is-participants>.mova-call-primary-participant{display:flex;min-width:0;min-height:0}

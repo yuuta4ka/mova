@@ -21,10 +21,16 @@ export interface MessageAttachment {
   size: number;
   dataUrl?: string;
   url?: string;
+  durationMs?: number;
+  waveform?: number[];
 }
 export interface MessageReadReceipt {
   userId: string;
   readAt: string;
+}
+export interface VoiceListenReceipt {
+  userId: string;
+  listenedAt: string;
 }
 export interface MessageReply {
   id: string;
@@ -46,8 +52,9 @@ export interface AppMessage {
   sentAt?: string;
   editedAt?: string;
   readBy?: MessageReadReceipt[];
+  listenedBy?: VoiceListenReceipt[];
   clientId?: string;
-  deliveryState?: 'sending' | 'failed';
+  deliveryState?: 'queued' | 'sending' | 'failed';
   kind?: 'user' | 'call' | 'friend_request';
   call?: {
     status: 'completed';
@@ -152,7 +159,11 @@ async function uploadAttachment(attachment: MessageAttachment): Promise<MessageA
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || 'Не удалось загрузить файл');
-  return result.attachment;
+  return {
+    ...result.attachment,
+    ...(attachment.durationMs ? { durationMs: attachment.durationMs } : {}),
+    ...(attachment.waveform?.length ? { waveform: attachment.waveform } : {}),
+  };
 }
 
 export const api = {
@@ -192,10 +203,16 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteConversation: (conversationId: string) => request<{ conversationId: string }>(`/api/conversations/${conversationId}`, { method: 'DELETE' }),
-  messages: (conversationId: string) => request<{ messages: AppMessage[] }>(`/api/conversations/${conversationId}/messages`),
-  sendMessage: async (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string, clientId?: string, onAttachmentUploaded?: (attachment: MessageAttachment) => void) => {
+  messages: (conversationId: string, options: { before?: string; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (options.before) search.set('before', options.before);
+    if (options.limit) search.set('limit', String(options.limit));
+    const query = search.size ? `?${search}` : '';
+    return request<{ messages: AppMessage[]; hasMore?: boolean; nextCursor?: string | null }>(`/api/conversations/${conversationId}/messages${query}`);
+  },
+  sendMessage: async (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string, clientId?: string, onAttachmentUploaded?: (attachment: MessageAttachment) => void | Promise<void>) => {
     const uploadedAttachment = attachment ? await uploadAttachment(attachment) : undefined;
-    if (uploadedAttachment && uploadedAttachment !== attachment) onAttachmentUploaded?.(uploadedAttachment);
+    if (uploadedAttachment && uploadedAttachment !== attachment) await onAttachmentUploaded?.(uploadedAttachment);
     return request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages`, {
       method: 'POST',
       body: JSON.stringify({ content, attachment: uploadedAttachment, replyToId, clientId }),
@@ -212,6 +229,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ throughMessageId }),
     }),
+  markVoiceListened: (conversationId: string, messageId: string) =>
+    request<{
+      conversationId: string;
+      messageId: string;
+      userId: string;
+      listenedAt: string;
+    }>(`/api/conversations/${conversationId}/messages/${messageId}/listened`, { method: 'POST' }),
   rtcConfig: () => request<RtcConfig>('/api/rtc-config'),
   pushConfig: () => request<PushConfig>('/api/push-config'),
   savePushSubscription: (subscription: PushSubscriptionJSON) => request<{ ok: true }>('/api/push-subscriptions', { method: 'POST', body: JSON.stringify(subscription) }),
@@ -230,6 +254,13 @@ export type RealtimeEvent =
       userId: string;
       messageIds: string[];
       readAt: string;
+    }
+  | {
+      type: 'message:voice-listened';
+      conversationId: string;
+      messageId: string;
+      userId: string;
+      listenedAt: string;
     }
   | { type: 'conversation:new'; conversationId: string }
   | { type: 'conversation:delete'; conversationId: string }

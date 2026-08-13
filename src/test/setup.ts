@@ -1,6 +1,8 @@
 import '@testing-library/jest-dom/vitest';
+import 'fake-indexeddb/auto';
 import { cleanup } from '@testing-library/react';
 import { afterEach, beforeEach } from 'vitest';
+import { resetPersistentClientStore } from '../lib/persistentClientStore';
 
 function createMemoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -24,4 +26,7 @@ const installStorage = () => {
 installStorage();
 beforeEach(installStorage);
 
-afterEach(() => cleanup());
+afterEach(async () => {
+  cleanup();
+  await resetPersistentClientStore();
+});

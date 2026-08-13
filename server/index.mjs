@@ -9,7 +9,9 @@ import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
 import webpush from 'web-push';
 import { openDatabase, resolveDataPaths } from './database.mjs';
+import { backupIfDue, resolveBackupConfig } from './backup.mjs';
 import { MaintenanceStore } from './maintenance.mjs';
+import { MovaMetrics, createLogger, requestId, routeName } from './observability.mjs';
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(serverRoot, '..');
@@ -29,10 +31,22 @@ const voiceReconnectGraceMs = Math.max(1_000, Number(process.env.MOVA_VOICE_RECO
 const hashAsync = promisify(scrypt);
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 eventLoopDelay.enable();
-const metrics = { requests: 0, errors: 0, requestDurationMs: 0, rejected: 0, wsMessages: 0 };
+const metrics = new MovaMetrics();
 const rateLimits = new Map();
 let database;
 let pushPublicKey = '';
+let backupInFlight = null;
+
+function decodeMessageCursor(value) {
+  if (!value) return undefined;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
+    if (cursor.v !== 1 || typeof cursor.createdAt !== 'string' || typeof cursor.id !== 'string' || !cursor.createdAt || !cursor.id) return null;
+    return cursor;
+  } catch {
+    return null;
+  }
+}
 
 function configureWebPush() {
   const environmentPublicKey = String(process.env.MOVA_VAPID_PUBLIC_KEY || '');
@@ -69,7 +83,7 @@ async function sendPushToUser(userId, notification) {
         await webpush.sendNotification(subscription, JSON.stringify(notification), { TTL: notification.kind === 'call' ? 45 : 86_400, urgency: notification.kind === 'call' ? 'high' : 'normal' });
       } catch (error) {
         if ([404, 410].includes(Number(error?.statusCode))) database.deletePushSubscription(subscription.endpoint);
-        else console.warn('Web Push delivery failed:', error?.message || error);
+        else logger.warn('push.delivery_failed', { statusCode: error?.statusCode, error });
       }
     }),
   );
@@ -85,7 +99,7 @@ function messagePushNotification(message, recipientId) {
   const conversation = database.getConversation(message.conversationId);
   if (!author || !conversation || recipientId === message.authorId || (message.kind && message.kind !== 'user')) return null;
   const title = conversation.kind === 'group' ? `${author.name} · ${conversation.title}` : author.name;
-  const body = String(message.content || '').trim() || (message.attachment?.type?.startsWith('image/') ? 'Фотография' : message.attachment ? `Файл: ${message.attachment.name}` : 'Новое сообщение');
+  const body = String(message.content || '').trim() || (message.attachment?.type?.startsWith('image/') ? 'Фотография' : message.attachment?.type?.startsWith('audio/') && message.attachment.durationMs ? 'Голосовое сообщение' : message.attachment ? `Файл: ${message.attachment.name}` : 'Новое сообщение');
   return {
     kind: 'message',
     title,
@@ -112,7 +126,7 @@ function rtcIceServers() {
       const parsed = JSON.parse(process.env.MOVA_ICE_SERVERS);
       if (Array.isArray(parsed) && parsed.length) return parsed;
     } catch (error) {
-      console.error('MOVA_ICE_SERVERS must be valid JSON:', error.message);
+      logger.error('rtc.configuration_invalid', { source: 'MOVA_ICE_SERVERS', error });
     }
   }
   const urls = String(process.env.MOVA_TURN_URLS || process.env.MOVA_TURN_URL || '')
@@ -134,6 +148,7 @@ function rtcIceServers() {
 const id = (prefix) => `${prefix}_${randomBytes(10).toString('hex')}`;
 const instanceId = id('instance');
 const instanceStartedAt = new Date().toISOString();
+const logger = createLogger({ instanceId });
 const secureEqual = (left, right) => {
   const leftBuffer = Buffer.from(String(left || ''));
   const rightBuffer = Buffer.from(String(right || ''));
@@ -244,6 +259,7 @@ function messageDto(message, readStates = database.readStates(message.conversati
     ...message,
     sentAt: message.sentAt || message.createdAt,
     readBy: readStates.filter((receipt) => receipt.userId !== message.authorId && receipt.readAt >= message.createdAt),
+    listenedBy: message.attachment?.type?.startsWith('audio/') && message.attachment.durationMs ? database.voiceListens(message.id) : [],
     author: userDto(database.getUserById(message.authorId), viewerId),
     ...(replyMessage && replyAuthor
       ? {
@@ -788,8 +804,12 @@ async function handleApi(request, response) {
     const messageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (messageMatch && !isMember(user.id, messageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (messageMatch && request.method === 'GET') {
+      const cursor = decodeMessageCursor(url.searchParams.get('before'));
+      if (cursor === null) return json(response, 400, { error: 'Некорректный курсор истории' });
+      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 80)));
       const readStates = database.readStates(messageMatch[1]);
-      return json(response, 200, { messages: database.messages(messageMatch[1], 200).map((message) => messageDto(message, readStates, user.id)) });
+      const page = database.messagePage(messageMatch[1], { limit, before: cursor });
+      return json(response, 200, { ...page, messages: page.messages.map((message) => messageDto(message, readStates, user.id)) });
     }
     if (messageMatch && request.method === 'POST') {
       if (!canInteractInConversation(messageMatch[1], user.id)) return json(response, 403, { error: 'Обмен сообщениями недоступен из-за блокировки' });
@@ -844,6 +864,20 @@ async function handleApi(request, response) {
       broadcastMessage('message:new', stored.message);
       return json(response, 201, { message: dto });
     }
+    const voiceListenedMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/listened$/);
+    if (voiceListenedMatch && !isMember(user.id, voiceListenedMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
+    if (voiceListenedMatch && request.method === 'POST') {
+      const message = database.getMessage(voiceListenedMatch[2], voiceListenedMatch[1]);
+      if (!message) return json(response, 404, { error: 'Сообщение не найдено' });
+      if (!message.attachment?.type?.startsWith('audio/') || !message.attachment.durationMs) return json(response, 400, { error: 'Это не голосовое сообщение' });
+      if (message.authorId === user.id) return json(response, 400, { error: 'Своё голосовое уже известно как прослушанное' });
+      const listenedAt = new Date().toISOString();
+      const created = database.markVoiceListened(message.id, user.id, listenedAt);
+      const receipt = database.voiceListens(message.id).find((item) => item.userId === user.id) || { userId: user.id, listenedAt };
+      const result = { conversationId: message.conversationId, messageId: message.id, ...receipt };
+      if (created) broadcastToConversation(message.conversationId, { type: 'message:voice-listened', ...result });
+      return json(response, 200, result);
+    }
     const editMessageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/);
     if (editMessageMatch && !isMember(user.id, editMessageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (editMessageMatch && request.method === 'PATCH') {
@@ -870,8 +904,8 @@ async function handleApi(request, response) {
     return json(response, 404, { error: 'Не найдено' });
   } catch (error) {
     const status = Number(error?.statusCode) || 500;
-    if (status >= 500) console.error(error);
-    if (status === 429) metrics.rejected += 1;
+    if (status >= 500) logger.error('http.request_failed', { requestId: request.movaRequestId, method: request.method, route: routeName(new URL(request.url, 'http://localhost').pathname), error });
+    if (status === 429) metrics.recordRejection('rate_limit');
     return json(response, status, { error: status >= 500 ? 'Внутренняя ошибка сервера' : error.message });
   }
 }
@@ -962,31 +996,42 @@ async function serveFrontend(request, response) {
 
 function handleRequest(request, response) {
   const pathname = new URL(request.url, 'http://localhost').pathname;
+  const currentRequestId = requestId(request.headers['x-request-id']);
+  const normalizedRoute = routeName(pathname);
   const startedAt = performance.now();
-  metrics.requests += 1;
+  request.movaRequestId = currentRequestId;
+  response.setHeader('x-request-id', currentRequestId);
   response.once('finish', () => {
-    metrics.requestDurationMs += performance.now() - startedAt;
-    if (response.statusCode >= 500) metrics.errors += 1;
+    const durationMs = performance.now() - startedAt;
+    metrics.recordHttp({ method: request.method || 'UNKNOWN', route: normalizedRoute, status: response.statusCode, durationMs });
+    const quietSuccessfulPoll = request.method === 'GET' && ['/api/health', '/api/ready', '/api/maintenance', '/metrics', '/static'].includes(normalizedRoute) && response.statusCode < 400;
+    if (!quietSuccessfulPoll)
+      logger[response.statusCode >= 500 ? 'error' : response.statusCode >= 400 ? 'warn' : 'info']('http.request_completed', {
+        requestId: currentRequestId,
+        method: request.method,
+        route: normalizedRoute,
+        status: response.statusCode,
+        durationMs: Math.round(durationMs * 100) / 100,
+      });
   });
   if (pathname === '/metrics') {
+    const metricsToken = process.env.MOVA_METRICS_TOKEN || '';
+    const providedToken = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    if (metricsToken && !secureEqual(providedToken, metricsToken)) return json(response, 401, { error: 'Metrics endpoint is not authorized' });
     const stats = database.stats();
-    const average = metrics.requests ? metrics.requestDurationMs / metrics.requests : 0;
     response.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store' });
-    return response.end(
-      [
-        `mova_http_requests_total ${metrics.requests}`,
-        `mova_http_errors_total ${metrics.errors}`,
-        `mova_http_rejected_total ${metrics.rejected}`,
-        `mova_http_request_duration_average_ms ${average.toFixed(3)}`,
-        `mova_websocket_connections ${sockets?.clients?.size || 0}`,
-        `mova_websocket_messages_total ${metrics.wsMessages}`,
-        `mova_event_loop_delay_mean_ms ${(eventLoopDelay.mean / 1e6 || 0).toFixed(3)}`,
-        `mova_event_loop_delay_p99_ms ${(eventLoopDelay.percentile(99) / 1e6 || 0).toFixed(3)}`,
-        `mova_users ${stats.users}`,
-        `mova_conversations ${stats.conversations}`,
-        `mova_messages ${stats.messages}`,
-      ].join('\n') + '\n',
-    );
+    return response.end(metrics.render({
+      mova_websocket_connections: sockets?.clients?.size || 0,
+      mova_active_calls: activeCalls.size,
+      mova_voice_participants: [...voiceRooms.values()].reduce((total, room) => total + room.size, 0),
+      mova_event_loop_delay_mean_ms: eventLoopDelay.mean / 1e6 || 0,
+      mova_event_loop_delay_p99_ms: eventLoopDelay.percentile(99) / 1e6 || 0,
+      mova_users: stats.users,
+      mova_conversations: stats.conversations,
+      mova_messages: stats.messages,
+      mova_process_uptime_seconds: process.uptime(),
+      mova_backups_enabled: backupConfig.enabled ? 1 : 0,
+    }));
   }
   if (pathname.startsWith('/uploads/')) return serveUpload(request, response, pathname);
   return pathname.startsWith('/api/') ? handleApi(request, response) : serveFrontend(request, response);
@@ -1048,14 +1093,17 @@ function handleSocket(socket, request) {
   for (const conversationId of activeCalls.keys()) if (isMember(user.id, conversationId)) safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
   socket.on('message', (raw) => {
     try {
-      metrics.wsMessages += 1;
       if (Date.now() - socket.rateWindowStartedAt >= 10_000) {
         socket.rateWindowStartedAt = Date.now();
         socket.rateWindowMessages = 0;
       }
       socket.rateWindowMessages += 1;
-      if (socket.rateWindowMessages > 300) return socket.close(4008, 'Rate limit');
+      if (socket.rateWindowMessages > 300) {
+        metrics.recordRejection('websocket_rate_limit');
+        return socket.close(4008, 'Rate limit');
+      }
       const event = JSON.parse(raw.toString());
+      metrics.recordWebSocket(event.type);
       if (event.type === 'heartbeat')
         return safeSocketSend(socket,
           JSON.stringify({
@@ -1203,7 +1251,8 @@ function handleSocket(socket, request) {
         for (const targetSocket of clients.get(event.targetUserId) || []) safeSocketSend(targetSocket, payload);
       }
     } catch (error) {
-      console.warn('Rejected WebSocket event:', error.message);
+      metrics.recordRejection('websocket_event');
+      logger.warn('websocket.event_rejected', { userId: user.id, error });
     }
   });
   socket.on('close', () => {
@@ -1225,8 +1274,27 @@ function handleSocket(socket, request) {
 database = await openDatabase(dataPaths);
 configureWebPush();
 await database.cleanupOrphanUploads();
-const uploadCleanupTimer = setInterval(() => void database.cleanupOrphanUploads().catch((error) => console.error('Upload cleanup failed:', error)), 6 * 60 * 60_000);
+const backupConfig = resolveBackupConfig(dataPaths);
+const runBackup = () => {
+  if (backupInFlight) return backupInFlight;
+  backupInFlight = backupIfDue(database, backupConfig)
+    .then((backup) => {
+      if (!backup) return;
+      metrics.recordBackup(true);
+      logger.info('backup.created', { path: backup.path });
+    })
+    .catch((error) => {
+      metrics.recordBackup(false);
+      logger.error('backup.failed', { error });
+    })
+    .finally(() => { backupInFlight = null; });
+  return backupInFlight;
+};
+void runBackup();
+const uploadCleanupTimer = setInterval(() => void database.cleanupOrphanUploads().catch((error) => logger.error('uploads.cleanup_failed', { error })), 6 * 60 * 60_000);
 uploadCleanupTimer.unref();
+const backupTimer = setInterval(() => void runBackup(), Math.min(60 * 60_000, backupConfig.intervalMs));
+backupTimer.unref();
 const server = createServer(handleRequest);
 const sockets = new WebSocketServer({ noServer: true, maxPayload: 256_000, perMessageDeflate: false });
 sockets.on('connection', handleSocket);
@@ -1250,20 +1318,22 @@ server.on('upgrade', (request, socket, head) => {
 server.requestTimeout = 30_000;
 server.headersTimeout = 15_000;
 server.keepAliveTimeout = 5_000;
-server.listen(port, host, () => console.log(`Mova ready at http://${host}:${port}; data: ${dataPaths.sqlitePath}; uploads: ${dataPaths.uploadsPath}`));
+server.listen(port, host, () => logger.info('server.ready', { host, port, databasePath: dataPaths.sqlitePath, uploadsPath: dataPaths.uploadsPath }));
 
 let shuttingDown = false;
 function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`${signal}: shutting down`);
+  logger.info('server.shutting_down', { signal });
   clearInterval(socketHeartbeat);
   clearInterval(uploadCleanupTimer);
+  clearInterval(backupTimer);
   for (const timer of callCleanupTimers.values()) clearTimeout(timer);
   for (const timer of voiceReconnectTimers.values()) clearTimeout(timer);
   for (const socket of sockets.clients) socket.close(1001, 'Server shutdown');
   sockets.close();
-  server.close(() => {
+  server.close(async () => {
+    await backupInFlight?.catch(() => undefined);
     eventLoopDelay.disable();
     database.close();
     process.exit(0);

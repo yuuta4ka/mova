@@ -19,6 +19,19 @@ export interface PeerCallDiagnostics {
   iceConnectionState: RTCIceConnectionState;
   outboundAudioBytes: number;
   inboundAudioBytes: number;
+  outboundAudioBitrateKbps?: number;
+  inboundAudioBitrateKbps?: number;
+  outboundVideoBitrateKbps?: number;
+  inboundVideoBitrateKbps?: number;
+  outboundVideoFramesPerSecond?: number;
+  inboundVideoFramesPerSecond?: number;
+  framesEncoded?: number;
+  framesDecoded?: number;
+  framesDropped?: number;
+  freezeCount?: number;
+  totalFreezesDurationMs?: number;
+  audioCodec?: string;
+  videoCodec?: string;
   candidateType?: string;
   protocol?: string;
   roundTripTimeMs?: number;
@@ -265,6 +278,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const reconnectTimeout = useRef<number | null>(null);
   const previousPeerStats = useRef(new Map<string, {
     outbound: number;
+    inbound: number;
+    outboundVideoBytes: number;
+    inboundVideoBytes: number;
+    outboundVideoFrames: number;
+    inboundVideoFrames: number;
     screenBytes: number;
     screenFrames: number;
     packetsLost: number;
@@ -541,6 +559,17 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         const reports = await peer.getStats();
         let outboundAudioBytes = 0;
         let inboundAudioBytes = 0;
+        let outboundVideoBytes = 0;
+        let inboundVideoBytes = 0;
+        let outboundVideoFrames = 0;
+        let inboundVideoFrames = 0;
+        let outboundVideoFramesPerSecond: number | undefined;
+        let inboundVideoFramesPerSecond: number | undefined;
+        let framesDropped = 0;
+        let freezeCount = 0;
+        let totalFreezesDurationMs = 0;
+        let audioCodec: string | undefined;
+        let videoCodec: string | undefined;
         let hasOutboundAudio = false;
         let outboundScreenBytes = 0;
         let outboundScreenFrames = 0;
@@ -562,15 +591,24 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           if (report.type === 'outbound-rtp' && mediaKind === 'audio' && !report.isRemote) {
             hasOutboundAudio = true;
             outboundAudioBytes += Number(report.bytesSent || 0);
+            const codec = report.codecId ? reports.get(report.codecId) : undefined;
+            if (codec?.mimeType) audioCodec = String(codec.mimeType);
           }
           if (report.type === 'inbound-rtp' && mediaKind === 'audio' && !report.isRemote) {
             inboundAudioBytes += Number(report.bytesReceived || 0);
             packetsLost += Math.max(0, Number(report.packetsLost || 0));
             packetsReceived += Math.max(0, Number(report.packetsReceived || 0));
             if (Number.isFinite(Number(report.jitter))) jitterSeconds = Number(report.jitter);
+            const codec = report.codecId ? reports.get(report.codecId) : undefined;
+            if (!audioCodec && codec?.mimeType) audioCodec = String(codec.mimeType);
           }
           if (report.type === 'remote-inbound-rtp' && mediaKind === 'audio' && Number.isFinite(Number(report.roundTripTime))) roundTripTimeSeconds = Number(report.roundTripTime);
           if (report.type === 'outbound-rtp' && mediaKind === 'video' && !report.isRemote) {
+            outboundVideoBytes += Math.max(0, Number(report.bytesSent || 0));
+            outboundVideoFrames += Math.max(0, Number(report.framesEncoded || 0));
+            if (Number.isFinite(Number(report.framesPerSecond))) outboundVideoFramesPerSecond = Math.max(outboundVideoFramesPerSecond || 0, Math.round(Number(report.framesPerSecond)));
+            const codec = report.codecId ? reports.get(report.codecId) : undefined;
+            if (codec?.mimeType) videoCodec = String(codec.mimeType);
             const mediaSource = report.mediaSourceId ? reports.get(report.mediaSourceId) : undefined;
             const trackIdentifier = report.trackIdentifier || mediaSource?.trackIdentifier;
             if (screenTrackId && trackIdentifier === screenTrackId) {
@@ -579,6 +617,16 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
               if (Number.isFinite(Number(report.framesPerSecond))) outboundScreenFramesPerSecond = Math.round(Number(report.framesPerSecond));
               if (report.qualityLimitationReason && report.qualityLimitationReason !== 'none') screenQualityLimitationReason = String(report.qualityLimitationReason);
             }
+          }
+          if (report.type === 'inbound-rtp' && mediaKind === 'video' && !report.isRemote) {
+            inboundVideoBytes += Math.max(0, Number(report.bytesReceived || 0));
+            inboundVideoFrames += Math.max(0, Number(report.framesDecoded || 0));
+            framesDropped += Math.max(0, Number(report.framesDropped || 0));
+            freezeCount += Math.max(0, Number(report.freezeCount || 0));
+            totalFreezesDurationMs += Math.max(0, Number(report.totalFreezesDuration || 0)) * 1000;
+            if (Number.isFinite(Number(report.framesPerSecond))) inboundVideoFramesPerSecond = Math.max(inboundVideoFramesPerSecond || 0, Math.round(Number(report.framesPerSecond)));
+            const codec = report.codecId ? reports.get(report.codecId) : undefined;
+            if (!videoCodec && codec?.mimeType) videoCodec = String(codec.mimeType);
           }
           if (report.type === 'transport' && report.selectedCandidatePairId) selectedPair = reports.get(report.selectedCandidatePairId) as typeof selectedPair;
         });
@@ -594,6 +642,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         const jitterMs = jitterSeconds === undefined ? undefined : Math.round(jitterSeconds * 1000);
         const previous = previousPeerStats.current.get(userId) || {
           outbound: -1,
+          inbound: -1,
+          outboundVideoBytes: -1,
+          inboundVideoBytes: -1,
+          outboundVideoFrames: -1,
+          inboundVideoFrames: -1,
           screenBytes: -1,
           screenFrames: -1,
           packetsLost: -1,
@@ -603,6 +656,15 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           lastRecoveryAt: 0,
         };
         const sampleDurationSeconds = Math.max(0.001, (Date.now() - previous.sampledAt) / 1000);
+        const bitrate = (current: number, prior: number) => prior >= 0 && current >= prior ? Math.round(((current - prior) * 8) / sampleDurationSeconds / 1000) : undefined;
+        const outboundAudioBitrateKbps = bitrate(outboundAudioBytes, previous.outbound);
+        const inboundAudioBitrateKbps = bitrate(inboundAudioBytes, previous.inbound);
+        const outboundVideoBitrateKbps = bitrate(outboundVideoBytes, previous.outboundVideoBytes);
+        const inboundVideoBitrateKbps = bitrate(inboundVideoBytes, previous.inboundVideoBytes);
+        if (outboundVideoFramesPerSecond === undefined && previous.outboundVideoFrames >= 0 && outboundVideoFrames >= previous.outboundVideoFrames)
+          outboundVideoFramesPerSecond = Math.round((outboundVideoFrames - previous.outboundVideoFrames) / sampleDurationSeconds);
+        if (inboundVideoFramesPerSecond === undefined && previous.inboundVideoFrames >= 0 && inboundVideoFrames >= previous.inboundVideoFrames)
+          inboundVideoFramesPerSecond = Math.round((inboundVideoFrames - previous.inboundVideoFrames) / sampleDurationSeconds);
         const outboundScreenBitrateKbps = previous.screenBytes >= 0 && outboundScreenBytes >= previous.screenBytes
           ? Math.round(((outboundScreenBytes - previous.screenBytes) * 8) / sampleDurationSeconds / 1000)
           : undefined;
@@ -620,6 +682,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         const shouldRecover = stalledChecks >= 3 && Date.now() - previous.lastRecoveryAt > 20_000;
         previousPeerStats.current.set(userId, {
           outbound: outboundAudioBytes,
+          inbound: inboundAudioBytes,
+          outboundVideoBytes,
+          inboundVideoBytes,
+          outboundVideoFrames,
+          inboundVideoFrames,
           screenBytes: outboundScreenBytes,
           screenFrames: outboundScreenFrames,
           packetsLost,
@@ -637,6 +704,19 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           iceConnectionState: peer.iceConnectionState,
           outboundAudioBytes,
           inboundAudioBytes,
+          outboundAudioBitrateKbps,
+          inboundAudioBitrateKbps,
+          outboundVideoBitrateKbps,
+          inboundVideoBitrateKbps,
+          outboundVideoFramesPerSecond,
+          inboundVideoFramesPerSecond,
+          framesEncoded: outboundVideoFrames,
+          framesDecoded: inboundVideoFrames,
+          framesDropped,
+          freezeCount,
+          totalFreezesDurationMs: Math.round(totalFreezesDurationMs),
+          audioCodec,
+          videoCodec,
           candidateType: [localCandidate?.candidateType, remoteCandidate?.candidateType].filter(Boolean).join(' → ') || undefined,
           protocol: localCandidate?.protocol || remoteCandidate?.protocol,
           roundTripTimeMs,

@@ -14,8 +14,8 @@ import {
   Video,
 } from 'lucide-react';
 
-const version = '0.1.5.1';
-const releaseTag = '0.1.6';
+const version = '0.1.7';
+const releaseTag = '0.1.7';
 const githubUrl = 'https://github.com/yuuta4ka/mova';
 const donationUrl = 'https://donatex.gg/donate/yuuta';
 const releaseBase = `https://github.com/yuuta4ka/mova/releases/download/v${releaseTag}`;
@@ -25,7 +25,7 @@ const downloads = [
     name: 'Windows',
     detail: 'Windows 10 и 11 · x64',
     meta: `Версия ${version} · EXE`,
-    href: `${releaseBase}/Mova-Setup-${version}.exe`,
+    href: `${releaseBase}/Mova%20Setup%20${version}.exe`,
     icon: MonitorDown,
   },
   {
