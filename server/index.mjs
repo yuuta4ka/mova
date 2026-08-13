@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
+import webpush from 'web-push';
 import { openDatabase, resolveDataPaths } from './database.mjs';
 import { MaintenanceStore } from './maintenance.mjs';
 
@@ -31,6 +32,78 @@ eventLoopDelay.enable();
 const metrics = { requests: 0, errors: 0, requestDurationMs: 0, rejected: 0, wsMessages: 0 };
 const rateLimits = new Map();
 let database;
+let pushPublicKey = '';
+
+function configureWebPush() {
+  const environmentPublicKey = String(process.env.MOVA_VAPID_PUBLIC_KEY || '');
+  const environmentPrivateKey = String(process.env.MOVA_VAPID_PRIVATE_KEY || '');
+  let publicKey = environmentPublicKey;
+  let privateKey = environmentPrivateKey;
+  if (!publicKey || !privateKey) {
+    publicKey = database.metadata('vapid_public_key') || '';
+    privateKey = database.metadata('vapid_private_key') || '';
+  }
+  if (!publicKey || !privateKey) {
+    const generated = webpush.generateVAPIDKeys();
+    publicKey = generated.publicKey;
+    privateKey = generated.privateKey;
+    database.setMetadata('vapid_public_key', publicKey);
+    database.setMetadata('vapid_private_key', privateKey);
+  }
+  pushPublicKey = publicKey;
+  webpush.setVapidDetails(process.env.MOVA_VAPID_SUBJECT || 'mailto:admin@hola-mova.ru', publicKey, privateKey);
+}
+
+function pushAllowed(userId) {
+  const user = database.getUserById(userId);
+  if (!user) return false;
+  if (user.presence !== 'dnd') return true;
+  return Boolean(user.dndUntil && user.dndUntil !== 'forever' && new Date(user.dndUntil).getTime() <= Date.now());
+}
+
+async function sendPushToUser(userId, notification) {
+  if (!pushPublicKey || (notification.kind !== 'close' && !pushAllowed(userId))) return;
+  await Promise.all(
+    database.pushSubscriptions(userId).map(async (subscription) => {
+      try {
+        await webpush.sendNotification(subscription, JSON.stringify(notification), { TTL: notification.kind === 'call' ? 45 : 86_400, urgency: notification.kind === 'call' ? 'high' : 'normal' });
+      } catch (error) {
+        if ([404, 410].includes(Number(error?.statusCode))) database.deletePushSubscription(subscription.endpoint);
+        else console.warn('Web Push delivery failed:', error?.message || error);
+      }
+    }),
+  );
+}
+
+function closeCallPush(conversationId) {
+  for (const userId of database.memberIds(conversationId))
+    void sendPushToUser(userId, { kind: 'close', closeTag: `mova-call-${conversationId}` });
+}
+
+function messagePushNotification(message, recipientId) {
+  const author = database.getUserById(message.authorId);
+  const conversation = database.getConversation(message.conversationId);
+  if (!author || !conversation || recipientId === message.authorId || (message.kind && message.kind !== 'user')) return null;
+  const title = conversation.kind === 'group' ? `${author.name} · ${conversation.title}` : author.name;
+  const body = String(message.content || '').trim() || (message.attachment?.type?.startsWith('image/') ? 'Фотография' : message.attachment ? `Файл: ${message.attachment.name}` : 'Новое сообщение');
+  return {
+    kind: 'message',
+    title,
+    body,
+    icon: author.avatarDataUrl || '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: `mova-conversation-${message.conversationId}`,
+    conversationId: message.conversationId,
+    url: `/app?conversation=${encodeURIComponent(message.conversationId)}`,
+  };
+}
+
+function pushMessage(message) {
+  for (const userId of database.memberIds(message.conversationId)) {
+    const notification = messagePushNotification(message, userId);
+    if (notification) void sendPushToUser(userId, notification);
+  }
+}
 
 const defaultIceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
 function rtcIceServers() {
@@ -75,6 +148,10 @@ const publicUser = (storedUser) => {
     ...normalized,
     isOnline: normalized.presence !== 'invisible' && connected,
   };
+};
+const userDto = (storedUser, viewerId) => {
+  const user = publicUser(storedUser);
+  return user && viewerId ? { ...user, relationship: database.relationship(viewerId, user.id) } : user;
 };
 const normalizeEmail = (email) =>
   String(email || '')
@@ -160,14 +237,14 @@ function auth(request) {
 function isMember(userId, conversationId) {
   return database.isMember(userId, conversationId);
 }
-function messageDto(message, readStates = database.readStates(message.conversationId)) {
+function messageDto(message, readStates = database.readStates(message.conversationId), viewerId) {
   const replyMessage = message.replyToId ? database.getMessage(message.replyToId, message.conversationId) : null;
   const replyAuthor = replyMessage ? database.getUserById(replyMessage.authorId) : null;
   return {
     ...message,
     sentAt: message.sentAt || message.createdAt,
     readBy: readStates.filter((receipt) => receipt.userId !== message.authorId && receipt.readAt >= message.createdAt),
-    author: publicUser(database.getUserById(message.authorId)),
+    author: userDto(database.getUserById(message.authorId), viewerId),
     ...(replyMessage && replyAuthor
       ? {
           replyTo: {
@@ -180,14 +257,14 @@ function messageDto(message, readStates = database.readStates(message.conversati
                   attachment: replyMessage.attachment,
                 }
               : {}),
-            author: publicUser(replyAuthor),
+            author: userDto(replyAuthor, viewerId),
           },
         }
       : {}),
   };
 }
 function conversationDto(conversation, userId) {
-  const members = database.members(conversation.id).map(publicUser);
+  const members = database.members(conversation.id).map((member) => userDto(member, userId));
   const storedLastMessage = database.lastMessage(conversation.id);
   const lastMessage = storedLastMessage
     ? {
@@ -201,7 +278,76 @@ function conversationDto(conversation, userId) {
     members,
     title: conversation.kind === 'direct' ? members.find((member) => member.id !== userId)?.name || 'Сохранённое' : conversation.title,
     lastMessage,
+    unreadCount: database.unreadCount(conversation.id, userId),
+    isDraft: conversation.kind === 'direct' && !lastMessage,
   };
+}
+function directOtherUserId(conversationId, userId) {
+  const conversation = database.getConversation(conversationId);
+  if (!conversation || conversation.kind !== 'direct') return null;
+  return database.memberIds(conversationId).find((memberId) => memberId !== userId) || null;
+}
+function canInteractInConversation(conversationId, userId) {
+  const otherUserId = directOtherUserId(conversationId, userId);
+  return !otherUserId || !database.isBlockedEither(userId, otherUserId);
+}
+function canCallInConversation(conversationId, userId) {
+  const otherUserId = directOtherUserId(conversationId, userId);
+  return !otherUserId || database.areFriends(userId, otherUserId);
+}
+function sendToUser(userId, event) {
+  const payload = JSON.stringify(event);
+  for (const socket of clients.get(userId) || []) safeSocketSend(socket, payload);
+}
+function broadcastRelationship(firstUserId, secondUserId) {
+  const first = database.getUserById(firstUserId);
+  const second = database.getUserById(secondUserId);
+  if (second) sendToUser(firstUserId, { type: 'relationship:update', user: userDto(second, firstUserId) });
+  if (first) sendToUser(secondUserId, { type: 'relationship:update', user: userDto(first, secondUserId) });
+}
+function broadcastMessage(type, message) {
+  const readStates = database.readStates(message.conversationId);
+  for (const userId of database.memberIds(message.conversationId)) {
+    sendToUser(userId, { type, message: messageDto(message, readStates, userId) });
+  }
+  if (type === 'message:new') pushMessage(message);
+}
+function ensureDirectConversation(firstUserId, secondUserId) {
+  const existing = database.findDirectConversation(firstUserId, secondUserId);
+  if (existing) return existing;
+  const conversation = {
+    id: id('cnv'),
+    kind: 'direct',
+    title: '',
+    createdBy: firstUserId,
+    createdAt: new Date().toISOString(),
+  };
+  database.createConversation(conversation, [firstUserId, secondUserId]);
+  return conversation;
+}
+function createFriendRequestMessage(requester, otherUserId) {
+  const conversation = ensureDirectConversation(requester.id, otherUserId);
+  const createdAt = new Date().toISOString();
+  const message = {
+    id: id('msg'),
+    conversationId: conversation.id,
+    authorId: requester.id,
+    kind: 'friend_request',
+    content: 'Заявка в друзья',
+    friendRequest: { requestedBy: requester.id, status: 'pending' },
+    createdAt,
+    sentAt: createdAt,
+    readBy: [],
+  };
+  database.insertMessage(message);
+  broadcastToConversation(conversation.id, { type: 'conversation:new', conversationId: conversation.id });
+  broadcastMessage('message:new', message);
+}
+function finishFriendRequest(firstUserId, secondUserId, requestedBy, status) {
+  const conversation = database.findDirectConversation(firstUserId, secondUserId);
+  if (!conversation) return;
+  const message = database.updatePendingFriendRequest(conversation.id, requestedBy, status);
+  if (message) broadcastMessage('message:update', message);
 }
 function broadcastToConversation(conversationId, event, exceptUserId) {
   const payload = JSON.stringify(event);
@@ -288,6 +434,7 @@ function finishCall(conversationId, fallbackUserId = '') {
   if (!call) return;
   activeCalls.delete(conversationId);
   clearCallCleanup(conversationId);
+  closeCallPush(conversationId);
   const endedAt = Date.now();
   broadcastToConversation(conversationId, {
     type: 'call:end',
@@ -314,7 +461,7 @@ function finishCall(conversationId, fallbackUserId = '') {
     readBy: [],
   };
   database.insertMessage(message);
-  broadcastToConversation(conversationId, { type: 'message:new', message: messageDto(message) });
+  broadcastMessage('message:new', message);
 }
 function scheduleCallCleanup(conversationId, delay = 60_000) {
   clearCallCleanup(conversationId);
@@ -407,6 +554,25 @@ async function handleApi(request, response) {
     }
     const user = auth(request);
     if (!user) return json(response, 401, { error: 'Требуется вход' });
+    if (request.method === 'GET' && url.pathname === '/api/push-config') return json(response, 200, { publicKey: pushPublicKey });
+    if (url.pathname === '/api/push-subscriptions' && request.method === 'POST') {
+      if (!allowRequest(`push-subscription:${user.id}`, 20, 60_000)) throw Object.assign(new Error('Слишком много попыток регистрации уведомлений'), { statusCode: 429 });
+      const data = await body(request);
+      let endpoint;
+      try {
+        endpoint = new URL(String(data.endpoint || ''));
+      } catch {
+        return json(response, 400, { error: 'Некорректная push-подписка' });
+      }
+      if (endpoint.protocol !== 'https:' || !data.keys?.p256dh || !data.keys?.auth) return json(response, 400, { error: 'Некорректная push-подписка' });
+      database.savePushSubscription(user.id, data);
+      return json(response, 201, { ok: true });
+    }
+    if (url.pathname === '/api/push-subscriptions' && request.method === 'DELETE') {
+      const data = await body(request);
+      database.deletePushSubscription(String(data.endpoint || ''), user.id);
+      return json(response, 200, { ok: true });
+    }
     if (request.method === 'POST' && url.pathname === '/api/uploads') {
       if (!allowRequest(`upload:${user.id}`, 30, 60_000)) throw Object.assign(new Error('Слишком много загрузок'), { statusCode: 429 });
       const type = String(request.headers['content-type'] || 'application/octet-stream').split(';')[0].slice(0, 120);
@@ -418,11 +584,66 @@ async function handleApi(request, response) {
       return json(response, 201, { attachment });
     }
     if (request.method === 'GET' && url.pathname === '/api/rtc-config') return json(response, 200, { iceServers: rtcIceServers() });
-    if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user: publicUser(user) });
+    if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user: userDto(user, user.id) });
     if (request.method === 'GET' && url.pathname === '/api/users')
       return json(response, 200, {
-        users: database.listUsers(user.id).map(publicUser),
+        users: database.listUsers(user.id).map((otherUser) => userDto(otherUser, user.id)),
       });
+    const friendRejectMatch = url.pathname.match(/^\/api\/friends\/([^/]+)\/reject$/);
+    if (friendRejectMatch && request.method === 'POST') {
+      const otherUser = database.getUserById(friendRejectMatch[1]);
+      if (!otherUser || otherUser.id === user.id) return json(response, 404, { error: 'Пользователь не найден' });
+      if (!database.rejectFriend(user.id, otherUser.id)) return json(response, 409, { error: 'Входящая заявка не найдена' });
+      finishFriendRequest(user.id, otherUser.id, otherUser.id, 'declined');
+      broadcastRelationship(user.id, otherUser.id);
+      return json(response, 200, { user: userDto(otherUser, user.id) });
+    }
+    const friendMatch = url.pathname.match(/^\/api\/friends\/([^/]+)$/);
+    if (friendMatch) {
+      const otherUser = database.getUserById(friendMatch[1]);
+      if (!otherUser || otherUser.id === user.id) return json(response, 404, { error: 'Пользователь не найден' });
+      if (request.method === 'POST') {
+        if (database.isBlockedEither(user.id, otherUser.id)) return json(response, 409, { error: 'Сначала снимите блокировку' });
+        const requestResult = database.requestFriend(user.id, otherUser.id);
+        if (requestResult.retryAt) return json(response, 429, { error: 'Повторную заявку можно отправить через 24 часа после отказа', retryAt: requestResult.retryAt });
+        if (requestResult.relationship === 'incoming') return json(response, 409, { error: 'Сначала примите входящую заявку' });
+        if (requestResult.created) createFriendRequestMessage(user, otherUser.id);
+        broadcastRelationship(user.id, otherUser.id);
+        return json(response, 200, { user: userDto(otherUser, user.id) });
+      }
+      if (request.method === 'PATCH') {
+        const relationship = database.acceptFriend(user.id, otherUser.id);
+        if (relationship !== 'friend') return json(response, 409, { error: 'Входящая заявка не найдена' });
+        finishFriendRequest(user.id, otherUser.id, otherUser.id, 'accepted');
+        broadcastRelationship(user.id, otherUser.id);
+        return json(response, 200, { user: userDto(otherUser, user.id) });
+      }
+      if (request.method === 'DELETE') {
+        const previousRelationship = database.relationship(user.id, otherUser.id);
+        if (previousRelationship === 'friend' || previousRelationship === 'outgoing') database.removeFriend(user.id, otherUser.id);
+        if (previousRelationship === 'outgoing') finishFriendRequest(user.id, otherUser.id, user.id, 'cancelled');
+        broadcastRelationship(user.id, otherUser.id);
+        return json(response, 200, { user: userDto(otherUser, user.id) });
+      }
+    }
+    const blockMatch = url.pathname.match(/^\/api\/blocks\/([^/]+)$/);
+    if (blockMatch) {
+      const otherUser = database.getUserById(blockMatch[1]);
+      if (!otherUser || otherUser.id === user.id) return json(response, 404, { error: 'Пользователь не найден' });
+      if (request.method === 'POST') {
+        const previousRelationship = database.relationship(user.id, otherUser.id);
+        database.blockUser(user.id, otherUser.id);
+        if (previousRelationship === 'outgoing') finishFriendRequest(user.id, otherUser.id, user.id, 'cancelled');
+        if (previousRelationship === 'incoming') finishFriendRequest(user.id, otherUser.id, otherUser.id, 'cancelled');
+        broadcastRelationship(user.id, otherUser.id);
+        return json(response, 200, { user: userDto(otherUser, user.id) });
+      }
+      if (request.method === 'DELETE') {
+        database.unblockUser(user.id, otherUser.id);
+        broadcastRelationship(user.id, otherUser.id);
+        return json(response, 200, { user: userDto(otherUser, user.id) });
+      }
+    }
     if (request.method === 'PATCH' && url.pathname === '/api/profile') {
       const data = await body(request);
       const name = String(data.name || '').trim();
@@ -484,7 +705,9 @@ async function handleApi(request, response) {
       return json(response, 200, { user: dto });
     }
     if (request.method === 'GET' && url.pathname === '/api/conversations') {
-      const conversations = database.listConversations(user.id).map((item) => conversationDto(item, user.id));
+      const conversations = database.listConversations(user.id)
+        .map((item) => conversationDto(item, user.id))
+        .filter((conversation) => !conversation.isDraft || conversation.createdBy === user.id);
       return json(response, 200, {
         conversations: conversations.sort(
           (left, right) => new Date(right.lastMessage?.createdAt || right.createdAt).getTime() - new Date(left.lastMessage?.createdAt || left.createdAt).getTime(),
@@ -517,11 +740,23 @@ async function handleApi(request, response) {
       };
       database.createConversation(conversation, [user.id, ...requestedIds]);
       const dto = conversationDto(conversation, user.id);
-      broadcastToConversation(conversation.id, {
-        type: 'conversation:new',
-        conversationId: conversation.id,
-      });
+      if (kind === 'group') broadcastToConversation(conversation.id, { type: 'conversation:new', conversationId: conversation.id });
       return json(response, 201, { conversation: dto });
+    }
+    const deleteConversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
+    if (deleteConversationMatch && request.method === 'DELETE') {
+      const conversationId = deleteConversationMatch[1];
+      if (!isMember(user.id, conversationId)) return json(response, 403, { error: 'Нет доступа к чату' });
+      if (activeCalls.has(conversationId) || voiceRooms.has(conversationId)) return json(response, 409, { error: 'Нельзя удалить чат во время звонка' });
+      const memberIds = database.memberIds(conversationId);
+      const otherUserId = directOtherUserId(conversationId, user.id);
+      const relationship = otherUserId ? database.relationship(user.id, otherUserId) : 'none';
+      const deleted = await database.deleteConversation(conversationId);
+      if (!deleted) return json(response, 404, { error: 'Чат не найден' });
+      if (otherUserId && (relationship === 'incoming' || relationship === 'outgoing')) database.removeFriend(user.id, otherUserId);
+      for (const memberId of memberIds) sendToUser(memberId, { type: 'conversation:delete', conversationId });
+      if (otherUserId && (relationship === 'incoming' || relationship === 'outgoing')) broadcastRelationship(user.id, otherUserId);
+      return json(response, 200, { conversationId });
     }
     const readMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/read$/);
     if (readMatch && !isMember(user.id, readMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
@@ -554,17 +789,19 @@ async function handleApi(request, response) {
     if (messageMatch && !isMember(user.id, messageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (messageMatch && request.method === 'GET') {
       const readStates = database.readStates(messageMatch[1]);
-      return json(response, 200, { messages: database.messages(messageMatch[1], 200).map((message) => messageDto(message, readStates)) });
+      return json(response, 200, { messages: database.messages(messageMatch[1], 200).map((message) => messageDto(message, readStates, user.id)) });
     }
     if (messageMatch && request.method === 'POST') {
+      if (!canInteractInConversation(messageMatch[1], user.id)) return json(response, 403, { error: 'Обмен сообщениями недоступен из-за блокировки' });
       if (!allowRequest(`message:${user.id}`, 120, 60_000)) throw Object.assign(new Error('Слишком много сообщений'), { statusCode: 429 });
+      const wasEmptyConversation = !database.lastMessage(messageMatch[1]);
       const data = await body(request);
       const clientId = String(data.clientId || '');
       if (clientId.length > 100) return json(response, 400, { error: 'Некорректный идентификатор сообщения' });
       const existingMessage = clientId ? database.getMessageByClientId(user.id, clientId) : null;
       if (existingMessage) {
         if (existingMessage.conversationId !== messageMatch[1]) return json(response, 409, { error: 'Идентификатор сообщения уже использован в другом чате' });
-        return json(response, 200, { message: messageDto(existingMessage) });
+        return json(response, 200, { message: messageDto(existingMessage, undefined, user.id) });
       }
       const content = String(data.content || '').trim();
       const rawAttachment = data.attachment;
@@ -575,7 +812,7 @@ async function handleApi(request, response) {
         const concurrentMessage = clientId ? database.getMessageByClientId(user.id, clientId) : null;
         if (!concurrentMessage) throw attachmentError;
         if (concurrentMessage.conversationId !== messageMatch[1]) return json(response, 409, { error: 'Идентификатор сообщения уже использован в другом чате' });
-        return json(response, 200, { message: messageDto(concurrentMessage) });
+        return json(response, 200, { message: messageDto(concurrentMessage, undefined, user.id) });
       }
       if ((!content && !attachment) || content.length > 4000)
         return json(response, 400, {
@@ -601,12 +838,10 @@ async function handleApi(request, response) {
       };
       const stored = database.insertMessageIdempotent(message);
       if (!stored.created && stored.message.conversationId !== messageMatch[1]) return json(response, 409, { error: 'Идентификатор сообщения уже использован в другом чате' });
-      const dto = messageDto(stored.message);
+      const dto = messageDto(stored.message, undefined, user.id);
       if (!stored.created) return json(response, 200, { message: dto });
-      broadcastToConversation(message.conversationId, {
-        type: 'message:new',
-        message: dto,
-      });
+      if (wasEmptyConversation) broadcastToConversation(message.conversationId, { type: 'conversation:new', conversationId: message.conversationId });
+      broadcastMessage('message:new', stored.message);
       return json(response, 201, { message: dto });
     }
     const editMessageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/);
@@ -614,6 +849,7 @@ async function handleApi(request, response) {
     if (editMessageMatch && request.method === 'PATCH') {
       const message = database.getMessage(editMessageMatch[2], editMessageMatch[1]);
       if (!message) return json(response, 404, { error: 'Сообщение не найдено' });
+      if (message.kind && message.kind !== 'user') return json(response, 400, { error: 'Системное сообщение нельзя редактировать' });
       if (message.authorId !== user.id)
         return json(response, 403, {
           error: 'Можно редактировать только свои сообщения',
@@ -627,11 +863,8 @@ async function handleApi(request, response) {
       message.content = content;
       message.editedAt = new Date().toISOString();
       database.updateMessage(message);
-      const dto = messageDto(message);
-      broadcastToConversation(message.conversationId, {
-        type: 'message:update',
-        message: dto,
-      });
+      const dto = messageDto(message, undefined, user.id);
+      broadcastMessage('message:update', message);
       return json(response, 200, { message: dto });
     }
     return json(response, 404, { error: 'Не найдено' });
@@ -721,7 +954,8 @@ async function serveFrontend(request, response) {
 
   response.writeHead(200, {
     'content-type': contentTypes[extname(filePath).toLowerCase()] || 'application/octet-stream',
-    'cache-control': filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
+    'cache-control': filePath.endsWith('index.html') || filePath.endsWith('mova-sw.js') ? 'no-cache' : 'public, max-age=31536000, immutable',
+    ...(filePath.endsWith('mova-sw.js') ? { 'service-worker-allowed': '/' } : {}),
   });
   response.end(request.method === 'HEAD' ? undefined : contents);
 }
@@ -832,6 +1066,7 @@ function handleSocket(socket, request) {
       const conversationId = event.conversationId;
       if (!conversationId || !isMember(user.id, conversationId)) return;
       if (event.type === 'typing') {
+        if (!canInteractInConversation(conversationId, user.id)) return;
         if (event.active) socket.typingConversationIds.add(conversationId);
         else socket.typingConversationIds.delete(conversationId);
         return broadcastToConversation(
@@ -847,6 +1082,7 @@ function handleSocket(socket, request) {
       }
       if (event.type === 'call:sync') return safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
       if (event.type === 'call:invite') {
+        if (!canCallInConversation(conversationId, user.id)) return;
         const createdAt = Date.now();
         activeCalls.set(conversationId, {
           fromUserId: user.id,
@@ -854,9 +1090,23 @@ function handleSocket(socket, request) {
           createdAt,
         });
         scheduleCallCleanup(conversationId, 45_000);
+        for (const targetUserId of database.memberIds(conversationId))
+          if (targetUserId !== user.id)
+            void sendPushToUser(targetUserId, {
+              kind: 'call',
+              title: `Входящий звонок · ${user.name}`,
+              body: 'Нажмите, чтобы открыть Mova',
+              icon: user.avatarDataUrl || '/icon-192.png',
+              badge: '/icon-192.png',
+              tag: `mova-call-${conversationId}`,
+              conversationId,
+              url: `/app?conversation=${encodeURIComponent(conversationId)}&call=incoming`,
+              requireInteraction: true,
+            });
         return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(user), createdAt: new Date(createdAt).toISOString() }, user.id);
       }
       if (event.type === 'call:accept') {
+        if (!canCallInConversation(conversationId, user.id)) return;
         const active = activeCalls.get(conversationId) || {
           fromUserId: user.id,
           createdAt: Date.now(),
@@ -865,6 +1115,7 @@ function handleSocket(socket, request) {
         active.startedAt ||= Date.now();
         activeCalls.set(conversationId, active);
         scheduleCallCleanup(conversationId);
+        closeCallPush(conversationId);
         return broadcastToConversation(conversationId, { type: 'call:accept', conversationId, fromUserId: user.id, startedAt: new Date(active.startedAt).toISOString() }, user.id);
       }
       if (event.type === 'call:decline') {
@@ -873,12 +1124,14 @@ function handleSocket(socket, request) {
           activeCalls.delete(conversationId);
           clearCallCleanup(conversationId);
         }
+        closeCallPush(conversationId);
         return broadcastToConversation(conversationId, { type: 'call:decline', conversationId, fromUserId: user.id }, user.id);
       }
       if (event.type === 'call:end') {
         return leaveVoice(socket);
       }
       if (event.type === 'voice:join') {
+        if (!canCallInConversation(conversationId, user.id)) return;
         if (socket.voiceConversationId && socket.voiceConversationId !== conversationId) leaveVoice(socket);
         socket.voiceConversationId = conversationId;
         clearCallCleanup(conversationId);
@@ -970,6 +1223,7 @@ function handleSocket(socket, request) {
 }
 
 database = await openDatabase(dataPaths);
+configureWebPush();
 await database.cleanupOrphanUploads();
 const uploadCleanupTimer = setInterval(() => void database.cleanupOrphanUploads().catch((error) => console.error('Upload cleanup failed:', error)), 6 * 60 * 60_000);
 uploadCleanupTimer.unref();

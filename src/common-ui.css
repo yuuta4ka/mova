@@ -208,3 +208,4 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible {
   .mova-modal-backdrop,.mova-dialog-surface,.mova-popover-surface,.mova-toast { animation-duration:1ms!important; }
   .mova-button,.mova-icon-button,.mova-control-shell,.mova-tooltip__content { transition-duration:1ms!important; }
 }
+.mova-notification-permission{width:min(440px,calc(100vw - 28px))}.mova-notification-permission>.mova-modal__body{display:grid;justify-items:center;gap:14px;padding:26px 30px;text-align:center}.mova-notification-permission>.mova-modal__body p{max-width:340px;margin:0;color:var(--text-secondary,#aeb4c0);line-height:1.55}.mova-notification-permission__icon{display:grid;place-items:center;width:58px;height:58px;color:#10201e;background:#76ded0;border-radius:18px;box-shadow:0 12px 30px rgba(118,222,208,.2)}

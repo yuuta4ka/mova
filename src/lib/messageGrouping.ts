@@ -13,7 +13,7 @@ const localDayKey = (value: string | Date) => {
 export const isSameLocalDay = (first: string | Date, second: string | Date) => localDayKey(first) === localDayKey(second);
 
 export const canGroupMessages = (first?: AppMessage, second?: AppMessage) => {
-  if (!first || !second || first.kind === 'call' || second.kind === 'call' || first.authorId !== second.authorId || !isSameLocalDay(first.createdAt, second.createdAt)) return false;
+  if (!first || !second || (first.kind && first.kind !== 'user') || (second.kind && second.kind !== 'user') || first.authorId !== second.authorId || !isSameLocalDay(first.createdAt, second.createdAt)) return false;
   const interval = new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime();
   return interval >= 0 && interval <= MESSAGE_GROUP_WINDOW_MS;
 };

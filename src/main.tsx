@@ -12,6 +12,7 @@ import './landing.css';
 import './polish.css';
 import './brand.css';
 import './desktop-shell.css';
+import './desktop-share-picker.css';
 import './composer.css';
 import './media-viewer.css';
 import './common-ui.css';
@@ -19,6 +20,7 @@ import './maintenance.css';
 import { RealApp } from './RealApp';
 import { LandingPage } from './LandingPage';
 import { DesktopTitlebar } from './DesktopTitlebar';
+import { DesktopSharePicker } from './DesktopSharePicker';
 import { ToastProvider } from './components/Primitives';
 import { MaintenanceFrame } from './MaintenanceBanner';
 
@@ -30,11 +32,14 @@ const content = appRoute ? <MaintenanceFrame><ToastProvider><RealApp /></ToastPr
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    {windowsDesktop ? (
-      <div className="mova-desktop-layout">
-        <DesktopTitlebar />
-        <div className="mova-desktop-content">{content}</div>
-      </div>
-    ) : content}
+    <>
+      {windowsDesktop ? (
+        <div className="mova-desktop-layout">
+          <DesktopTitlebar />
+          <div className="mova-desktop-content">{content}</div>
+        </div>
+      ) : content}
+      <DesktopSharePicker />
+    </>
   </React.StrictMode>,
 );

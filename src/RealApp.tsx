@@ -1,17 +1,18 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, FileText, Gamepad2, HeadphoneOff, Headphones, Info, LogOut, Maximize2, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, useToast } from './components/Primitives';
 import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
 import { EmojiPicker } from './components/EmojiPicker';
 import { buildMediaGallery, MediaViewer } from './components/MediaViewer';
-import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, type AudioSettings } from './lib/audioSettings';
+import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, withNoiseSuppressionMode, type AudioSettings, type NoiseSuppressionMode } from './lib/audioSettings';
+import { createMicrophonePipeline, type MicrophonePipeline } from './lib/microphoneProcessing';
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
 import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } from './lib/accentSettings';
-import { requestMessageNotificationPermission, showMessageNotification } from './lib/messageNotifications';
+import { enableMessageNotifications, restoreMessageNotifications, shouldPromptForNotifications, showIncomingCallNotification, showMessageNotification, unregisterMessageNotifications } from './lib/messageNotifications';
 import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
 import { getMessageStructure } from './lib/messageGrouping';
 
@@ -32,7 +33,7 @@ const russianCount = (value: number, one: string, few: string, many: string) => 
 export const formatPresenceStatus = (user?: AppUser, now = Date.now()) => {
   if (!user) return 'не в сети';
   const online = user.isOnline ?? user.presence === 'online';
-  if (online) return user.presence === 'idle' ? 'отошёл(ла)' : user.presence === 'dnd' ? 'не беспокоить' : 'в сети';
+  if (online) return user.presence === 'idle' ? 'неактивен' : user.presence === 'dnd' ? 'не беспокоить' : 'в сети';
   if (!user.lastActiveAt) return 'был(а) недавно';
   const elapsed = Math.max(0, now - new Date(user.lastActiveAt).getTime());
   if (elapsed < 60_000) return 'был(а) только что';
@@ -154,16 +155,35 @@ const messageCache = new Map<string, ClientCache<AppMessage[]>>();
 const isFresh = <T,>(entry?: ClientCache<T>) => Boolean(entry && Date.now() - entry.updatedAt < CLIENT_CACHE_TTL);
 const messageCacheKey = (userId: string, conversationId: string) => `${userId}:${conversationId}`;
 const conversationActivityAt = (conversation: AppConversation) => new Date(conversation.lastMessage?.createdAt || conversation.createdAt).getTime();
-export const sortConversationsByActivity = (items: AppConversation[]) => [...items].sort((left, right) => conversationActivityAt(right) - conversationActivityAt(left));
+const conversationRelationshipRank = (conversation: AppConversation) => {
+  if (conversation.kind !== 'direct') return 0;
+  const relationship = conversation.members.find((member) => member.relationship && member.relationship !== 'self')?.relationship;
+  if (relationship === 'friend') return 0;
+  if (relationship === 'incoming') return 1;
+  return 2;
+};
+export const sortConversationsByActivity = (items: AppConversation[]) => [...items].sort((left, right) =>
+  conversationRelationshipRank(left) - conversationRelationshipRank(right) || conversationActivityAt(right) - conversationActivityAt(left),
+);
 export const updateConversationLastMessage = (items: AppConversation[], message: AppMessage, onlyIfCurrent = false) => {
   const { author: _author, ...lastMessage } = message;
   return sortConversationsByActivity(
     items.map((conversation) =>
       conversation.id === message.conversationId && (!onlyIfCurrent || conversation.lastMessage?.id === message.id)
-        ? { ...conversation, lastMessage }
+        ? { ...conversation, lastMessage, isDraft: false }
         : conversation,
     ),
   );
+};
+const conversationPreviewText = (conversation: AppConversation, currentUserId: string) => {
+  const message = conversation.lastMessage;
+  if (message?.kind === 'friend_request' && message.friendRequest) {
+    if (message.friendRequest.status === 'accepted') return 'Теперь вы друзья';
+    if (message.friendRequest.status === 'declined') return 'Заявка в друзья отклонена';
+    if (message.friendRequest.status === 'cancelled') return 'Заявка в друзья отменена';
+    return message.friendRequest.requestedBy === currentUserId ? 'Заявка в друзья отправлена' : 'Хочет добавить тебя в друзья';
+  }
+  return message?.content || (message?.attachment ? (message.attachment.type.startsWith('image/') ? 'Фотография' : message.attachment.name) : conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор');
 };
 export const reconcileClientMessage = (items: AppMessage[], message: AppMessage) => {
   const matchingClientId = message.clientId ? items.findIndex((item) => item.clientId === message.clientId) : -1;
@@ -172,8 +192,10 @@ export const reconcileClientMessage = (items: AppMessage[], message: AppMessage)
   return [...items, message];
 };
 const preferredConversation = (items: AppConversation[]) => {
-  const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
-  return (preferred && items.some((item) => item.id === preferred) ? preferred : items[0]?.id) || null;
+  const visibleItems = items.filter((item) => !item.isDraft);
+  const notificationConversation = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('conversation');
+  const preferred = notificationConversation || sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
+  return (preferred && visibleItems.some((item) => item.id === preferred) ? preferred : visibleItems[0]?.id) || null;
 };
 const conversationTypingLabel = (conversation: AppConversation, currentUserId: string, typingUserIds: string[]) => {
   const typingUsers = conversation.members.filter((member) => member.id !== currentUserId && typingUserIds.includes(member.id));
@@ -185,6 +207,8 @@ const conversationTypingLabel = (conversation: AppConversation, currentUserId: s
         ? `${typingUsers[0].name}, ${typingUsers[1].name} и ещё ${typingUsers.length - 2} печатают…`
         : '';
 };
+type GlobalSearchTab = 'users' | 'chats' | 'links';
+const messageLinks = (content: string) => content.match(/(?:https?:\/\/|www\.)[^\s<>()]+/giu) || [];
 type MobileNavigationView = 'list' | 'chat';
 const mobileNavigationQuery = '(max-width: 760px), (orientation: landscape) and (max-height: 520px) and (max-width: 960px)';
 const mobileHistoryKey = 'movaMobileNavigation';
@@ -204,12 +228,15 @@ const mobileHistoryState = (view: MobileNavigationView, conversationId?: string 
   [mobileHistoryKey]: { view, conversationId: conversationId || null },
 });
 function useMobileNavigationViewport() {
-  const matches = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.(mobileNavigationQuery).matches);
+  const matches = () =>
+    typeof window !== 'undefined'
+    && !window.movaDesktopShell
+    && Boolean(window.matchMedia?.(mobileNavigationQuery).matches);
   const [mobile, setMobile] = useState(matches);
   useEffect(() => {
     if (!window.matchMedia) return;
     const media = window.matchMedia(mobileNavigationQuery);
-    const update = () => setMobile(media.matches);
+    const update = () => setMobile(!window.movaDesktopShell && media.matches);
     update();
     media.addEventListener?.('change', update);
     return () => media.removeEventListener?.('change', update);
@@ -432,7 +459,7 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
   );
 }
 
-function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void }) {
+export function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void }) {
   const [section, setSection] = useState<'profile' | 'appearance' | 'audio' | 'screen'>('audio');
   const [settings, setSettings] = useState<AudioSettings>(defaultAudioSettings);
   const [screenSettings, setScreenSettings] = useState<ScreenShareSettings>(defaultScreenShareSettings);
@@ -443,19 +470,24 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
   const [deviceError, setDeviceError] = useState('');
   const [testing, setTesting] = useState(false);
   const [level, setLevel] = useState(0);
+  const [testProcessingStatus, setTestProcessingStatus] = useState('');
   const testStream = useRef<MediaStream | null>(null);
+  const testPipeline = useRef<MicrophonePipeline | null>(null);
   const testContext = useRef<AudioContext | null>(null);
   const animation = useRef<number | null>(null);
   const outputSelectionSupported = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
   const stopTest = useCallback(() => {
     if (animation.current) cancelAnimationFrame(animation.current);
     animation.current = null;
+    testPipeline.current?.close();
+    testPipeline.current = null;
     testStream.current?.getTracks().forEach((track) => track.stop());
     testStream.current = null;
     void testContext.current?.close();
     testContext.current = null;
     setTesting(false);
     setLevel(0);
+    setTestProcessingStatus('');
   }, []);
   const refreshDevices = useCallback(async (askPermission = false) => {
     if (!navigator.mediaDevices) return setDeviceError('Устройства недоступны в этом браузере');
@@ -497,15 +529,24 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
         },
       });
       testStream.current = stream;
+      const pipeline = await createMicrophonePipeline(stream, settings);
+      testPipeline.current = pipeline;
       const context = new AudioContext();
       testContext.current = context;
       const analyser = context.createAnalyser();
       analyser.fftSize = 256;
-      const gain = context.createGain();
-      gain.gain.value = settings.inputVolume / 100;
-      context.createMediaStreamSource(stream).connect(gain).connect(analyser);
+      context.createMediaStreamSource(pipeline.stream).connect(analyser);
       const data = new Uint8Array(analyser.frequencyBinCount);
       setTesting(true);
+      setTestProcessingStatus(
+        settings.noiseSuppressionMode === 'enhanced'
+          ? pipeline.enhanced
+            ? 'Усиленное шумоподавление работает во время теста.'
+            : 'Усиленный режим недоступен — используется встроенное шумоподавление.'
+          : settings.noiseSuppressionMode === 'standard'
+            ? 'Используется встроенное шумоподавление устройства.'
+            : 'Шумоподавление выключено.',
+      );
       const tick = () => {
         analyser.getByteFrequencyData(data);
         setLevel(Math.min(100, Math.round((data.reduce((sum, value) => sum + value, 0) / data.length) * 1.6)));
@@ -633,6 +674,7 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
                     <span style={{ width: `${level}%` }} />
                   </i>
                 </div>
+                {testProcessingStatus && <small>{testProcessingStatus}</small>}
               </section>
               <section>
                 <h3>
@@ -673,7 +715,18 @@ function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; 
                   <Sparkles size={18} />
                   Обработка голоса
                 </h3>
-                <ToggleSetting label="Шумоподавление" description="Убирает постоянный фоновый шум" checked={settings.noiseSuppression} onChange={(noiseSuppression) => setSettings({ ...settings, noiseSuppression })} />
+                <label>
+                  <span>Шумоподавление</span>
+                  <select
+                    value={settings.noiseSuppressionMode}
+                    onChange={(event) => setSettings(withNoiseSuppressionMode(settings, event.target.value as NoiseSuppressionMode))}
+                  >
+                    <option value="enhanced">Усиленное — голосовой фильтр RNNoise</option>
+                    <option value="standard">Стандартное — обработка браузера</option>
+                    <option value="off">Выключено</option>
+                  </select>
+                </label>
+                <small>Усиленный режим лучше подавляет клавиатуру, клики и нерегулярные звуки, но немного увеличивает нагрузку на устройство.</small>
                 <ToggleSetting label="Эхоподавление" description="Не даёт звуку из наушников вернуться в микрофон" checked={settings.echoCancellation} onChange={(echoCancellation) => setSettings({ ...settings, echoCancellation })} />
                 <ToggleSetting label="Автоматическое усиление" description="Выравнивает слишком тихий и громкий голос" checked={settings.autoGainControl} onChange={(autoGainControl) => setSettings({ ...settings, autoGainControl })} />
               </section>
@@ -845,7 +898,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
       </button>
       <button type="button" onClick={() => void setPresence('idle')}>
         <StatusIndicator status="idle" inline />
-        <span>Отошёл</span>
+        <span>Неактивен</span>
         {user.presence === 'idle' && <Check size={14} />}
       </button>
       <button type="button" onClick={() => setDndOpen(!dndOpen)}>
@@ -1269,12 +1322,80 @@ function CallControlButton({ label, active = false, off = false, danger = false,
   );
 }
 
+function CallFloatingLayer({ portalled, children }: { portalled: boolean; children: ReactNode }) {
+  return portalled ? createPortal(<>{children}</>, document.body) : children;
+}
+
+const selfViewMinWidth = 72;
+const selfViewMaxWidth = 320;
+function ResizableSelfView({ children }: { children: ReactNode }) {
+  const mobile = useMobileNavigationViewport();
+  const [width, setWidth] = useState<number | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ distance: number; width: number } | null>(null);
+  const clampWidth = useCallback((value: number) => {
+    const viewportWidth = window.visualViewport?.width || window.innerWidth || 390;
+    const maximum = Math.max(selfViewMinWidth, Math.min(selfViewMaxWidth, viewportWidth - 20, viewportWidth * .72));
+    return Math.round(Math.min(maximum, Math.max(selfViewMinWidth, value)));
+  }, []);
+  const beginPinch = (element: HTMLDivElement) => {
+    if (pointers.current.size !== 2) return;
+    const [first, second] = [...pointers.current.values()];
+    pinch.current = {
+      distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+      width: element.getBoundingClientRect().width || width || 112,
+    };
+  };
+  const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!mobile || event.pointerType !== 'touch') return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    beginPinch(event.currentTarget);
+  };
+  const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!mobile || !pointers.current.has(event.pointerId)) return;
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.current.size !== 2) return;
+    if (!pinch.current) beginPinch(event.currentTarget);
+    const gesture = pinch.current;
+    if (!gesture) return;
+    const [first, second] = [...pointers.current.values()];
+    const distance = Math.hypot(second.x - first.x, second.y - first.y);
+    event.preventDefault();
+    setWidth(clampWidth(gesture.width * distance / gesture.distance));
+  };
+  const pointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!pointers.current.has(event.pointerId)) return;
+    pointers.current.delete(event.pointerId);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+  };
+  useEffect(() => {
+    if (mobile) return;
+    pointers.current.clear();
+    pinch.current = null;
+  }, [mobile]);
+  return (
+    <div
+      className="mova-call-self-view"
+      data-pinch-resizable={mobile ? 'true' : undefined}
+      style={mobile && width ? { width: `${width}px` } : undefined}
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={pointerUp}
+      onPointerCancel={pointerUp}
+    >
+      {children}
+    </div>
+  );
+}
+
 const screenAudioWarningPrefix = 'Экран демонстрируется без звука.';
 const screenAudioToastText = 'Демонстрация без звука. Включите «Поделиться аудио» при выборе экрана.';
 const isScreenAudioWarning = (error: string) => error.startsWith(screenAudioWarningPrefix);
 type VoiceCallController = ReturnType<typeof useVoiceCall>;
 
-function VoiceCallBar({ conversation, callConversation, currentUser, call, canvasOpen, stageHost, bannerHost, chatOpen, unreadCount, onToggleChat, onOpenCanvas, onMinimizeCanvas, onStartCall, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; callConversation: AppConversation; currentUser: AppUser; call: VoiceCallController; canvasOpen: boolean; stageHost: HTMLElement | null; bannerHost: HTMLElement | null; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onOpenCanvas: () => void; onMinimizeCanvas: () => void; onStartCall: (video: boolean) => void; onOpenSettings?: () => void }) {
+function VoiceCallBar({ conversation, callConversation, currentUser, call, canvasOpen, stageHost, bannerHost, chatOpen, unreadCount, onToggleChat, onOpenCanvas, onMinimizeCanvas, onStartCall, canCall = true, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; callConversation: AppConversation; currentUser: AppUser; call: VoiceCallController; canvasOpen: boolean; stageHost: HTMLElement | null; bannerHost: HTMLElement | null; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onOpenCanvas: () => void; onMinimizeCanvas: () => void; onStartCall: (video: boolean) => void; canCall?: boolean; onOpenSettings?: () => void }) {
   const callState = normalizeCallState(call.state);
   const sameConversation = conversation.id === callConversation.id;
   const [moreOpen, setMoreOpen] = useState(false);
@@ -1282,6 +1403,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
   const [showSelf, setShowSelf] = useState(true);
   const [showNoVideo, setShowNoVideo] = useState(true);
   const [participantRailVisible, setParticipantRailVisible] = useState(true);
+  const [expandedMedia, setExpandedMedia] = useState(false);
   const [screenAudioToast, setScreenAudioToast] = useState('');
   const [screenAudioToastVisible, setScreenAudioToastVisible] = useState(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(() => loadScreenShareSettings());
@@ -1371,13 +1493,13 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
   }, [call.createdAt, call.startedAt, callState]);
   if (!sameConversation)
     return (
-      <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
+      <Button variant="secondary" size="sm" aria-label={canCall ? 'Позвонить' : 'Звонки доступны только друзьям'} title={canCall ? undefined : 'Добавьте пользователя в друзья, чтобы звонить'} disabled={!canCall} leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
         Позвонить
       </Button>
     );
   if (callState === 'idle')
     return (
-      <Button variant="secondary" size="sm" aria-label="Позвонить" leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
+      <Button variant="secondary" size="sm" aria-label={canCall ? 'Позвонить' : 'Звонки доступны только друзьям'} title={canCall ? undefined : 'Добавьте пользователя в друзья, чтобы звонить'} disabled={!canCall} leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
         Позвонить
       </Button>
     );
@@ -1426,6 +1548,19 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const networkQuality = !peerDiagnostics.length ? 'unknown' : peerDiagnostics.some((peer) => peer.quality === 'poor') ? 'poor' : peerDiagnostics.some((peer) => peer.quality === 'fair') ? 'fair' : 'good';
     const latency = peerDiagnostics.reduce<number | undefined>((maximum, peer) => (peer.roundTripTimeMs === undefined ? maximum : Math.max(maximum ?? 0, peer.roundTripTimeMs)), undefined);
     const latencyLabel = latency === undefined ? 'Измеряем задержку…' : `Задержка ${latency} мс`;
+    const relayed = peerDiagnostics.some((peer) => peer.candidateType?.includes('relay'));
+    const routeProtocol = peerDiagnostics.find((peer) => peer.protocol)?.protocol?.toUpperCase();
+    const routeLabel = peerDiagnostics.length ? `${relayed ? 'Маршрут через TURN' : 'Прямой маршрут'}${routeProtocol ? ` · ${routeProtocol}` : ''}` : '';
+    const screenFpsValues = peerDiagnostics.map((peer) => peer.outboundScreenFramesPerSecond).filter((value): value is number => value !== undefined);
+    const screenBitrateValues = peerDiagnostics.map((peer) => peer.outboundScreenBitrateKbps).filter((value): value is number => value !== undefined);
+    const outboundScreenFps = screenFpsValues.length ? Math.min(...screenFpsValues) : undefined;
+    const outboundScreenBitrate = screenBitrateValues.length ? Math.min(...screenBitrateValues) : undefined;
+    const screenLimit = peerDiagnostics.find((peer) => peer.screenQualityLimitationReason)?.screenQualityLimitationReason;
+    const screenLimitLabel = screenLimit === 'bandwidth' ? 'ограничено сетью' : screenLimit === 'cpu' ? 'ограничено процессором' : screenLimit ? 'качество ограничено браузером' : '';
+    const screenTelemetryLabel = localScreen && outboundScreenFps !== undefined
+      ? `Демонстрация ${outboundScreenFps} FPS${outboundScreenBitrate === undefined ? '' : ` · ${(outboundScreenBitrate / 1000).toFixed(1)} Мбит/с`}${screenLimitLabel ? ` · ${screenLimitLabel}` : ''}`
+      : '';
+    const networkTooltip = [latencyLabel, routeLabel, screenTelemetryLabel].filter(Boolean).join(' · ');
     const networkLabel = networkQuality === 'good' ? '4 полосы' : networkQuality === 'fair' ? '3 полосы' : networkQuality === 'poor' ? '1 полоса' : 'нет данных';
     const participantConnectionState = (userId: string): ParticipantConnectionState => {
       if (call.reconnectingUsers[userId]) return 'reconnecting';
@@ -1445,7 +1580,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const remoteParticipantTiles: ReactNode[] = [];
     const selfTile = showSelf
       ? localCamera ? (
-          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
+          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView onExpandedStateChange={setExpandedMedia} />
         ) : (
           <CallAvatarTile key="local-avatar" participantId={currentUser.id} user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
         )
@@ -1472,7 +1607,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
         },
       };
       remoteParticipantTiles.push(cameraTile ? (
-        <CallVideoTile key={`${userId}-${cameraTile.streamId}`} {...sharedProps} stream={cameraTile.stream} kind="camera" />
+        <CallVideoTile key={`${userId}-${cameraTile.streamId}`} {...sharedProps} stream={cameraTile.stream} kind="camera" onExpandedStateChange={setExpandedMedia} />
       ) : (
         <CallAvatarTile key={userId} {...sharedProps} user={user} />
       ));
@@ -1488,7 +1623,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                 <Minimize2 size={18} />
               </IconButton>
               <div className="mova-call-header-tools">
-                <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${latencyLabel}`} data-tooltip={latencyLabel}>
+                <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${networkTooltip}`} data-tooltip={networkTooltip}>
                   <span className="mova-network-bars" aria-hidden="true">
                     <i />
                     <i />
@@ -1505,7 +1640,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
             {hasScreen ? (
               <div className={`mova-call-grid has-screen${participantRailVisible ? '' : ' is-rail-collapsed'}`} data-call-layout="screen-share" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length} data-participant-rail={participantRailVisible ? 'visible' : 'hidden'}>
                 <div className="mova-call-screen-area">
-                  {localScreen && <CallVideoTile participantId={currentUser.id} stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} screenSharing />}
+                  {localScreen && <CallVideoTile participantId={currentUser.id} stream={localScreen} label="Ваш экран" kind="screen" muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} screenSharing onExpandedStateChange={setExpandedMedia} />}
                   {screenTiles.map((tile) => {
                     const user = callConversation.members.find((member) => member.id === tile.userId);
                     const voice = call.remoteVoiceStates[tile.userId];
@@ -1520,6 +1655,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                         deafened={voice?.deafened}
                         connectionState={participantConnectionState(tile.userId)}
                         screenSharing
+                        onExpandedStateChange={setExpandedMedia}
                         volume={
                           user
                             ? {
@@ -1550,10 +1686,11 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
               <div className="mova-call-grid is-participants" data-call-layout="participants" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length}>
                 <div className="mova-call-primary-participant">{participantTiles[0]}</div>
                 {remoteParticipantTiles.length > 1 && <div className="mova-call-secondary-participants">{remoteParticipantTiles.slice(1)}</div>}
-                {selfTile && remoteParticipantTiles.length > 0 && <div className="mova-call-self-view">{selfTile}</div>}
+                {selfTile && remoteParticipantTiles.length > 0 && <ResizableSelfView>{selfTile}</ResizableSelfView>}
               </div>
             )}
-            <div className="mova-call-controls">
+            <CallFloatingLayer portalled={expandedMedia}>
+              <div className="mova-call-controls">
               <CallControlButton label={call.muted ? 'Включить микрофон' : 'Выключить микрофон'} off={call.muted} onClick={call.toggleMute}>
                 {call.muted ? <MicOff size={22} /> : <Mic size={22} />}
               </CallControlButton>
@@ -1578,7 +1715,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
               <CallControlButton
                 label={chatOpen ? 'Закрыть чат' : unreadCount ? `Открыть чат, непрочитанных сообщений: ${unreadCount}` : 'Открыть чат'}
                 active={chatOpen}
-                badge={!chatOpen && unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined}
+                badge={!chatOpen && unreadCount > 0 ? (unreadCount > 9 ? '9+' : unreadCount) : undefined}
                 onClick={onToggleChat}
               >
                 <MessageCircle size={22} />
@@ -1596,27 +1733,31 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
               <CallControlButton label="Выйти из звонка" danger onClick={call.leave}>
                 <PhoneOff size={23} />
               </CallControlButton>
-            </div>
+              </div>
+            </CallFloatingLayer>
             {screenMenuOpen && localScreen && (
-              <ScreenShareMenu
-                quality={screenQuality}
-                onQualityChange={setScreenQuality}
-                onApply={() => {
-                  void call.updateScreenQuality(screenQuality);
-                  setScreenMenuOpen(false);
-                }}
-                onChangeWindow={() => {
-                  void call.shareScreen(screenQuality);
-                  setScreenMenuOpen(false);
-                }}
-                onStop={() => {
-                  void call.stopScreen();
-                  setScreenMenuOpen(false);
-                }}
-              />
+              <CallFloatingLayer portalled={expandedMedia}>
+                <ScreenShareMenu
+                  quality={screenQuality}
+                  onQualityChange={setScreenQuality}
+                  onApply={() => {
+                    void call.updateScreenQuality(screenQuality);
+                    setScreenMenuOpen(false);
+                  }}
+                  onChangeWindow={() => {
+                    void call.shareScreen(screenQuality);
+                    setScreenMenuOpen(false);
+                  }}
+                  onStop={() => {
+                    void call.stopScreen();
+                    setScreenMenuOpen(false);
+                  }}
+                />
+              </CallFloatingLayer>
             )}
             {moreOpen && (
-              <div className="mova-call-more">
+              <CallFloatingLayer portalled={expandedMedia}>
+                <div className="mova-call-more">
                 <label>
                   <span>Табличный вид</span>
                   <input type="checkbox" checked readOnly />
@@ -1648,7 +1789,8 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                   <Settings size={18} />
                   <span>Настройки голоса и видео</span>
                 </button>
-              </div>
+                </div>
+              </CallFloatingLayer>
             )}
             {call.error && !isScreenAudioWarning(call.error) && <div className="mova-call-error">{call.error}</div>}
             {screenAudioToast && (
@@ -1821,7 +1963,7 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
   const [expandedClosing, setExpandedClosing] = useState(false);
   const autohideTimer = useRef<number | null>(null);
   const expandedCloseTimer = useRef<number | null>(null);
-  const mobileCallLayout = typeof window !== 'undefined' && (window.matchMedia?.('(max-width: 760px)').matches ?? false);
+  const mobileCallLayout = typeof window !== 'undefined' && !window.movaDesktopShell && (window.matchMedia?.(mobileNavigationQuery).matches ?? false);
   const coarsePointer = typeof window !== 'undefined' && (window.matchMedia?.('(pointer: coarse)').matches ?? false);
   const reducedMotion = typeof window !== 'undefined' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
   const clearAutohide = useCallback(() => {
@@ -1941,16 +2083,23 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
           {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
         </button>
       )}
-      <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} screenSharing={screenSharing} />
+      {!(mobileCallLayout && className.includes('is-self')) && <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} screenSharing={screenSharing} />}
       {menuPoint && volume && <CallVolumeMenu control={volume} point={menuPoint} onClose={() => setMenuPoint(null)} />}
     </article>
   );
   return expanded && !mobileCallLayout ? createPortal(tile, document.body) : tile;
 }
-function CallVideoTile({ participantId, stream, label, kind, mirrored = false, muted, deafened, speaking = false, connectionState, screenSharing = false, selfView = false, volume }: { participantId: string; stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
+function CallVideoTile({ participantId, stream, label, kind, mirrored = false, muted, deafened, speaking = false, connectionState, screenSharing = false, selfView = false, volume, onExpandedStateChange }: { participantId: string; stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl; onExpandedStateChange?: (expanded: boolean) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [sourceAspectRatio, setSourceAspectRatio] = useState(() => kind === 'screen' ? streamAspectRatio(stream) : undefined);
+  const changeExpanded = useCallback((next: boolean) => {
+    setExpanded(next);
+    onExpandedStateChange?.(next);
+  }, [onExpandedStateChange]);
+  useEffect(() => () => {
+    if (expanded) onExpandedStateChange?.(false);
+  }, [expanded, onExpandedStateChange]);
   const syncSourceAspectRatio = useCallback(() => {
     if (kind !== 'screen') return;
     const video = videoRef.current;
@@ -1965,7 +2114,7 @@ function CallVideoTile({ participantId, stream, label, kind, mirrored = false, m
     syncSourceAspectRatio();
   }, [stream, expanded, syncSourceAspectRatio]);
   return (
-    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} screenSharing={screenSharing || kind === 'screen'} speaking={speaking} connectionState={connectionState} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
+    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} screenSharing={screenSharing || kind === 'screen'} speaking={speaking} connectionState={connectionState} expandable={!selfView} expanded={expanded} onExpandedChange={changeExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
       <video ref={videoRef} autoPlay playsInline muted className={mirrored ? 'is-mirrored' : ''} onLoadedMetadata={syncSourceAspectRatio} onResize={syncSourceAspectRatio} />
     </CallTileShell>
   );
@@ -1998,6 +2147,7 @@ interface RealMessagesProps {
   conversation: AppConversation;
   currentUser: AppUser;
   messages: AppMessage[];
+  unreadCount?: number;
   loading?: boolean;
   historyError?: boolean;
   typingUserIds?: string[];
@@ -2009,6 +2159,8 @@ interface RealMessagesProps {
   onRetryHistory?: () => void;
   onEdit?: (messageId: string, content: string) => Promise<void>;
   onDeleteConversation?: () => void;
+  onRelationshipChange?: (user: AppUser) => void;
+  onMarkRead?: (throughMessageId: string) => Promise<void>;
 }
 
 interface RealMessagesViewProps extends RealMessagesProps {
@@ -2020,7 +2172,7 @@ interface RealMessagesViewProps extends RealMessagesProps {
   onStartCall: (video: boolean) => void;
 }
 
-function RealMessagesView({ conversation, currentUser, messages, loading = false, historyError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onEdit, onDeleteConversation = () => undefined }: RealMessagesViewProps) {
+function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onEdit, onDeleteConversation = () => undefined, onRelationshipChange, onMarkRead }: RealMessagesViewProps) {
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -2032,7 +2184,10 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
   const [profileInfoOpen, setProfileInfoOpen] = useState(false);
   const [, setPresenceTick] = useState(0);
   const [muted, setMuted] = useState(() => localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
-  const [blocked, setBlocked] = useState(() => localStorage.getItem(`mova-blocked-${conversation.id}`) === 'true');
+  const [relationshipOverride, setRelationshipOverride] = useState<AppUser | null>(null);
+  const [relationshipBusy, setRelationshipBusy] = useState(false);
+  const [atMessageBottom, setAtMessageBottom] = useState(true);
+  const [friendRequestOverrides, setFriendRequestOverrides] = useState<Record<string, NonNullable<AppMessage['friendRequest']>['status']>>({});
   const [selectingMessages, setSelectingMessages] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -2073,7 +2228,11 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
   const replyHighlightTimer = useRef<number | null>(null);
   const replyScrollAnimation = useRef<number | null>(null);
   const knownCallMessageIds = useRef(new Set(messages.map((message) => message.id)));
-  const other = conversation.members.find((member) => member.id !== currentUser.id);
+  const storedOther = conversation.members.find((member) => member.id !== currentUser.id);
+  const other = storedOther && relationshipOverride?.id === storedOther.id ? { ...storedOther, ...relationshipOverride } : storedOther;
+  const relationship = other?.relationship || 'none';
+  const blocked = relationship === 'blocked' || relationship === 'blocked_by';
+  const canCall = conversation.kind !== 'direct' || relationship === 'friend';
   const messageStructure = useMemo(() => getMessageStructure(messages), [messages]);
   const mediaGallery = useMemo(() => buildMediaGallery(messages), [messages]);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
@@ -2245,6 +2404,21 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
       else replyScrollAnimation.current = null;
     };
     replyScrollAnimation.current = window.requestAnimationFrame(animate);
+  }, []);
+  const syncMessageBottom = useCallback(() => {
+    const container = messagesContainer.current;
+    if (!container) return;
+    const bottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 32;
+    positionedAtBottom.current = bottom;
+    setAtMessageBottom(bottom);
+  }, []);
+  const scrollToLatestMessage = useCallback(() => {
+    const container = messagesContainer.current;
+    if (!container) return;
+    if (typeof container.scrollTo === 'function') container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    else container.scrollTop = container.scrollHeight;
+    positionedAtBottom.current = true;
+    setAtMessageBottom(true);
   }, []);
 
   useEffect(
@@ -2431,8 +2605,11 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
     setImagePreviewId(null);
     composerSelection.current = { start: 0, end: 0 };
     setMuted(localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
-    setBlocked(localStorage.getItem(`mova-blocked-${conversation.id}`) === 'true');
+    setRelationshipOverride(null);
+    setFriendRequestOverrides({});
+    setRelationshipBusy(false);
     positionedAtBottom.current = false;
+    setAtMessageBottom(true);
     previousMessageCount.current = 0;
   }, [conversation.id]);
   useEffect(() => {
@@ -2450,8 +2627,11 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
   }, [activeMatchId]);
   useEffect(() => {
     const messageCount = messages.length;
-    const ownMessageAdded = messageCount > previousMessageCount.current && messages.at(-1)?.authorId === currentUser.id;
-    if (messageCount && (!positionedAtBottom.current || ownMessageAdded)) {
+    const previousCount = previousMessageCount.current;
+    const messageAdded = messageCount > previousCount;
+    const ownMessageAdded = messageAdded && messages.at(-1)?.authorId === currentUser.id;
+    const shouldScroll = previousCount === 0 || ownMessageAdded || positionedAtBottom.current;
+    if (messageCount && shouldScroll) {
       const container = messagesContainer.current;
       if (container) {
         if (typeof container.scrollTo === 'function')
@@ -2462,9 +2642,24 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
         else container.scrollTop = container.scrollHeight;
       }
       positionedAtBottom.current = true;
+      setAtMessageBottom(true);
     }
     previousMessageCount.current = messageCount;
   }, [messages, currentUser.id]);
+  useEffect(() => {
+    const markRead = () => {
+      if (!onMarkRead || !mobileActive || !atMessageBottom || document.visibilityState !== 'visible') return;
+      const latestUnread = [...messages].reverse().find((message) => message.authorId !== currentUser.id && !message.readBy?.some((receipt) => receipt.userId === currentUser.id));
+      if (latestUnread) void onMarkRead(latestUnread.id);
+    };
+    markRead();
+    document.addEventListener('visibilitychange', markRead);
+    window.addEventListener('focus', markRead);
+    return () => {
+      document.removeEventListener('visibilitychange', markRead);
+      window.removeEventListener('focus', markRead);
+    };
+  }, [atMessageBottom, currentUser.id, messages, mobileActive, onMarkRead]);
 
   const showOlderMatch = () => setActiveMatchIndex((index) => Math.min(matchCount - 1, index + 1));
   const showNewerMatch = () => setActiveMatchIndex((index) => Math.max(0, index - 1));
@@ -2506,12 +2701,67 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
     localStorage.setItem(`mova-muted-${conversation.id}`, String(next));
     setDetailsOpen(false);
   };
-  const toggleBlocked = () => {
-    const next = !blocked;
-    setBlocked(next);
-    localStorage.setItem(`mova-blocked-${conversation.id}`, String(next));
-    setDetailsOpen(false);
+  const commitRelationship = (updatedUser: AppUser) => {
+    setRelationshipOverride(updatedUser);
+    onRelationshipChange?.(updatedUser);
   };
+  const resolvePendingFriendRequest = (requestedBy: string, status: NonNullable<AppMessage['friendRequest']>['status']) => {
+    setFriendRequestOverrides((items) => ({
+      ...items,
+      ...Object.fromEntries(messages.filter((message) => message.friendRequest?.requestedBy === requestedBy && message.friendRequest.status === 'pending').map((message) => [message.id, status])),
+    }));
+  };
+  const changeFriendship = async () => {
+    if (!other || relationshipBusy || blocked) return;
+    setRelationshipBusy(true);
+    try {
+      const result = relationship === 'incoming'
+        ? await api.acceptFriend(other.id)
+        : relationship === 'friend' || relationship === 'outgoing'
+          ? await api.removeFriend(other.id)
+          : await api.requestFriend(other.id);
+      commitRelationship(result.user);
+      if (relationship === 'incoming') resolvePendingFriendRequest(other.id, 'accepted');
+      if (relationship === 'outgoing') resolvePendingFriendRequest(currentUser.id, 'cancelled');
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Не удалось изменить статус дружбы');
+    } finally {
+      setRelationshipBusy(false);
+    }
+  };
+  const rejectFriendship = async () => {
+    if (!other || relationshipBusy || relationship !== 'incoming') return;
+    setRelationshipBusy(true);
+    try {
+      const result = await api.rejectFriend(other.id);
+      commitRelationship(result.user);
+      resolvePendingFriendRequest(other.id, 'declined');
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Не удалось отклонить заявку');
+    } finally {
+      setRelationshipBusy(false);
+    }
+  };
+  const toggleBlocked = async () => {
+    if (!other || relationshipBusy || relationship === 'blocked_by') return;
+    setRelationshipBusy(true);
+    try {
+      const result = relationship === 'blocked' ? await api.unblockUser(other.id) : await api.blockUser(other.id);
+      commitRelationship(result.user);
+      setDetailsOpen(false);
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Не удалось изменить блокировку');
+    } finally {
+      setRelationshipBusy(false);
+    }
+  };
+  const friendshipActionLabel = relationship === 'incoming'
+    ? 'Принять заявку в друзья'
+    : relationship === 'outgoing'
+      ? 'Отменить заявку в друзья'
+      : relationship === 'friend'
+        ? 'Удалить из друзей'
+        : 'Добавить в друзья';
 
   return (
     <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen ? 'is-call-chat-open' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-chat-width': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
@@ -2563,6 +2813,7 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
             onOpenCanvas={onOpenCallCanvas}
             onMinimizeCanvas={onMinimizeCallCanvas}
             onStartCall={onStartCall}
+            canCall={canCall}
           />
           <IconButton
             label="Поиск"
@@ -2601,6 +2852,18 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
             <ConversationAvatar conversation={conversation} currentUser={currentUser} />
             <h3><AppleEmoji text={conversation.title} /></h3>
             <p>{status}</p>
+            {conversation.kind === 'direct' && other && (
+              <div className="mova-contact-info__relationship-actions">
+                {relationship !== 'blocked' && relationship !== 'blocked_by' && (
+                  <Button variant="secondary" size="sm" leadingIcon={relationship === 'incoming' ? <Check size={17} /> : <UserPlus size={17} />} loading={relationshipBusy} onClick={() => void changeFriendship()}>
+                    {friendshipActionLabel}
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" leadingIcon={<Ban size={17} />} disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>
+                  {relationship === 'blocked' ? 'Разблокировать' : relationship === 'blocked_by' ? 'Вы заблокированы' : 'Заблокировать'}
+                </Button>
+              </div>
+            )}
           </section>
           <section className="mova-contact-info__card">
             {conversation.kind === 'direct' && (
@@ -2722,11 +2985,11 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
             <span>{muted ? 'Включить уведомления' : 'Выключить уведомления'}</span>
             {muted && <Check size={17} />}
           </button>
-          <button type="button" role="menuitem" onClick={() => startCall(false)}>
+          <button type="button" role="menuitem" disabled={!canCall} title={canCall ? undefined : 'Звонки доступны только друзьям'} onClick={() => startCall(false)}>
             <Phone size={22} />
             <span>Позвонить</span>
           </button>
-          <button type="button" role="menuitem" onClick={() => startCall(true)}>
+          <button type="button" role="menuitem" disabled={!canCall} title={canCall ? undefined : 'Звонки доступны только друзьям'} onClick={() => startCall(true)}>
             <Video size={22} />
             <span>Видеозвонок</span>
           </button>
@@ -2743,9 +3006,9 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
             <span>Выбрать сообщения</span>
           </button>
           <div />
-          <button type="button" role="menuitem" onClick={toggleBlocked}>
+          <button type="button" role="menuitem" disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>
             <Ban size={22} />
-            <span>{blocked ? 'Разблокировать' : 'Заблокировать'}</span>
+            <span>{relationship === 'blocked' ? 'Разблокировать' : relationship === 'blocked_by' ? 'Вы заблокированы' : 'Заблокировать'}</span>
           </button>
           <button
             type="button"
@@ -2785,11 +3048,23 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
           <strong>{selectedMessages.length ? `Выбрано: ${selectedMessages.length}` : 'Выберите сообщения'}</strong>
         </div>
       )}
-      <div className="mova-real-messages" ref={messagesContainer}>
+      <div className="mova-real-messages" ref={messagesContainer} onScroll={syncMessageBottom}>
         <div className="mova-real-thread-intro">
           <ConversationAvatar conversation={conversation} currentUser={currentUser} />
           <h1><AppleEmoji text={conversation.title} /></h1>
           <p>{conversation.kind === 'direct' ? `Это начало вашей переписки${other ? ` с ${other.name}` : ''}.` : 'Группа создана. Можно начинать разговор.'}</p>
+          {conversation.kind === 'direct' && other && (
+            <div className="mova-thread-intro-actions">
+              {relationship !== 'friend' && relationship !== 'blocked' && relationship !== 'blocked_by' && (
+                <Button variant="secondary" size="sm" leadingIcon={relationship === 'incoming' ? <Check size={16} /> : <UserPlus size={16} />} loading={relationshipBusy} onClick={() => void changeFriendship()}>
+                  {friendshipActionLabel}
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" leadingIcon={<Ban size={16} />} disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>
+                {relationship === 'blocked' ? 'Разблокировать' : relationship === 'blocked_by' ? 'Вы заблокированы' : 'Заблокировать'}
+              </Button>
+            </div>
+          )}
         </div>
         {historyError && (
           <div className="mova-message-history-error" role="status">
@@ -2806,6 +3081,56 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
             </div>
           ) : null;
           const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)));
+          if (message.kind === 'friend_request' && message.friendRequest) {
+            const requestStatus = friendRequestOverrides[message.id] || message.friendRequest.status;
+            const sentByCurrentUser = message.friendRequest.requestedBy === currentUser.id;
+            const title = requestStatus === 'accepted'
+              ? 'Теперь вы друзья'
+              : requestStatus === 'declined'
+                ? 'Заявка отклонена'
+                : requestStatus === 'cancelled'
+                  ? 'Заявка отменена'
+                  : sentByCurrentUser
+                    ? 'Заявка в друзья отправлена'
+                    : `${message.author.name} хочет добавить тебя в друзья`;
+            const description = requestStatus === 'pending'
+              ? sentByCurrentUser
+                ? 'Ожидаем ответа пользователя'
+                : 'После принятия станут доступны звонки и звуковые уведомления'
+              : requestStatus === 'accepted'
+                ? 'Теперь доступны звонки и обычные уведомления'
+                : requestStatus === 'declined'
+                  ? 'Повторную заявку можно будет отправить через 24 часа'
+                  : 'Эта заявка больше не активна';
+            return (
+              <Fragment key={messageKey}>
+                {daySeparator}
+                <article
+                  ref={(element) => {
+                    if (element) messageElements.current.set(message.id, element);
+                    else messageElements.current.delete(message.id);
+                  }}
+                  className={`mova-friend-request-message is-${requestStatus} ${matches ? 'is-search-match' : ''} ${message.id === activeMatchId ? 'is-active-search-match' : ''}`}
+                  aria-label={title}
+                >
+                  <span className="mova-friend-request-message__icon" aria-hidden="true">
+                    {requestStatus === 'accepted' ? <Check size={21} /> : <UserPlus size={21} />}
+                  </span>
+                  <span className="mova-friend-request-message__copy">
+                    <strong><AppleEmoji text={title} /></strong>
+                    <small>{description}</small>
+                  </span>
+                  {requestStatus === 'pending' && !sentByCurrentUser && relationship === 'incoming' && (
+                    <span className="mova-friend-request-message__actions">
+                      <Button size="sm" loading={relationshipBusy} onClick={() => void changeFriendship()}>Принять</Button>
+                      <Button variant="ghost" size="sm" disabled={relationshipBusy} onClick={() => void rejectFriendship()}>Отклонить</Button>
+                    </span>
+                  )}
+                  <time>{new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>
+                </article>
+              </Fragment>
+            );
+          }
           if (message.kind === 'call')
             return (
               <Fragment key={messageKey}>
@@ -2927,6 +3252,17 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
           );
         })}
       </div>
+      {!atMessageBottom && (
+        <button
+          type="button"
+          className="mova-jump-to-latest"
+          aria-label={unreadCount > 0 ? `Перейти к последним сообщениям, непрочитанных: ${unreadCount}` : 'Перейти к последним сообщениям'}
+          onClick={scrollToLatestMessage}
+        >
+          <ArrowDown size={25} aria-hidden="true" />
+          {unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}
+        </button>
+      )}
       <form
         ref={composerRef}
         className="mova-real-composer"
@@ -3002,7 +3338,7 @@ function RealMessagesView({ conversation, currentUser, messages, loading = false
                   return;
                 }
                 if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
-                  const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && message.kind !== 'call' && Boolean(message.content.trim()));
+                  const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
                   if (latestEditableMessage) {
                     event.preventDefault();
                     editOwnMessage(latestEditableMessage);
@@ -3090,6 +3426,8 @@ export function RealMessages(props: RealMessagesProps) {
     }
   }, [voiceSession, voiceState]);
   const startCall = (video: boolean) => {
+    const contact = props.conversation.kind === 'direct' ? props.conversation.members.find((member) => member.id !== props.currentUser.id) : null;
+    if (contact && contact.relationship !== 'friend') return;
     if (voiceState !== 'idle') return;
     if (voiceConversation.id === props.conversation.id) {
       startWithCamera.current = video;
@@ -3152,6 +3490,25 @@ export function VoiceDock({ conversation, call, onReturn }: { conversation: AppC
   );
 }
 
+function NotificationPermissionDialog({ open, loading, onAllow, onLater }: { open: boolean; loading: boolean; onAllow: () => void; onLater: () => void }) {
+  return (
+    <DialogSurface open={open} onClose={onLater} className="mova-modal mova-notification-permission" labelledBy="notification-permission-title" describedBy="notification-permission-description" initialFocus="cancel">
+      <header>
+        <h2 id="notification-permission-title">Не пропускайте сообщения и звонки</h2>
+        <IconButton data-dialog-close label="Закрыть" onClick={onLater}><X size={19} /></IconButton>
+      </header>
+      <div className="mova-modal__body">
+        <span className="mova-notification-permission__icon"><Bell size={26} /></span>
+        <p id="notification-permission-description">Разрешите Mova отправлять уведомления о новых сообщениях и входящих звонках.</p>
+      </div>
+      <footer>
+        <Button data-dialog-cancel variant="secondary" onClick={onLater}>Позже</Button>
+        <Button loading={loading} onClick={onAllow}>Разрешить уведомления</Button>
+      </footer>
+    </DialogSurface>
+  );
+}
+
 export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: AppUser; onUserUpdate: (user: AppUser) => void; onLogout: () => void }) {
   const SIDEBAR_COMPACT_WIDTH = 76;
   const SIDEBAR_MIN_WIDTH = 260;
@@ -3178,6 +3535,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const [voiceConversationId, setVoiceConversationId] = useState<string | null>(initialVoiceConversationId);
   const [callCanvasOpen, setCallCanvasOpen] = useState(Boolean(sessionStorage.getItem('mova-pending-call')));
   const [query, setQuery] = useState('');
+  const [composeMenuOpen, setComposeMenuOpen] = useState(false);
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchTab, setSearchTab] = useState<GlobalSearchTab>('users');
+  const [searchMessages, setSearchMessages] = useState<Record<string, AppMessage[]>>({});
+  const [searchMessagesLoading, setSearchMessagesLoading] = useState(false);
+  const [notificationPromptOpen, setNotificationPromptOpen] = useState(shouldPromptForNotifications);
+  const [notificationPermissionLoading, setNotificationPermissionLoading] = useState(false);
   const mobileNavigation = useMobileNavigationViewport();
   const [mobileView, setMobileView] = useState<MobileNavigationView>(() =>
     sessionStorage.getItem('mova-pending-call') ? 'chat' : 'list',
@@ -3204,6 +3568,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const realtimeReadyCount = useRef(0);
   const retryingClientIds = useRef(new Set<string>());
   const notifiedRealtimeMessageIds = useRef(new Set<string>());
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingCallStart = useRef<{ conversationId: string; video: boolean } | null>(null);
   const startCallWithCamera = useRef(false);
   const voiceStateRef = useRef(voiceState);
@@ -3221,7 +3586,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   voiceConversationIdRef.current = voiceConversationId;
   mobileNavigationRef.current = mobileNavigation;
   mobileViewRef.current = mobileView;
-  productOverlayOpenRef.current = createOpen || profileOpen || settingsOpen || accountOpen;
+  productOverlayOpenRef.current = createOpen || profileOpen || settingsOpen || notificationPromptOpen || accountOpen || composeMenuOpen || searchActive;
   const setMobileNavigationView = useCallback((view: MobileNavigationView) => {
     mobileViewRef.current = view;
     setMobileView(view);
@@ -3231,6 +3596,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     setProfileOpen(false);
     setSettingsOpen(false);
     setAccountOpen(false);
+    setComposeMenuOpen(false);
+    setSearchActive(false);
+    setQuery('');
     productOverlayOpenRef.current = false;
   }, []);
   const showMobileConversation = useCallback((conversationId: string, mode: 'auto' | 'push' | 'replace' = 'auto') => {
@@ -3418,6 +3786,50 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       typingExpiryTimers.current.set(key, timer);
     }
   }, []);
+  const applyRelationshipUser = useCallback((updatedUser: AppUser) => {
+    setUsers((items) => {
+      const next = items.some((item) => item.id === updatedUser.id)
+        ? items.map((item) => item.id === updatedUser.id ? { ...item, ...updatedUser } : item)
+        : [...items, updatedUser];
+      userCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+    setConversations((items) => {
+      const next = sortConversationsByActivity(items.map((conversation) => ({
+        ...conversation,
+        members: conversation.members.map((member) => member.id === updatedUser.id ? { ...member, ...updatedUser } : member),
+      })));
+      conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  }, []);
+  const removeConversationFromClient = useCallback((conversationId: string) => {
+    messageCache.delete(messageCacheKey(currentUserRef.current.id, conversationId));
+    setConversations((items) => {
+      const next = items.filter((item) => item.id !== conversationId);
+      conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+    if (selectedIdRef.current === conversationId) {
+      selectedIdRef.current = null;
+      setSelectedId(null);
+      setMessages([]);
+      if (window.localStorage.getItem('mova-selected-conversation') === conversationId) window.localStorage.removeItem('mova-selected-conversation');
+      if (mobileNavigationRef.current) {
+        window.history.replaceState(mobileHistoryState('list'), '');
+        setMobileNavigationView('list');
+      }
+    }
+    if (voiceConversationIdRef.current === conversationId) setVoiceConversationId(null);
+  }, [setMobileNavigationView]);
+  const deleteConversation = useCallback(async (conversationId: string) => {
+    try {
+      await api.deleteConversation(conversationId);
+      removeConversationFromClient(conversationId);
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : 'Не удалось удалить чат', 'danger');
+    }
+  }, [removeConversationFromClient, toast]);
   const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -3461,6 +3873,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     document.documentElement.style.setProperty('--mova-accent-color', accentColor);
   }, [accentColor]);
   useEffect(() => {
+    if (!window.movaDesktopShell) void restoreMessageNotifications();
+  }, [currentUser.id]);
+  useEffect(() => {
     if (!accountOpen) return;
     const closeOutside = (event: PointerEvent) => {
       if (!(event.target as Element | null)?.closest?.('.mova-account-anchor')) setAccountOpen(false);
@@ -3483,7 +3898,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           if (handledMessageIds.size > 500) handledMessageIds.delete(handledMessageIds.values().next().value!);
           const shouldNotify = !alreadyHandled && event.message.authorId !== currentUserRef.current.id && currentUserRef.current.presence !== 'dnd';
           if (!shouldNotify) return;
-          if (event.message.kind !== 'call') {
+          const conversation = conversationsRef.current.find((item) => item.id === event.message.conversationId);
+          const senderRelationship = conversation?.members.find((member) => member.id === event.message.authorId)?.relationship;
+          if ((!event.message.kind || event.message.kind === 'user') && senderRelationship === 'friend') {
             const settings = loadAudioSettings();
             const audio = new Audio(messageSoundUrl);
             audio.volume = settings.systemVolume / 100;
@@ -3493,7 +3910,6 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
             if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
             else play();
           }
-          const conversation = conversationsRef.current.find((item) => item.id === event.message.conversationId);
           showMessageNotification(event.message, conversation, () => {
             setSelectedId(event.message.conversationId);
             window.localStorage.setItem('mova-selected-conversation', event.message.conversationId);
@@ -3503,22 +3919,30 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       }),
     [showMobileConversation],
   );
-  useEffect(() => {
-    const requestPermission = () => void requestMessageNotificationPermission();
-    window.addEventListener('pointerdown', requestPermission, { once: true });
-    window.addEventListener('keydown', requestPermission, { once: true });
-    return () => {
-      window.removeEventListener('pointerdown', requestPermission);
-      window.removeEventListener('keydown', requestPermission);
-    };
-  }, []);
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
   const selectConversation = useCallback((conversationId: string) => {
     setSelectedId(conversationId);
     window.localStorage.setItem('mova-selected-conversation', conversationId);
     showMobileConversation(conversationId);
   }, [showMobileConversation]);
+  useEffect(() => {
+    const handleNotificationClick = (event: MessageEvent<{ type?: string; conversationId?: string }>) => {
+      if (event.data?.type === 'mova:notification-click' && event.data.conversationId) selectConversation(event.data.conversationId);
+    };
+    navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
+    const disposeDesktop = window.movaDesktopShell?.onNotificationClick?.(({ conversationId }) => conversationId && selectConversation(conversationId));
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
+      disposeDesktop?.();
+    };
+  }, [selectConversation]);
   const requestCall = useCallback((conversationId: string, video: boolean) => {
+    const callConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+    const callContact = callConversation?.kind === 'direct' ? callConversation.members.find((member) => member.id !== currentUserRef.current.id) : null;
+    if (callContact && callContact.relationship !== 'friend') {
+      toast.push('Звонки доступны только друзьям.', 'info');
+      return;
+    }
     if (voiceState !== 'idle') {
       if (voiceConversationId === conversationId && (isJoinedCallState(voiceState) || voiceState === 'available')) {
         selectConversation(conversationId);
@@ -3578,8 +4002,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     conversationCache.set(currentUser.id, { value: nextConversations, updatedAt: Date.now() });
     setConversations(nextConversations);
     setSelectedId((current) => {
-      const preferred = sessionStorage.getItem('mova-active-call') || sessionStorage.getItem('mova-pending-call') || localStorage.getItem('mova-selected-conversation');
-      return current && nextConversations.some((item) => item.id === current) ? current : preferred && nextConversations.some((item) => item.id === preferred) ? preferred : nextConversations[0]?.id || null;
+      return current && nextConversations.some((item) => item.id === current) ? current : preferredConversation(nextConversations);
     });
   }, [currentUser.id]);
   const syncOverview = useCallback(() => {
@@ -3624,7 +4047,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
         messageCache.set(cacheKey, { value: reconcileClientMessage(cached, event.message), updatedAt: cachedEntry ? Date.now() : 0 });
         setMessages((items) => (event.message.conversationId === selectedIdRef.current ? reconcileClientMessage(items, event.message) : items));
         setConversations((items) => {
-          const next = updateConversationLastMessage(items, event.message);
+          const alreadyCounted = items.some((conversation) => conversation.id === event.message.conversationId && conversation.lastMessage?.id === event.message.id);
+          const incoming = event.message.authorId !== currentUserRef.current.id;
+          const next = updateConversationLastMessage(items, event.message).map((conversation) =>
+            conversation.id === event.message.conversationId && incoming && !alreadyCounted
+              ? { ...conversation, unreadCount: (conversation.unreadCount || 0) + 1 }
+              : conversation,
+          );
           conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
           return next;
         });
@@ -3660,6 +4089,10 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           toast.push(`Входящий звонок пропущен: вы уже разговариваете в «${activeTitle}».`, 'info');
           return;
         }
+        showIncomingCallNotification(event.conversationId, event.from, () => {
+          selectConversation(event.conversationId);
+          setCallCanvasOpen(true);
+        });
         setVoiceConversationId(event.conversationId);
         setCallCanvasOpen(true);
         mobileCallConversationRef.current = event.conversationId;
@@ -3687,20 +4120,22 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
         mobileCallOpenRef.current = false;
       }
       if (event.type === 'conversation:new') void reloadConversations(true);
+      if (event.type === 'conversation:delete') removeConversationFromClient(event.conversationId);
       if (event.type === 'ready') {
         realtimeReadyCount.current += 1;
         if (realtimeReadyCount.current > 1) void syncOverview();
       }
+      if (event.type === 'relationship:update') applyRelationshipUser(event.user);
       if (event.type === 'profile:update' || event.type === 'presence:update') {
         setUsers((items) => {
-          const next = items.map((user) => (user.id === event.user.id ? event.user : user));
+          const next = items.map((user) => (user.id === event.user.id ? { ...event.user, relationship: user.relationship } : user));
           userCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
           return next;
         });
         setConversations((items) => {
           const next = items.map((conversation) => ({
             ...conversation,
-            members: conversation.members.map((member) => (member.id === event.user.id ? event.user : member)),
+            members: conversation.members.map((member) => (member.id === event.user.id ? { ...event.user, relationship: member.relationship } : member)),
             title: conversation.kind === 'direct' && event.user.id !== currentUser.id ? event.user.name : conversation.title,
           }));
           conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
@@ -3725,7 +4160,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       typingExpiryTimers.current.clear();
       realtime.close();
     };
-  }, [reloadConversations, selectConversation, currentUser.id, syncOverview, toast, updateTypingUser]);
+  }, [applyRelationshipUser, reloadConversations, removeConversationFromClient, selectConversation, currentUser.id, syncOverview, toast, updateTypingUser]);
   useEffect(() => {
     const markActive = () => {
       lastActivity.current = Date.now();
@@ -3782,39 +4217,32 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       cancelled = true;
     };
   }, [selectedId, currentUser.id, messagesLoadAttempt]);
-  useEffect(() => {
-    const markRead = () => {
-      if (!selectedId || document.visibilityState !== 'visible') return;
-      const latestUnread = [...messages].reverse().find((message) => message.conversationId === selectedId && message.authorId !== currentUser.id && !message.readBy?.some((receipt) => receipt.userId === currentUser.id));
-      if (!latestUnread || markingReadThrough.current === latestUnread.id) return;
-      markingReadThrough.current = latestUnread.id;
-      void api
-        .markConversationRead(selectedId, latestUnread.id)
-        .then((result) => {
-          const readIds = new Set(result.messageIds);
-          setMessages((items) =>
-            items.map((message) =>
-              readIds.has(message.id) && !message.readBy?.some((receipt) => receipt.userId === result.userId)
-                ? {
-                    ...message,
-                    readBy: [...(message.readBy || []), { userId: result.userId, readAt: result.readAt }],
-                  }
-                : message,
-            ),
-          );
-        })
-        .finally(() => {
-          if (markingReadThrough.current === latestUnread.id) markingReadThrough.current = null;
-        });
-    };
-    markRead();
-    document.addEventListener('visibilitychange', markRead);
-    window.addEventListener('focus', markRead);
-    return () => {
-      document.removeEventListener('visibilitychange', markRead);
-      window.removeEventListener('focus', markRead);
-    };
-  }, [selectedId, messages, currentUser.id]);
+  const markConversationRead = useCallback(async (conversationId: string, throughMessageId: string) => {
+    if (markingReadThrough.current === throughMessageId || document.visibilityState !== 'visible') return;
+    markingReadThrough.current = throughMessageId;
+    try {
+      const result = await api.markConversationRead(conversationId, throughMessageId);
+      const readIds = new Set(result.messageIds);
+      const applyReceipts = (items: AppMessage[]) => items.map((message) =>
+        readIds.has(message.id) && !message.readBy?.some((receipt) => receipt.userId === result.userId)
+          ? { ...message, readBy: [...(message.readBy || []), { userId: result.userId, readAt: result.readAt }] }
+          : message,
+      );
+      const cacheKey = messageCacheKey(currentUserRef.current.id, conversationId);
+      const cached = messageCache.get(cacheKey);
+      if (cached) messageCache.set(cacheKey, { value: applyReceipts(cached.value), updatedAt: Date.now() });
+      if (selectedIdRef.current === conversationId) setMessages(applyReceipts);
+      setConversations((items) => {
+        const next = items.map((conversation) => conversation.id === conversationId
+          ? { ...conversation, unreadCount: Math.max(0, (conversation.unreadCount || 0) - result.messageIds.length) }
+          : conversation);
+        conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+        return next;
+      });
+    } finally {
+      if (markingReadThrough.current === throughMessageId) markingReadThrough.current = null;
+    }
+  }, []);
   const updatePendingMessage = (conversationId: string, clientId: string, patch: Partial<AppMessage>) => {
     const update = (items: AppMessage[]) => items.map((message) => (message.clientId === clientId && !message.sentAt ? { ...message, ...patch } : message));
     const cacheKey = messageCacheKey(currentUser.id, conversationId);
@@ -3923,74 +4351,230 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return next;
     });
   };
-  const visible = useMemo(() => conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [conversations, query]);
+  const openGlobalSearch = useCallback((tab: GlobalSearchTab = 'users') => {
+    setComposeMenuOpen(false);
+    setAccountOpen(false);
+    setSearchTab(tab);
+    setSearchActive(true);
+    window.requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, []);
+  const closeGlobalSearch = useCallback(() => {
+    setSearchActive(false);
+    setQuery('');
+  }, []);
+  const normalizedSearchQuery = query.trim().toLocaleLowerCase();
+  const searchQueryReady = normalizedSearchQuery.length >= 2;
+  useEffect(() => {
+    if (!searchActive) return;
+    searchInputRef.current?.focus();
+    if (searchTab !== 'links' || !searchQueryReady) {
+      setSearchMessages({});
+      setSearchMessagesLoading(false);
+      return;
+    }
+    const cachedMessages = Object.fromEntries(
+      conversations.flatMap((conversation) => {
+        const cached = messageCache.get(messageCacheKey(currentUser.id, conversation.id));
+        return cached ? [[conversation.id, cached.value] as const] : [];
+      }),
+    );
+    setSearchMessages(cachedMessages);
+    const missing = conversations.filter((conversation) => !cachedMessages[conversation.id]);
+    if (!missing.length) return;
+    let active = true;
+    setSearchMessagesLoading(true);
+    void Promise.allSettled(missing.map(async (conversation) => {
+      const result = await api.messages(conversation.id);
+      messageCache.set(messageCacheKey(currentUser.id, conversation.id), { value: result.messages, updatedAt: Date.now() });
+      return [conversation.id, result.messages] as const;
+    })).then((results) => {
+      if (!active) return;
+      setSearchMessages((current) => ({
+        ...current,
+        ...Object.fromEntries(results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))),
+      }));
+    }).finally(() => active && setSearchMessagesLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [conversations, currentUser.id, searchActive, searchQueryReady, searchTab]);
+  const listedConversations = useMemo(() => conversations.filter((conversation) => !conversation.isDraft), [conversations]);
+  const visible = useMemo(
+    () => listedConversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(normalizedSearchQuery)),
+    [listedConversations, normalizedSearchQuery],
+  );
+  const incomingFriendRequestCount = useMemo(() => new Set([
+    ...users.filter((user) => user.relationship === 'incoming').map((user) => user.id),
+    ...conversations.flatMap((conversation) => conversation.members.filter((member) => member.relationship === 'incoming').map((member) => member.id)),
+  ]).size, [conversations, users]);
+  const searchUsers = useMemo(
+    () => searchQueryReady ? users.filter((user) => `${user.name} ${user.handle}`.toLocaleLowerCase().includes(normalizedSearchQuery)) : [],
+    [normalizedSearchQuery, searchQueryReady, users],
+  );
+  const searchChats = useMemo(
+    () => searchQueryReady ? listedConversations.filter((conversation) => {
+      const members = conversation.members.map((member) => `${member.name} ${member.handle}`).join(' ');
+      return `${conversation.title} ${members} ${conversation.lastMessage?.content || ''}`.toLocaleLowerCase().includes(normalizedSearchQuery);
+    }) : [],
+    [listedConversations, normalizedSearchQuery, searchQueryReady],
+  );
+  const searchLinks = useMemo(
+    () => searchQueryReady ? listedConversations.flatMap((conversation) => {
+      const sourceMessages = searchMessages[conversation.id]
+        || (conversation.lastMessage ? [{ ...conversation.lastMessage, author: currentUser } as AppMessage] : []);
+      return sourceMessages.flatMap((message) => messageLinks(message.content).map((url) => ({ conversation, message, url })));
+    }).filter(({ conversation, message, url }) =>
+      `${url} ${conversation.title} ${message.author.name} ${message.content}`.toLocaleLowerCase().includes(normalizedSearchQuery),
+    ) : [],
+    [currentUser, listedConversations, normalizedSearchQuery, searchMessages, searchQueryReady],
+  );
+  const openSearchConversation = useCallback((conversationId: string) => {
+    closeGlobalSearch();
+    selectConversation(conversationId);
+  }, [closeGlobalSearch, selectConversation]);
+  const openDirectConversation = useCallback(async (person: AppUser) => {
+    const existing = conversations.find((conversation) =>
+      conversation.kind === 'direct' && conversation.members.some((member) => member.id === person.id),
+    );
+    if (existing) {
+      openSearchConversation(existing.id);
+      return;
+    }
+    try {
+      const result = await api.createConversation({ kind: 'direct', memberIds: [person.id] });
+      setConversations((items) => {
+        const draftConversation = { ...result.conversation, isDraft: !result.conversation.lastMessage };
+        const next = sortConversationsByActivity([draftConversation, ...items.filter((item) => item.id !== result.conversation.id)]);
+        conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+        return next;
+      });
+      openSearchConversation(result.conversation.id);
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : 'Не удалось открыть личный чат', 'danger');
+    }
+  }, [conversations, currentUser.id, openSearchConversation, toast]);
   const mobileNavigationClass = mobileNavigation ? ` is-mobile-navigation is-mobile-${mobileView}` : '';
   return (
     <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}${accountOpen ? ' is-account-menu-open' : ''}${voiceDockVisible ? ' has-voice-dock' : ''}${mobileNavigationClass}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor, '--mova-accent-color': accentColor } as CSSProperties} data-mobile-view={mobileNavigation ? mobileView : undefined}>
       <div className="mova-real-aurora" />
       <aside className="mova-real-sidebar mova-tg-sidebar" aria-hidden={mobileNavigation && mobileView === 'chat'} inert={mobileNavigation && mobileView === 'chat' ? true : undefined}>
         <div className="mova-tg-search-row">
-          <div className="mova-account-anchor">
-            <IconButton label="Меню и профиль" className="mova-tg-menu" onClick={() => setAccountOpen(!accountOpen)}>
-              <Menu size={23} />
+          {searchActive ? (
+            <IconButton label="Закрыть поиск" className="mova-search-back" onClick={closeGlobalSearch}>
+              <ArrowLeft size={23} />
             </IconButton>
-            <AccountMenu user={currentUser} open={accountOpen} onClose={() => setAccountOpen(false)} onEdit={() => setProfileOpen(true)} onSettings={() => setSettingsOpen(true)} onUpdated={onUserUpdate} onLogout={onLogout} />
-          </div>
-          <label className="mova-tg-search">
+          ) : (
+            <div className="mova-account-anchor">
+              <IconButton label="Меню и профиль" className="mova-tg-menu" onClick={() => setAccountOpen(!accountOpen)}>
+                <Menu size={23} />
+              </IconButton>
+              {incomingFriendRequestCount > 0 && (
+                <span className="mova-friend-request-count" aria-label={`Входящих заявок в друзья: ${incomingFriendRequestCount}`} aria-live="polite">
+                  {incomingFriendRequestCount > 99 ? '99+' : incomingFriendRequestCount}
+                </span>
+              )}
+              <AccountMenu user={currentUser} open={accountOpen} onClose={() => setAccountOpen(false)} onEdit={() => setProfileOpen(true)} onSettings={() => setSettingsOpen(true)} onUpdated={onUserUpdate} onLogout={onLogout} />
+            </div>
+          )}
+          <label className={`mova-tg-search${searchActive ? ' is-active' : ''}`}>
             <Search size={20} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск" aria-label="Поиск по чатам" />
+            <input ref={searchInputRef} value={query} onFocus={() => { if (!searchActive) openGlobalSearch(); }} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск" aria-label="Глобальный поиск" />
+            {searchActive && query && <button type="button" aria-label="Очистить поиск" onClick={() => { setQuery(''); searchInputRef.current?.focus(); }}><X size={18} /></button>}
           </label>
         </div>
-        <div className="mova-real-chat-list">
-          {loading ? (
-            <ConversationListSkeleton />
-          ) : visible.length === 0 ? (
-            <div className="mova-real-empty-list">
-              <MessageCircle size={25} />
-              <strong>{conversations.length ? 'Ничего не найдено' : 'Пока тихо'}</strong>
-              <p>{conversations.length ? 'Попробуйте другой запрос' : 'Создайте личный чат или группу'}</p>
+        {searchActive ? (
+          <section className="mova-global-search" aria-label="Результаты поиска">
+            <div className="mova-global-search__tabs" role="tablist" aria-label="Область поиска" onWheel={(event) => {
+              if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+              event.currentTarget.scrollLeft += event.deltaY;
+            }}>
+              {([['users', 'Пользователи'], ['chats', 'Чаты'], ['links', 'Ссылки']] as const).map(([id, label]) => (
+                <button key={id} type="button" role="tab" aria-selected={searchTab === id} className={searchTab === id ? 'is-active' : ''} onClick={() => setSearchTab(id)}>{label}</button>
+              ))}
             </div>
-          ) : (
-            visible.map((conversation) => {
+            <div className="mova-global-search__results" role="tabpanel">
+              {searchTab === 'users' && searchUsers.map((person) => (
+                <button type="button" className="mova-search-result" key={person.id} onClick={() => void openDirectConversation(person)}>
+                  <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} status={avatarStatus(person.presence, person.isOnline)} size="lg" />
+                  <span><strong><AppleEmoji text={person.name} /></strong><small>{person.handle}</small></span>
+                </button>
+              ))}
+              {searchTab === 'chats' && searchChats.map((conversation) => (
+                <button type="button" className="mova-search-result" key={conversation.id} onClick={() => openSearchConversation(conversation.id)}>
+                  <ConversationAvatar conversation={conversation} currentUser={currentUser} />
+                  <span><strong><AppleEmoji text={conversation.title} /></strong><small>{conversation.lastMessage?.content || (conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Личный чат')}</small></span>
+                </button>
+              ))}
+              {searchTab === 'links' && searchLinks.map(({ conversation, message, url }, index) => (
+                <button type="button" className="mova-search-result is-link" key={`${message.id}-${url}-${index}`} onClick={() => openSearchConversation(conversation.id)}>
+                  <i><Link2 size={21} /></i>
+                  <span><strong>{url}</strong><small>{conversation.title} · {message.author.name}</small></span>
+                </button>
+              ))}
+              {searchQueryReady && ((searchTab === 'users' && !searchUsers.length) || (searchTab === 'chats' && !searchChats.length) || (searchTab === 'links' && !searchLinks.length)) && (
+                <div className="mova-global-search__empty">
+                  <Search size={24} />
+                  <strong>{searchMessagesLoading && searchTab === 'links' ? 'Ищем ссылки…' : 'Ничего не найдено'}</strong>
+                  <span>Попробуйте изменить запрос</span>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : (
+          <div className="mova-real-chat-list">
+            {loading ? (
+              <ConversationListSkeleton />
+            ) : visible.length === 0 ? (
+              <div className="mova-real-empty-list">
+                <MessageCircle size={25} />
+                <strong>{listedConversations.length ? 'Ничего не найдено' : 'Пока тихо'}</strong>
+                <p>{listedConversations.length ? 'Попробуйте другой запрос' : 'Создайте личный чат или группу'}</p>
+              </div>
+            ) : visible.map((conversation) => {
               const typingLabel = conversationTypingLabel(conversation, currentUser.id, typingByConversation[conversation.id] || []);
+              const incomingFriendRequest = conversation.kind === 'direct' && conversation.members.some((member) => member.relationship === 'incoming');
               return (
-              <button type="button" key={conversation.id} aria-label={sidebarCompact ? conversation.title : undefined} title={sidebarCompact ? conversation.title : undefined} className={selectedId === conversation.id ? 'is-active' : ''} onClick={() => selectConversation(conversation.id)}>
-                <ConversationAvatar conversation={conversation} currentUser={currentUser} />
-                <span>
-                  <span>
-                    <strong><AppleEmoji text={conversation.title} /></strong>
-                    <time>
-                      {conversation.lastMessage
-                        ? new Intl.DateTimeFormat('ru', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          }).format(new Date(conversation.lastMessage.createdAt))
-                        : ''}
-                    </time>
+                <button type="button" key={conversation.id} aria-label={sidebarCompact ? conversation.title : undefined} title={sidebarCompact ? conversation.title : undefined} className={selectedId === conversation.id ? 'is-active' : ''} onClick={() => selectConversation(conversation.id)}>
+                  <ConversationAvatar conversation={conversation} currentUser={currentUser} />
+                  <span><span><strong><AppleEmoji text={conversation.title} /></strong>{incomingFriendRequest && <b className="mova-chat-friend-request-label">Заявка</b>}<time>{conversation.lastMessage ? new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' }).format(new Date(conversation.lastMessage.createdAt)) : ''}</time></span>
+                    <small className={typingLabel ? 'mova-typing-status' : undefined} aria-live="polite"><AppleEmoji text={typingLabel || conversationPreviewText(conversation, currentUser.id)} /></small>
+                    {(conversation.unreadCount || 0) > 0 && <b className="mova-chat-unread-count" aria-label={`Непрочитанных сообщений: ${conversation.unreadCount}`}>{(conversation.unreadCount || 0) > 9 ? '9+' : conversation.unreadCount}</b>}
                   </span>
-                  <small className={typingLabel ? 'mova-typing-status' : undefined} aria-live="polite">
-                    <AppleEmoji
-                      text={
-                        typingLabel || conversation.lastMessage?.content ||
-                        (conversation.lastMessage?.attachment
-                          ? conversation.lastMessage.attachment.type.startsWith('image/')
-                            ? 'Фотография'
-                            : conversation.lastMessage.attachment.name
-                          : conversation.kind === 'group'
-                            ? `${conversation.members.length} участников`
-                            : 'Начните разговор')
-                      }
-                    />
-                  </small>
-                </span>
-              </button>
+                </button>
               );
-            })
-          )}
-        </div>
-        <button type="button" className="mova-tg-compose" aria-label="Новый разговор" onClick={() => setCreateOpen(true)}>
-          <Pencil size={23} />
-        </button>
+            })}
+          </div>
+        )}
+        {!searchActive && composeMenuOpen && (
+          <div className="mova-compose-menu" role="menu" aria-label="Создание разговора">
+            <button type="button" role="menuitem" aria-disabled="true">
+              <Megaphone size={24} />
+              <span>Создать канал</span>
+            </button>
+            <button type="button" role="menuitem" aria-disabled="true">
+              <Users size={24} />
+              <span>Создать группу</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => openGlobalSearch('users')}>
+              <UserRound size={24} />
+              <span>Начать личный чат</span>
+            </button>
+          </div>
+        )}
+        {!searchActive && (
+          <button
+            type="button"
+            className={`mova-tg-compose${composeMenuOpen ? ' is-open' : ''}`}
+            aria-label={composeMenuOpen ? 'Закрыть меню создания' : 'Новый разговор'}
+            aria-expanded={composeMenuOpen}
+            onClick={() => {
+              setAccountOpen(false);
+              setComposeMenuOpen((open) => !open);
+            }}
+          >
+            {composeMenuOpen ? <X size={28} /> : <Pencil size={23} />}
+          </button>
+        )}
         <div
           className="mova-sidebar-resizer"
           role="separator"
@@ -4031,25 +4615,20 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           onMinimizeCallCanvas={() => setCallCanvasOpen(false)}
           onStartCall={(video) => requestCall(selected.id, video)}
           messages={messages}
+          unreadCount={selected.unreadCount || 0}
           loading={messagesLoading}
           historyError={messagesErrorFor === selected.id}
           typingUserIds={typingByConversation[selected.id] || []}
           mobileActive={!mobileNavigation || mobileView === 'chat'}
-          onMobileBack={navigateToMobileList}
+          onMobileBack={mobileNavigation ? navigateToMobileList : undefined}
           onCallOpenChange={handleMobileCallOpenChange}
           onSend={send}
           onRetry={retry}
           onRetryHistory={() => setMessagesLoadAttempt((attempt) => attempt + 1)}
           onEdit={edit}
-          onDeleteConversation={() => {
-            setConversations((items) => items.filter((item) => item.id !== selected.id));
-            setSelectedId(null);
-            setMessages([]);
-            if (mobileNavigationRef.current) {
-              window.history.replaceState(mobileHistoryState('list'), '');
-              setMobileNavigationView('list');
-            }
-          }}
+          onRelationshipChange={applyRelationshipUser}
+          onMarkRead={(throughMessageId) => markConversationRead(selected.id, throughMessageId)}
+          onDeleteConversation={() => void deleteConversation(selected.id)}
         />
       ) : (
         <section className="mova-real-welcome" aria-hidden={mobileNavigation && mobileView === 'list'} inert={mobileNavigation && mobileView === 'list' ? true : undefined}>
@@ -4070,7 +4649,8 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
         onClose={() => setCreateOpen(false)}
         onCreated={(conversation) => {
           setConversations((items) => {
-            const next = [conversation, ...items.filter((item) => item.id !== conversation.id)];
+            const nextConversation = conversation.kind === 'direct' && !conversation.lastMessage ? { ...conversation, isDraft: true } : conversation;
+            const next = [nextConversation, ...items.filter((item) => item.id !== conversation.id)];
             conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
             return next;
           });
@@ -4079,6 +4659,21 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       />
       <SettingsModal user={currentUser} open={settingsOpen} onClose={() => setSettingsOpen(false)} onEditProfile={() => setProfileOpen(true)} />
       <ProfileEditor user={currentUser} open={profileOpen} onClose={() => setProfileOpen(false)} onSaved={onUserUpdate} />
+      <NotificationPermissionDialog
+        open={notificationPromptOpen}
+        loading={notificationPermissionLoading}
+        onLater={() => setNotificationPromptOpen(false)}
+        onAllow={() => {
+          setNotificationPermissionLoading(true);
+          void enableMessageNotifications()
+            .then(({ permission, pushActive }) => {
+              setNotificationPromptOpen(false);
+              if (permission === 'denied') toast.push('Уведомления заблокированы в настройках браузера.', 'info');
+              else if (permission === 'granted' && !pushActive) toast.push('Уведомления включены, но фоновые уведомления на этом устройстве недоступны.', 'info');
+            })
+            .finally(() => setNotificationPermissionLoading(false));
+        }}
+      />
     </main>
   );
 }
@@ -4115,6 +4710,7 @@ export function RealApp() {
       currentUser={currentUser}
       onUserUpdate={setCurrentUser}
       onLogout={() => {
+        void unregisterMessageNotifications();
         realtime.close();
         clearClientCache();
         session.clear();

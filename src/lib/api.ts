@@ -13,6 +13,7 @@ export interface AppUser {
   activity?: { name: string; startedAt: string } | null;
   lastActiveAt?: string;
   createdAt: string;
+  relationship?: 'self' | 'none' | 'outgoing' | 'incoming' | 'friend' | 'blocked' | 'blocked_by';
 }
 export interface MessageAttachment {
   name: string;
@@ -47,12 +48,17 @@ export interface AppMessage {
   readBy?: MessageReadReceipt[];
   clientId?: string;
   deliveryState?: 'sending' | 'failed';
-  kind?: 'user' | 'call';
+  kind?: 'user' | 'call' | 'friend_request';
   call?: {
     status: 'completed';
     durationSeconds: number;
     startedAt: string;
     endedAt: string;
+  };
+  friendRequest?: {
+    requestedBy: string;
+    status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+    respondedAt?: string;
   };
   author: AppUser;
 }
@@ -62,10 +68,16 @@ export interface AppConversation {
   title: string;
   members: AppUser[];
   lastMessage: Omit<AppMessage, 'author'> | null;
+  unreadCount?: number;
   createdAt: string;
+  createdBy?: string;
+  isDraft?: boolean;
 }
 export interface RtcConfig {
   iceServers: RTCIceServer[];
+}
+export interface PushConfig {
+  publicKey: string;
 }
 export interface VoiceRoomParticipant {
   userId: string;
@@ -85,11 +97,28 @@ export interface MaintenanceState {
 }
 
 const tokenKey = 'mova-session';
-const sessionStore = () => (navigator.userAgent.includes('MovaDesktop/') ? localStorage : sessionStorage);
+const persistentAppSession = () =>
+  navigator.userAgent.includes('MovaDesktop/')
+  || Boolean(window.matchMedia?.('(display-mode: standalone)').matches)
+  || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+const sessionStore = () => (persistentAppSession() ? localStorage : sessionStorage);
 export const session = {
-  get: () => sessionStore().getItem(tokenKey),
+  get: () => {
+    const store = sessionStore();
+    const token = store.getItem(tokenKey);
+    if (token || store === sessionStorage) return token;
+    const previousSession = sessionStorage.getItem(tokenKey);
+    if (previousSession) {
+      store.setItem(tokenKey, previousSession);
+      sessionStorage.removeItem(tokenKey);
+    }
+    return previousSession;
+  },
   set: (token: string) => sessionStore().setItem(tokenKey, token),
-  clear: () => sessionStore().removeItem(tokenKey),
+  clear: () => {
+    localStorage.removeItem(tokenKey);
+    sessionStorage.removeItem(tokenKey);
+  },
 };
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -150,12 +179,19 @@ export const api = {
       body: JSON.stringify({ presence, dndUntil }),
     }),
   users: () => request<{ users: AppUser[] }>('/api/users'),
+  requestFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}`, { method: 'POST' }),
+  acceptFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}`, { method: 'PATCH' }),
+  rejectFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}/reject`, { method: 'POST' }),
+  removeFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}`, { method: 'DELETE' }),
+  blockUser: (userId: string) => request<{ user: AppUser }>(`/api/blocks/${userId}`, { method: 'POST' }),
+  unblockUser: (userId: string) => request<{ user: AppUser }>(`/api/blocks/${userId}`, { method: 'DELETE' }),
   conversations: () => request<{ conversations: AppConversation[] }>('/api/conversations'),
   createConversation: (data: { kind: 'direct' | 'group'; title?: string; memberIds: string[] }) =>
     request<{ conversation: AppConversation }>('/api/conversations', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  deleteConversation: (conversationId: string) => request<{ conversationId: string }>(`/api/conversations/${conversationId}`, { method: 'DELETE' }),
   messages: (conversationId: string) => request<{ messages: AppMessage[] }>(`/api/conversations/${conversationId}/messages`),
   sendMessage: async (conversationId: string, content: string, attachment?: MessageAttachment, replyToId?: string, clientId?: string, onAttachmentUploaded?: (attachment: MessageAttachment) => void) => {
     const uploadedAttachment = attachment ? await uploadAttachment(attachment) : undefined;
@@ -177,6 +213,9 @@ export const api = {
       body: JSON.stringify({ throughMessageId }),
     }),
   rtcConfig: () => request<RtcConfig>('/api/rtc-config'),
+  pushConfig: () => request<PushConfig>('/api/push-config'),
+  savePushSubscription: (subscription: PushSubscriptionJSON) => request<{ ok: true }>('/api/push-subscriptions', { method: 'POST', body: JSON.stringify(subscription) }),
+  deletePushSubscription: (endpoint: string) => request<{ ok: true }>('/api/push-subscriptions', { method: 'DELETE', body: JSON.stringify({ endpoint }) }),
 };
 
 export type RealtimeEvent =
@@ -193,8 +232,10 @@ export type RealtimeEvent =
       readAt: string;
     }
   | { type: 'conversation:new'; conversationId: string }
+  | { type: 'conversation:delete'; conversationId: string }
   | { type: 'typing'; conversationId: string; userId: string; active: boolean }
   | { type: 'profile:update' | 'presence:update'; user: AppUser }
+  | { type: 'relationship:update'; user: AppUser }
   | { type: 'call:invite'; conversationId: string; from: AppUser; createdAt: string }
   | {
       type: 'call:accept';

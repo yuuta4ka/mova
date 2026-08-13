@@ -5,8 +5,29 @@ export type DesktopShellApi = {
   minimize: () => void;
   toggleMaximize: () => void;
   close: () => void;
+  setCallStatus?: (status: { active: boolean; speaking: boolean; muted: boolean; deafened: boolean }) => void;
+  showNotification?: (notification: { kind: 'message' | 'call'; title: string; body: string; conversationId: string }) => void;
+  onNotificationClick?: (callback: (notification: { kind: 'message' | 'call'; conversationId: string }) => void) => () => void;
+  onSharePickerRequest?: (callback: (payload: DesktopSharePickerRequest) => void) => () => void;
+  chooseShareSource?: (requestId: string, sourceId: string) => void;
+  cancelSharePicker?: (requestId: string) => void;
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
+};
+
+export type DesktopShareSourceKind = 'window' | 'screen' | 'device';
+export type DesktopShareSource = {
+  id: string;
+  name: string;
+  kind: DesktopShareSourceKind;
+  displayId: string;
+  thumbnail: string;
+  appIcon: string;
+};
+export type DesktopSharePickerRequest = {
+  requestId: string;
+  sources: DesktopShareSource[];
+  tabs: DesktopShareSourceKind[];
 };
 
 declare global {

@@ -28,7 +28,11 @@ async function availablePort() {
 async function api(path, { method = 'GET', token, data } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(path === '/api/register' && data?.email ? { 'x-forwarded-for': `test-${data.email}` } : {}),
+    },
     body: data === undefined ? undefined : JSON.stringify(data),
   });
   const result = await response.json();
@@ -48,6 +52,23 @@ function waitForEvent(socket, type, predicate = () => true) {
       clearTimeout(timeout);
       socket.off('message', listener);
       resolve(event);
+    };
+    socket.on('message', listener);
+  });
+}
+
+function expectNoEvent(socket, type, waitMs = 250) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off('message', listener);
+      resolve();
+    }, waitMs);
+    const listener = (raw) => {
+      const event = JSON.parse(raw);
+      if (event.type !== type) return;
+      clearTimeout(timeout);
+      socket.off('message', listener);
+      reject(new Error(`Unexpected ${type} event`));
     };
     socket.on('message', listener);
   });
@@ -104,10 +125,108 @@ afterAll(async () => {
 });
 
 describe('realtime while maintenance state changes', () => {
+  it('keeps an empty direct chat private until the first message and deletes it for both members', async () => {
+    const suffix = `${Date.now()}-draft-delete`;
+    const first = await api('/api/register', { method: 'POST', data: { name: 'Автор черновика', email: `draft.first.${suffix}@mova.test`, password: 'strongpass1' } });
+    const second = await api('/api/register', { method: 'POST', data: { name: 'Собеседник', email: `draft.second.${suffix}@mova.test`, password: 'strongpass2' } });
+    const firstSocket = await openSocket(first.token);
+    const secondSocket = await openSocket(second.token);
+    const noPrematureConversation = expectNoEvent(secondSocket, 'conversation:new');
+    const created = await api('/api/conversations', { method: 'POST', token: first.token, data: { kind: 'direct', memberIds: [second.user.id] } });
+    const conversationId = created.conversation.id;
+    expect(created.conversation.isDraft).toBe(true);
+    await noPrematureConversation;
+
+    const creatorOverview = await api('/api/conversations', { token: first.token });
+    const recipientOverview = await api('/api/conversations', { token: second.token });
+    expect(creatorOverview.conversations).toEqual([expect.objectContaining({ id: conversationId, isDraft: true })]);
+    expect(recipientOverview.conversations).toEqual([]);
+
+    const published = waitForEvent(secondSocket, 'conversation:new', (event) => event.conversationId === conversationId);
+    const delivered = waitForEvent(secondSocket, 'message:new', (event) => event.message.conversationId === conversationId && event.message.content === 'Первое сообщение');
+    await api(`/api/conversations/${conversationId}/messages`, { method: 'POST', token: first.token, data: { content: 'Первое сообщение' } });
+    await published;
+    const deliveredMessage = (await delivered).message;
+    expect((await api('/api/conversations', { token: second.token })).conversations[0]).toMatchObject({ id: conversationId, isDraft: false, unreadCount: 1 });
+    await api(`/api/conversations/${conversationId}/read`, { method: 'POST', token: second.token, data: { throughMessageId: deliveredMessage.id } });
+    expect((await api('/api/conversations', { token: second.token })).conversations[0].unreadCount).toBe(0);
+
+    const deletedForFirst = waitForEvent(firstSocket, 'conversation:delete', (event) => event.conversationId === conversationId);
+    const deletedForSecond = waitForEvent(secondSocket, 'conversation:delete', (event) => event.conversationId === conversationId);
+    await api(`/api/conversations/${conversationId}`, { method: 'DELETE', token: first.token });
+    await deletedForFirst;
+    await deletedForSecond;
+    expect((await api('/api/conversations', { token: first.token })).conversations).toEqual([]);
+    expect((await api('/api/conversations', { token: second.token })).conversations).toEqual([]);
+
+    firstSocket.close();
+    secondSocket.close();
+  });
+
+  it('requires friendship for direct calls and synchronizes requests and blocks', async () => {
+    const suffix = `${Date.now()}-friends`;
+    const first = await api('/api/register', { method: 'POST', data: { name: 'Инициатор', email: `friends.first.${suffix}@mova.test`, password: 'strongpass1' } });
+    const second = await api('/api/register', { method: 'POST', data: { name: 'Получатель', email: `friends.second.${suffix}@mova.test`, password: 'strongpass2' } });
+    const conversation = await api('/api/conversations', { method: 'POST', token: first.token, data: { kind: 'direct', memberIds: [second.user.id] } });
+    const conversationId = conversation.conversation.id;
+    const firstSocket = await openSocket(first.token);
+    const secondSocket = await openSocket(second.token);
+
+    const noInvite = expectNoEvent(secondSocket, 'call:invite');
+    firstSocket.send(JSON.stringify({ type: 'call:invite', conversationId }));
+    await noInvite;
+
+    const incomingRequest = waitForEvent(secondSocket, 'relationship:update', (event) => event.user.id === first.user.id && event.user.relationship === 'incoming');
+    const requestCard = waitForEvent(secondSocket, 'message:new', (event) => event.message.kind === 'friend_request' && event.message.friendRequest?.requestedBy === first.user.id);
+    const requested = await api(`/api/friends/${second.user.id}`, { method: 'POST', token: first.token });
+    expect(requested.user.relationship).toBe('outgoing');
+    expect((await incomingRequest).user.relationship).toBe('incoming');
+    expect((await requestCard).message.friendRequest.status).toBe('pending');
+
+    const declinedCard = waitForEvent(firstSocket, 'message:update', (event) => event.message.kind === 'friend_request' && event.message.friendRequest?.status === 'declined');
+    const rejected = await api(`/api/friends/${first.user.id}/reject`, { method: 'POST', token: second.token });
+    expect(rejected.user.relationship).toBe('none');
+    await declinedCard;
+    await expect(api(`/api/friends/${second.user.id}`, { method: 'POST', token: first.token })).rejects.toThrow('Повторную заявку можно отправить через 24 часа после отказа');
+
+    const reverseRequestCard = waitForEvent(firstSocket, 'message:new', (event) => event.message.kind === 'friend_request' && event.message.friendRequest?.requestedBy === second.user.id);
+    const reverseRequest = await api(`/api/friends/${first.user.id}`, { method: 'POST', token: second.token });
+    expect(reverseRequest.user.relationship).toBe('outgoing');
+    await reverseRequestCard;
+    const acceptedForSecond = waitForEvent(secondSocket, 'relationship:update', (event) => event.user.id === first.user.id && event.user.relationship === 'friend');
+    const acceptedCard = waitForEvent(secondSocket, 'message:update', (event) => event.message.kind === 'friend_request' && event.message.friendRequest?.status === 'accepted');
+    const accepted = await api(`/api/friends/${second.user.id}`, { method: 'PATCH', token: first.token });
+    expect(accepted.user.relationship).toBe('friend');
+    await acceptedForSecond;
+    await acceptedCard;
+
+    const invited = waitForEvent(secondSocket, 'call:invite', (event) => event.conversationId === conversationId);
+    firstSocket.send(JSON.stringify({ type: 'call:invite', conversationId }));
+    expect((await invited).from.id).toBe(first.user.id);
+    const declined = waitForEvent(firstSocket, 'call:decline', (event) => event.conversationId === conversationId);
+    secondSocket.send(JSON.stringify({ type: 'call:decline', conversationId }));
+    await declined;
+
+    const blockedForSecond = waitForEvent(secondSocket, 'relationship:update', (event) => event.user.id === first.user.id && event.user.relationship === 'blocked_by');
+    const blocked = await api(`/api/blocks/${second.user.id}`, { method: 'POST', token: first.token });
+    expect(blocked.user.relationship).toBe('blocked');
+    await blockedForSecond;
+    await expect(api(`/api/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      token: second.token,
+      data: { content: 'Это сообщение не должно пройти' },
+    })).rejects.toThrow('Обмен сообщениями недоступен из-за блокировки');
+
+    firstSocket.close();
+    secondSocket.close();
+  });
+
   it('keeps presence, reconnect, incoming calls and cancellation working with maintenance off and on', async () => {
     const suffix = Date.now();
     const first = await api('/api/register', { method: 'POST', data: { name: 'Первый', email: `first.${suffix}@mova.test`, password: 'strongpass1' } });
     const second = await api('/api/register', { method: 'POST', data: { name: 'Второй', email: `second.${suffix}@mova.test`, password: 'strongpass2' } });
+    await api(`/api/friends/${second.user.id}`, { method: 'POST', token: first.token });
+    await api(`/api/friends/${first.user.id}`, { method: 'PATCH', token: second.token });
     const conversation = await api('/api/conversations', { method: 'POST', token: first.token, data: { kind: 'direct', memberIds: [second.user.id] } });
     const firstSocket = await openSocket(first.token);
     const secondOnline = waitForEvent(firstSocket, 'presence:update', (event) => event.user.id === second.user.id && event.user.isOnline);
@@ -154,6 +273,8 @@ describe('realtime while maintenance state changes', () => {
     const suffix = `${Date.now()}-voice`;
     const first = await api('/api/register', { method: 'POST', data: { name: 'Говорящий', email: `voice.first.${suffix}@mova.test`, password: 'strongpass1' } });
     const second = await api('/api/register', { method: 'POST', data: { name: 'Слушатель', email: `voice.second.${suffix}@mova.test`, password: 'strongpass2' } });
+    await api(`/api/friends/${second.user.id}`, { method: 'POST', token: first.token });
+    await api(`/api/friends/${first.user.id}`, { method: 'PATCH', token: second.token });
     const conversation = await api('/api/conversations', { method: 'POST', token: first.token, data: { kind: 'direct', memberIds: [second.user.id] } });
     const conversationId = conversation.conversation.id;
     const firstSocket = await openSocket(first.token);

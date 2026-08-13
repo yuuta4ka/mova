@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, realtime, type AppUser, type RealtimeEvent, type VoiceRoomParticipant } from '../lib/api';
 import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
+import { createMicrophonePipeline, type MicrophonePipeline } from '../lib/microphoneProcessing';
+import { configureScreenShareSender, screenShareContentHint } from '../lib/screenShareEncoding';
 
 export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'available';
 export type LegacyCallState = CallState | 'active' | 'error';
@@ -22,12 +24,33 @@ export interface PeerCallDiagnostics {
   roundTripTimeMs?: number;
   jitterMs?: number;
   packetLossPercent?: number;
+  outboundScreenFramesPerSecond?: number;
+  outboundScreenBitrateKbps?: number;
+  screenQualityLimitationReason?: string;
   quality: 'good' | 'fair' | 'poor';
   recovering: boolean;
   updatedAt: number;
 }
 
 type RemoteMediaKind = 'voice' | 'screen';
+export const resolveRemotePlaybackVolume = (mediaKind: RemoteMediaKind, deafened: boolean, volume: number) =>
+  deafened && mediaKind === 'voice' ? 0 : volume;
+
+type MicrophonePeer = Pick<RTCPeerConnection, 'getSenders'>;
+export async function replaceMicrophoneTrack(peers: Iterable<MicrophonePeer>, previousTrack: MediaStreamTrack, nextTrack: MediaStreamTrack) {
+  const senders = [...peers].flatMap((peer) => peer.getSenders().filter((sender) => sender.track === previousTrack));
+  const replaced: RTCRtpSender[] = [];
+  try {
+    for (const sender of senders) {
+      await sender.replaceTrack(nextTrack);
+      replaced.push(sender);
+    }
+  } catch (error) {
+    await Promise.allSettled(replaced.map((sender) => sender.replaceTrack(previousTrack)));
+    throw error;
+  }
+}
+
 interface RemoteAudioEntry {
   userId: string;
   streamId: string;
@@ -54,6 +77,21 @@ const pendingCallKey = 'mova-pending-call';
 const participantVolumeKey = 'mova-call-participant-volumes';
 const screenVolumeKey = 'mova-call-screen-volumes';
 const reconnectTimeoutMs = 12_000;
+
+const microphoneConstraints = (settings: AudioSettings): MediaTrackConstraints => ({
+  ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
+  echoCancellation: settings.echoCancellation,
+  noiseSuppression: settings.noiseSuppression,
+  autoGainControl: settings.autoGainControl,
+});
+
+const microphoneSwitchError = (error: unknown) => {
+  const name = error instanceof DOMException ? error.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'Нет доступа к выбранному микрофону';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'Выбранный микрофон не найден';
+  if (name === 'NotReadableError') return 'Выбранный микрофон занят другим приложением';
+  return error instanceof Error ? error.message : 'Не удалось открыть выбранный микрофон';
+};
 
 const clampVolume = (value: number) => Math.max(0, Math.min(200, Math.round(value)));
 function loadVolumes(key: string): Record<string, number> {
@@ -198,12 +236,18 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const deafenedRef = useRef(false);
   const localStream = useRef<MediaStream | null>(null);
   const localSourceStream = useRef<MediaStream | null>(null);
+  const localMicrophonePipeline = useRef<MicrophonePipeline | null>(null);
+  const activeInputDeviceId = useRef<string | null>(null);
+  const activeNoiseSuppressionMode = useRef<AudioSettings['noiseSuppressionMode'] | null>(null);
+  const microphoneSwitchQueue = useRef<Promise<void>>(Promise.resolve());
+  const microphoneSwitchGeneration = useRef(0);
   const localAudioContext = useRef<AudioContext | null>(null);
   const localGain = useRef<GainNode | null>(null);
   const localVoiceMonitor = useRef<(() => void) | null>(null);
   const localSpeakingRef = useRef(false);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const activeScreenQuality = useRef<ScreenShareQuality>({ width: 1920, height: 1080, frameRate: 30 });
   const peers = useRef(new Map<string, RTCPeerConnection>());
   const configuredIceServers = useRef<RTCIceServer[]>(fallbackIceServers);
   const iceConfigPromise = useRef<Promise<void> | null>(null);
@@ -219,12 +263,33 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const stopTone = useRef<() => void>(() => undefined);
   const ringTimeout = useRef<number | null>(null);
   const reconnectTimeout = useRef<number | null>(null);
-  const previousPeerStats = useRef(new Map<string, { outbound: number; stalledChecks: number; lastRecoveryAt: number }>());
+  const previousPeerStats = useRef(new Map<string, {
+    outbound: number;
+    screenBytes: number;
+    screenFrames: number;
+    packetsLost: number;
+    packetsReceived: number;
+    sampledAt: number;
+    stalledChecks: number;
+    lastRecoveryAt: number;
+  }>());
 
   const updateState = useCallback((next: CallState) => {
     stateRef.current = next;
     setState(next);
   }, []);
+  useEffect(() => {
+    window.movaDesktopShell?.setCallStatus?.({
+      active: isJoinedCallState(state),
+      speaking: state === 'connected' && !muted && localSpeaking,
+      muted,
+      deafened,
+    });
+  }, [deafened, localSpeaking, muted, state]);
+  useEffect(
+    () => () => window.movaDesktopShell?.setCallStatus?.({ active: false, speaking: false, muted: false, deafened: false }),
+    [],
+  );
   const clearReconnectTimeout = useCallback(() => {
     if (reconnectTimeout.current !== null) window.clearTimeout(reconnectTimeout.current);
     reconnectTimeout.current = null;
@@ -274,11 +339,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const applyRemoteVolume = useCallback((entry: RemoteAudioEntry, settings = loadAudioSettings()) => {
     const scoped = entry.mediaKind === 'screen' ? (screenVolumesRef.current[entry.userId] ?? 100) : (participantVolumesRef.current[entry.userId] ?? 100);
     const volume = Math.max(0, Math.min(4, ((settings.outputVolume / 100) * scoped) / 100));
+    const playbackVolume = resolveRemotePlaybackVolume(entry.mediaKind, deafenedRef.current, volume);
     if (entry.gain) {
-      entry.gain.gain.value = deafenedRef.current ? 0 : volume;
+      entry.gain.gain.value = playbackVolume;
       entry.element.muted = true;
     } else {
-      entry.element.volume = deafenedRef.current ? 0 : Math.min(1, volume);
+      entry.element.volume = Math.min(1, playbackVolume);
     }
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (
@@ -377,7 +443,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       if (!stream) continue;
       for (const track of stream.getTracks())
         if (!senderTrackIds.has(track.id)) {
-          peer.addTrack(track, stream);
+          const sender = peer.addTrack(track, stream);
+          if (stream === screenStreamRef.current && track.kind === 'video')
+            void configureScreenShareSender(sender, activeScreenQuality.current).catch(() => undefined);
           senderTrackIds.add(track.id);
         }
     }
@@ -389,6 +457,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       if (existing) return existing;
       const peer = new RTCPeerConnection({
         iceServers: configuredIceServers.current,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 4,
       });
       addMissingLocalTracks(peer);
       peer.onicecandidate = (event) => {
@@ -471,6 +542,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         let outboundAudioBytes = 0;
         let inboundAudioBytes = 0;
         let hasOutboundAudio = false;
+        let outboundScreenBytes = 0;
+        let outboundScreenFrames = 0;
+        let outboundScreenFramesPerSecond: number | undefined;
+        let screenQualityLimitationReason: string | undefined;
+        const screenTrackId = screenStreamRef.current?.getVideoTracks()[0]?.id;
         let selectedPair:
           | (RTCStats & {
               localCandidateId?: string;
@@ -494,6 +570,16 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             if (Number.isFinite(Number(report.jitter))) jitterSeconds = Number(report.jitter);
           }
           if (report.type === 'remote-inbound-rtp' && mediaKind === 'audio' && Number.isFinite(Number(report.roundTripTime))) roundTripTimeSeconds = Number(report.roundTripTime);
+          if (report.type === 'outbound-rtp' && mediaKind === 'video' && !report.isRemote) {
+            const mediaSource = report.mediaSourceId ? reports.get(report.mediaSourceId) : undefined;
+            const trackIdentifier = report.trackIdentifier || mediaSource?.trackIdentifier;
+            if (screenTrackId && trackIdentifier === screenTrackId) {
+              outboundScreenBytes += Math.max(0, Number(report.bytesSent || 0));
+              outboundScreenFrames += Math.max(0, Number(report.framesEncoded || 0));
+              if (Number.isFinite(Number(report.framesPerSecond))) outboundScreenFramesPerSecond = Math.round(Number(report.framesPerSecond));
+              if (report.qualityLimitationReason && report.qualityLimitationReason !== 'none') screenQualityLimitationReason = String(report.qualityLimitationReason);
+            }
+          }
           if (report.type === 'transport' && report.selectedCandidatePairId) selectedPair = reports.get(report.selectedCandidatePairId) as typeof selectedPair;
         });
         if (!selectedPair)
@@ -506,19 +592,39 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         if (Number.isFinite(candidatePairRtt)) roundTripTimeSeconds = candidatePairRtt;
         const roundTripTimeMs = roundTripTimeSeconds === undefined ? undefined : Math.round(roundTripTimeSeconds * 1000);
         const jitterMs = jitterSeconds === undefined ? undefined : Math.round(jitterSeconds * 1000);
-        const packetLossPercent = packetsLost + packetsReceived ? Math.round((packetsLost / (packetsLost + packetsReceived)) * 1000) / 10 : 0;
-        const quality: PeerCallDiagnostics['quality'] = peer.connectionState !== 'connected' || (roundTripTimeMs ?? 0) >= 300 || packetLossPercent >= 8 || (jitterMs ?? 0) >= 80 ? 'poor' : (roundTripTimeMs ?? 0) >= 150 || packetLossPercent >= 3 || (jitterMs ?? 0) >= 40 ? 'fair' : 'good';
         const previous = previousPeerStats.current.get(userId) || {
           outbound: -1,
+          screenBytes: -1,
+          screenFrames: -1,
+          packetsLost: -1,
+          packetsReceived: -1,
+          sampledAt: Date.now(),
           stalledChecks: 0,
           lastRecoveryAt: 0,
         };
+        const sampleDurationSeconds = Math.max(0.001, (Date.now() - previous.sampledAt) / 1000);
+        const outboundScreenBitrateKbps = previous.screenBytes >= 0 && outboundScreenBytes >= previous.screenBytes
+          ? Math.round(((outboundScreenBytes - previous.screenBytes) * 8) / sampleDurationSeconds / 1000)
+          : undefined;
+        if (outboundScreenFramesPerSecond === undefined && previous.screenFrames >= 0 && outboundScreenFrames >= previous.screenFrames)
+          outboundScreenFramesPerSecond = Math.round((outboundScreenFrames - previous.screenFrames) / sampleDurationSeconds);
+        const lostSincePrevious = previous.packetsLost >= 0 ? Math.max(0, packetsLost - previous.packetsLost) : packetsLost;
+        const receivedSincePrevious = previous.packetsReceived >= 0 ? Math.max(0, packetsReceived - previous.packetsReceived) : packetsReceived;
+        const packetLossPercent = lostSincePrevious + receivedSincePrevious
+          ? Math.round((lostSincePrevious / (lostSincePrevious + receivedSincePrevious)) * 1000) / 10
+          : 0;
+        const quality: PeerCallDiagnostics['quality'] = peer.connectionState !== 'connected' || (roundTripTimeMs ?? 0) >= 300 || packetLossPercent >= 8 || (jitterMs ?? 0) >= 80 ? 'poor' : (roundTripTimeMs ?? 0) >= 150 || packetLossPercent >= 3 || (jitterMs ?? 0) >= 40 ? 'fair' : 'good';
         const microphoneEnabled = Boolean(localStream.current?.getAudioTracks().some((track) => track.enabled && track.readyState === 'live'));
         const stalled = peer.connectionState === 'connected' && microphoneEnabled && localSpeakingRef.current && hasOutboundAudio && previous.outbound >= 0 && outboundAudioBytes <= previous.outbound;
         const stalledChecks = stalled ? previous.stalledChecks + 1 : 0;
         const shouldRecover = stalledChecks >= 3 && Date.now() - previous.lastRecoveryAt > 20_000;
         previousPeerStats.current.set(userId, {
           outbound: outboundAudioBytes,
+          screenBytes: outboundScreenBytes,
+          screenFrames: outboundScreenFrames,
+          packetsLost,
+          packetsReceived,
+          sampledAt: Date.now(),
           stalledChecks: shouldRecover ? 0 : stalledChecks,
           lastRecoveryAt: shouldRecover ? Date.now() : previous.lastRecoveryAt,
         });
@@ -536,6 +642,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           roundTripTimeMs,
           jitterMs,
           packetLossPercent,
+          outboundScreenFramesPerSecond,
+          outboundScreenBitrateKbps,
+          screenQualityLimitationReason,
           quality,
           recovering: shouldRecover,
           updatedAt: Date.now(),
@@ -571,6 +680,29 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     });
   }, [conversationId]);
 
+  const restartLocalVoiceMonitor = useCallback(async (stream: MediaStream) => {
+    // Voice activity is an enhancement only: unsupported/suspended Web Audio
+    // must never prevent the actual microphone track from joining the call.
+    localVoiceMonitor.current?.();
+    localVoiceMonitor.current = null;
+    localSpeakingRef.current = false;
+    setLocalSpeaking(false);
+    try {
+      const context = localAudioContext.current?.state === 'closed' ? new AudioContext() : localAudioContext.current || new AudioContext();
+      const source = context.createMediaStreamSource(stream);
+      const analyser = context.createAnalyser();
+      source.connect(analyser);
+      localAudioContext.current = context;
+      localVoiceMonitor.current = startVoiceActivityMonitor(analyser, (speaking) => {
+        localSpeakingRef.current = speaking;
+        setLocalSpeaking(speaking);
+      });
+      await context.resume().catch(() => undefined);
+    } catch {
+      localVoiceMonitor.current = null;
+    }
+  }, []);
+
   const connectAudio = useCallback(async () => {
     if (!conversationId) return;
     if (stateRef.current === 'connecting') return;
@@ -584,6 +716,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       return;
     }
     let sourceStream: MediaStream | null = null;
+    let microphonePipeline: MicrophonePipeline | null = null;
     try {
       updateState('connecting');
       setError('');
@@ -596,18 +729,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           .catch(() => undefined);
       await iceConfigPromise.current;
       const settings = loadAudioSettings();
+      let usedInputDeviceId = settings.inputDeviceId;
       if (!navigator.mediaDevices?.getUserMedia) throw new DOMException('Браузер не поддерживает доступ к микрофону', 'NotSupportedError');
-      const processingConstraints = {
-        echoCancellation: settings.echoCancellation,
-        noiseSuppression: settings.noiseSuppression,
-        autoGainControl: settings.autoGainControl,
-      };
+      const processingConstraints = microphoneConstraints({ ...settings, inputDeviceId: 'default' });
       try {
         sourceStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
-            ...processingConstraints,
-          },
+          audio: microphoneConstraints(settings),
           video: false,
         });
       } catch (preferredDeviceError) {
@@ -615,6 +742,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           preferredDeviceError instanceof DOMException &&
           ['NotFoundError', 'OverconstrainedError'].includes(preferredDeviceError.name);
         if (!canRetryDefault) throw preferredDeviceError;
+        usedInputDeviceId = 'default';
         try {
           sourceStream = await navigator.mediaDevices.getUserMedia({ audio: processingConstraints, video: false });
         } catch (processedAudioError) {
@@ -623,27 +751,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         }
       }
       if (!sourceStream.getAudioTracks().length) throw new DOMException('Микрофон не передал аудиодорожку', 'NotReadableError');
+      microphonePipeline = await createMicrophonePipeline(sourceStream, settings);
       localSourceStream.current = sourceStream;
-      localStream.current = sourceStream;
-      localGain.current = null;
-      // Voice activity is an enhancement only: unsupported/suspended Web Audio
-      // must never prevent the actual microphone track from joining the call.
-      try {
-        const context = localAudioContext.current?.state === 'closed' ? new AudioContext() : localAudioContext.current || new AudioContext();
-        const source = context.createMediaStreamSource(sourceStream);
-        const analyser = context.createAnalyser();
-        source.connect(analyser);
-        localAudioContext.current = context;
-        localVoiceMonitor.current?.();
-        localVoiceMonitor.current = startVoiceActivityMonitor(analyser, (speaking) => {
-          localSpeakingRef.current = speaking;
-          setLocalSpeaking(speaking);
-        });
-        await context.resume().catch(() => undefined);
-      } catch {
-        localVoiceMonitor.current?.();
-        localVoiceMonitor.current = null;
-      }
+      localStream.current = microphonePipeline.stream;
+      localMicrophonePipeline.current = microphonePipeline;
+      activeInputDeviceId.current = usedInputDeviceId;
+      activeNoiseSuppressionMode.current = settings.noiseSuppressionMode;
+      localGain.current = microphonePipeline.gain;
+      await restartLocalVoiceMonitor(microphonePipeline.stream);
       const existingPeers = [...peers.current.keys()];
       peers.current.forEach(addMissingLocalTracks);
       realtime.send({ type: 'voice:join', conversationId });
@@ -654,9 +769,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setStoredCall(pendingCallKey, null);
       if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
     } catch (voiceError) {
+      microphonePipeline?.close();
       sourceStream?.getTracks().forEach((track) => track.stop());
-      if (localStream.current === sourceStream) localStream.current = null;
+      if (localStream.current === sourceStream || localStream.current === microphonePipeline?.stream) localStream.current = null;
       if (localSourceStream.current === sourceStream) localSourceStream.current = null;
+      if (localMicrophonePipeline.current === microphonePipeline) localMicrophonePipeline.current = null;
+      activeInputDeviceId.current = null;
+      activeNoiseSuppressionMode.current = null;
+      localGain.current = null;
       const errorName = voiceError instanceof DOMException ? voiceError.name : '';
       const message =
         errorName === 'NotAllowedError' || errorName === 'SecurityError'
@@ -672,7 +792,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       updateState('available');
       setError(message);
     }
-  }, [addMissingLocalTracks, announceLocalState, conversationId, markConnected, updateState]);
+  }, [addMissingLocalTracks, announceLocalState, conversationId, markConnected, restartLocalVoiceMonitor, updateState]);
 
   const leave = useCallback(
     (notify = true, preserveStoredCall = false) => {
@@ -694,8 +814,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       stopTone.current();
       if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
       ringTimeout.current = null;
+      localMicrophonePipeline.current?.close();
+      localMicrophonePipeline.current = null;
       localStream.current?.getTracks().forEach((track) => track.stop());
       localSourceStream.current?.getTracks().forEach((track) => track.stop());
+      microphoneSwitchGeneration.current += 1;
       cameraStreamRef.current?.getTracks().forEach((track) => {
         track.onended = null;
         track.stop();
@@ -706,6 +829,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       });
       localStream.current = null;
       localSourceStream.current = null;
+      activeInputDeviceId.current = null;
+      activeNoiseSuppressionMode.current = null;
       cameraStreamRef.current = null;
       screenStreamRef.current = null;
       setCameraStream(null);
@@ -996,12 +1121,95 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     return () => window.clearInterval(timer);
   }, [inspectPeerConnections, state]);
 
+  const switchMicrophone = useCallback(async (settings: AudioSettings) => {
+    const previousSourceStream = localSourceStream.current;
+    const previousLocalStream = localStream.current;
+    const previousTrack = previousLocalStream?.getAudioTracks()[0];
+    const previousPipeline = localMicrophonePipeline.current;
+    if (!previousSourceStream || !previousLocalStream || !previousTrack || !isJoinedCallState(stateRef.current)) return;
+    if (activeInputDeviceId.current === settings.inputDeviceId) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Не удалось переключить микрофон. Браузер не поддерживает доступ к аудиоустройствам; прежний микрофон продолжает работать.');
+      return;
+    }
+    const generation = microphoneSwitchGeneration.current;
+    let nextStream: MediaStream | null = null;
+    let nextPipeline: MicrophonePipeline | null = null;
+    try {
+      nextStream = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(settings), video: false });
+      nextPipeline = await createMicrophonePipeline(nextStream, settings);
+      const nextTrack = nextPipeline.stream.getAudioTracks()[0];
+      if (!nextTrack) throw new DOMException('Микрофон не передал аудиодорожку', 'NotReadableError');
+      if (
+        generation !== microphoneSwitchGeneration.current
+        || localSourceStream.current !== previousSourceStream
+        || !isJoinedCallState(stateRef.current)
+      ) {
+        nextPipeline.close();
+        nextStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      nextTrack.enabled = !mutedRef.current;
+      await replaceMicrophoneTrack(peers.current.values(), previousTrack, nextTrack);
+      localSourceStream.current = nextStream;
+      localStream.current = nextPipeline.stream;
+      localMicrophonePipeline.current = nextPipeline;
+      activeInputDeviceId.current = settings.inputDeviceId;
+      activeNoiseSuppressionMode.current = settings.noiseSuppressionMode;
+      localGain.current = nextPipeline.gain;
+      await restartLocalVoiceMonitor(nextPipeline.stream);
+      previousPipeline?.close();
+      previousSourceStream.getTracks().forEach((track) => track.stop());
+      setError((value) => (value.startsWith('Не удалось переключить микрофон.') ? '' : value));
+    } catch (switchError) {
+      nextPipeline?.close();
+      nextStream?.getTracks().forEach((track) => track.stop());
+      setError(`Не удалось переключить микрофон. ${microphoneSwitchError(switchError)}; прежний микрофон продолжает работать.`);
+    }
+  }, [restartLocalVoiceMonitor]);
+
+  const rebuildMicrophonePipeline = useCallback(async (settings: AudioSettings) => {
+    const sourceStream = localSourceStream.current;
+    const previousStream = localStream.current;
+    const previousTrack = previousStream?.getAudioTracks()[0];
+    const previousPipeline = localMicrophonePipeline.current;
+    const generation = microphoneSwitchGeneration.current;
+    if (!sourceStream || !previousStream || !previousTrack || !isJoinedCallState(stateRef.current)) return;
+    let nextPipeline: MicrophonePipeline | null = null;
+    try {
+      nextPipeline = await createMicrophonePipeline(sourceStream, settings);
+      const nextTrack = nextPipeline.stream.getAudioTracks()[0];
+      if (!nextTrack) throw new DOMException('Микрофон не передал аудиодорожку', 'NotReadableError');
+      if (
+        generation !== microphoneSwitchGeneration.current
+        || localSourceStream.current !== sourceStream
+        || localStream.current !== previousStream
+        || activeInputDeviceId.current !== settings.inputDeviceId
+      ) {
+        nextPipeline.close();
+        return;
+      }
+      nextTrack.enabled = !mutedRef.current;
+      await replaceMicrophoneTrack(peers.current.values(), previousTrack, nextTrack);
+      localStream.current = nextPipeline.stream;
+      localMicrophonePipeline.current = nextPipeline;
+      activeNoiseSuppressionMode.current = settings.noiseSuppressionMode;
+      localGain.current = nextPipeline.gain;
+      await restartLocalVoiceMonitor(nextPipeline.stream);
+      previousPipeline?.close();
+      setError((value) => (value.startsWith('Не удалось применить шумоподавление.') ? '' : value));
+    } catch {
+      nextPipeline?.close();
+      setError('Не удалось применить шумоподавление; прежняя обработка микрофона продолжает работать.');
+    }
+  }, [restartLocalVoiceMonitor]);
+
   useEffect(() => {
     const apply = (event: Event) => {
       const settings = (event as CustomEvent<AudioSettings>).detail;
       if (localGain.current) localGain.current.gain.value = settings.inputVolume / 100;
       const sourceTrack = localSourceStream.current?.getAudioTracks()[0];
-      if (sourceTrack)
+      if (sourceTrack && activeInputDeviceId.current === settings.inputDeviceId)
         void sourceTrack
           .applyConstraints({
             echoCancellation: settings.echoCancellation,
@@ -1009,11 +1217,20 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             autoGainControl: settings.autoGainControl,
           })
           .catch(() => undefined);
+      if (sourceTrack && activeInputDeviceId.current !== settings.inputDeviceId) {
+        microphoneSwitchQueue.current = microphoneSwitchQueue.current
+          .catch(() => undefined)
+          .then(() => switchMicrophone(settings));
+      } else if (sourceTrack && activeNoiseSuppressionMode.current !== settings.noiseSuppressionMode) {
+        microphoneSwitchQueue.current = microphoneSwitchQueue.current
+          .catch(() => undefined)
+          .then(() => rebuildMicrophonePipeline(settings));
+      }
       remoteAudio.current.forEach((entry) => applyRemoteVolume(entry, settings));
     };
     window.addEventListener('mova-audio-settings', apply);
     return () => window.removeEventListener('mova-audio-settings', apply);
-  }, [applyRemoteVolume]);
+  }, [applyRemoteVolume, rebuildMicrophonePipeline, switchMicrophone]);
 
   const call = () => {
     if (!conversationId || stateRef.current !== 'idle') return;
@@ -1173,11 +1390,19 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     const track = screenStreamRef.current?.getVideoTracks()[0];
     if (!track) return;
     try {
+      activeScreenQuality.current = { width, height, frameRate };
+      track.contentHint = screenShareContentHint(frameRate);
       await track.applyConstraints({
         width: { ideal: width },
         height: { ideal: height },
         frameRate: { ideal: frameRate, max: frameRate },
       });
+      await Promise.all(
+        [...peers.current.values()]
+          .flatMap((peer) => peer.getSenders())
+          .filter((sender) => sender.track === track)
+          .map((sender) => configureScreenShareSender(sender, activeScreenQuality.current)),
+      );
       setError('');
     } catch (qualityError) {
       setError(qualityError instanceof Error ? qualityError.message : 'Не удалось изменить качество демонстрации');
@@ -1200,6 +1425,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         },
         audio: true,
       });
+      activeScreenQuality.current = { width, height, frameRate };
+      const screenTrack = stream.getVideoTracks()[0];
+      screenTrack.contentHint = screenShareContentHint(frameRate);
       const old = screenStreamRef.current;
       if (old) {
         peers.current.forEach((peer) =>
@@ -1223,7 +1451,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       screenStreamRef.current = stream;
       setScreenStream(stream);
       playCallSound('demo-on');
-      peers.current.forEach((peer) => stream.getTracks().forEach((track) => peer.addTrack(track, stream)));
+      const screenSenders: RTCRtpSender[] = [];
+      peers.current.forEach((peer) => stream.getTracks().forEach((track) => {
+        const sender = peer.addTrack(track, stream);
+        if (track === screenTrack) screenSenders.push(sender);
+      }));
+      await Promise.all(screenSenders.map((sender) => configureScreenShareSender(sender, activeScreenQuality.current).catch(() => false)));
       realtime.send({
         type: 'voice:media',
         conversationId,
@@ -1231,8 +1464,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         enabled: true,
         streamId: stream.id,
       });
-      stream.getVideoTracks()[0].onended = () => void stopScreen();
+      screenTrack.onended = () => void stopScreen();
       await renegotiateAll();
+      await Promise.all(screenSenders.map((sender) => configureScreenShareSender(sender, activeScreenQuality.current).catch(() => false)));
       if (!stream.getAudioTracks().length) setError('Экран демонстрируется без звука. В окне выбора включите «Поделиться аудио» (звук доступен не для всех источников).');
       else setError('');
     } catch (screenError) {

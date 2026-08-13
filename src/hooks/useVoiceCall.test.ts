@@ -1,7 +1,8 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { realtime, type RealtimeEvent } from '../lib/api';
-import { isJoinedCallState, normalizeCallState, useVoiceCall, type CallState } from './useVoiceCall';
+import { api, realtime, type RealtimeEvent } from '../lib/api';
+import { defaultAudioSettings, saveAudioSettings, withNoiseSuppressionMode } from '../lib/audioSettings';
+import { isJoinedCallState, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackVolume, useVoiceCall, type CallState } from './useVoiceCall';
 
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
@@ -11,6 +12,8 @@ beforeEach(() => {
 
 afterEach(() => {
   sessionStorage.clear();
+  localStorage.clear();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -26,6 +29,100 @@ describe('voice call state model', () => {
 
   it.each<CallState>(['idle', 'ringing', 'incoming', 'connecting', 'available'])('keeps %s outside the joined call session', (state) => {
     expect(isJoinedCallState(state)).toBe(false);
+  });
+
+  it('deafens participant microphones without muting screen-share audio', () => {
+    expect(resolveRemotePlaybackVolume('voice', true, 0.8)).toBe(0);
+    expect(resolveRemotePlaybackVolume('screen', true, 0.8)).toBe(0.8);
+    expect(resolveRemotePlaybackVolume('voice', false, 0.8)).toBe(0.8);
+  });
+
+  it('replaces only microphone senders without renegotiating unrelated media', async () => {
+    const previousTrack = { id: 'old-microphone' } as MediaStreamTrack;
+    const nextTrack = { id: 'new-microphone' } as MediaStreamTrack;
+    const cameraTrack = { id: 'camera' } as MediaStreamTrack;
+    const microphoneSender = { track: previousTrack, replaceTrack: vi.fn().mockResolvedValue(undefined) } as unknown as RTCRtpSender;
+    const cameraSender = { track: cameraTrack, replaceTrack: vi.fn().mockResolvedValue(undefined) } as unknown as RTCRtpSender;
+
+    await replaceMicrophoneTrack([{ getSenders: () => [microphoneSender, cameraSender] }], previousTrack, nextTrack);
+
+    expect(microphoneSender.replaceTrack).toHaveBeenCalledWith(nextTrack);
+    expect(cameraSender.replaceTrack).not.toHaveBeenCalled();
+  });
+
+  it('rolls back already replaced senders when another peer rejects the microphone switch', async () => {
+    const previousTrack = { id: 'old-microphone' } as MediaStreamTrack;
+    const nextTrack = { id: 'new-microphone' } as MediaStreamTrack;
+    const firstSender = { track: previousTrack, replaceTrack: vi.fn().mockResolvedValue(undefined) } as unknown as RTCRtpSender;
+    const secondSender = { track: previousTrack, replaceTrack: vi.fn().mockRejectedValue(new Error('replace failed')) } as unknown as RTCRtpSender;
+
+    await expect(replaceMicrophoneTrack([{ getSenders: () => [firstSender, secondSender] }], previousTrack, nextTrack)).rejects.toThrow('replace failed');
+
+    expect(firstSender.replaceTrack).toHaveBeenNthCalledWith(1, nextTrack);
+    expect(firstSender.replaceTrack).toHaveBeenNthCalledWith(2, previousTrack);
+  });
+
+  it('switches the active microphone during a call and preserves mute', async () => {
+    let emit: (event: RealtimeEvent) => void = () => undefined;
+    vi.spyOn(realtime, 'subscribe').mockImplementation((listener) => {
+      emit = listener;
+      return () => undefined;
+    });
+    vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    const oldTrack = {
+      id: 'old-microphone',
+      kind: 'audio',
+      enabled: true,
+      readyState: 'live',
+      stop: vi.fn(),
+      applyConstraints: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MediaStreamTrack;
+    const nextTrack = {
+      id: 'new-microphone',
+      kind: 'audio',
+      enabled: true,
+      readyState: 'live',
+      stop: vi.fn(),
+      applyConstraints: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MediaStreamTrack;
+    const stream = (id: string, track: MediaStreamTrack) => ({
+      id,
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+    }) as unknown as MediaStream;
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(stream('old-stream', oldTrack))
+      .mockResolvedValueOnce(stream('new-stream', nextTrack));
+    vi.stubGlobal('navigator', { ...navigator, mediaDevices: { getUserMedia } });
+    saveAudioSettings({ ...defaultAudioSettings, inputDeviceId: 'microphone-a' });
+    const { result } = renderHook(() => useVoiceCall('chat', 'me'));
+
+    act(() => result.current.call());
+    await act(async () => emit({
+      type: 'call:accept',
+      conversationId: 'chat',
+      fromUserId: 'friend',
+      startedAt: '2026-08-13T10:00:00.000Z',
+    }));
+    expect(result.current.state).toBe('connected');
+    act(() => result.current.toggleMute());
+    expect(result.current.muted).toBe(true);
+
+    act(() => saveAudioSettings({ ...defaultAudioSettings, inputDeviceId: 'microphone-b' }));
+    await waitFor(() => expect(oldTrack.stop).toHaveBeenCalled());
+
+    expect(getUserMedia).toHaveBeenLastCalledWith({
+      audio: expect.objectContaining({ deviceId: { exact: 'microphone-b' } }),
+      video: false,
+    });
+    expect(nextTrack.enabled).toBe(false);
+    expect(nextTrack.stop).not.toHaveBeenCalled();
+
+    act(() => saveAudioSettings(withNoiseSuppressionMode({ ...defaultAudioSettings, inputDeviceId: 'microphone-b' }, 'standard')));
+    await waitFor(() => expect(nextTrack.applyConstraints).toHaveBeenCalledWith(expect.objectContaining({ noiseSuppression: true })));
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(nextTrack.enabled).toBe(false);
   });
 
   it('restores a server-confirmed room membership as available without creating a duplicate join', async () => {

@@ -1,9 +1,11 @@
-import { app, BrowserWindow, Menu, desktopCapturer, dialog, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, ipcMain, nativeImage, session, shell } from 'electron';
 import updater from 'electron-updater';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { availableSharePickerTabs, buildSharePickerSources } from './share-picker-model.mjs';
+import { desktopCallStatusLabel, resolveDesktopCallStatus, shouldKeepDesktopWindowOpen } from './tray-status.mjs';
+import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, updateStartupDelayMs } from './update-state.mjs';
 import { desktopWindowFrameOptions } from './window-shell.mjs';
 
 const { autoUpdater } = updater;
@@ -12,14 +14,26 @@ const settingsPath = () => join(app.getPath('userData'), 'desktop.json');
 const setupPath = join(desktopRoot, 'setup.html');
 const setupPreloadPath = join(desktopRoot, 'setup-preload.cjs');
 const appPreloadPath = join(desktopRoot, 'app-preload.cjs');
-const sharePickerPath = join(desktopRoot, 'share-picker.html');
-const sharePickerPreloadPath = join(desktopRoot, 'share-picker-preload.cjs');
 const iconPath = join(desktopRoot, 'assets', 'icon.png');
 const developmentUrl = 'http://127.0.0.1:5173';
 
 let mainWindow = null;
-let sharePickerWindow = null;
 let appUrl = null;
+let tray = null;
+let isQuitting = false;
+let desktopCallStatus = 'idle';
+let sharePickerSequence = 0;
+let activeSharePicker = null;
+let updateStartupTimer = null;
+let updateIntervalTimer = null;
+const desktopUpdateState = {
+  configured: false,
+  phase: 'idle',
+  version: '',
+  progress: 0,
+  manualRequest: false,
+  promptOpen: false,
+};
 
 function normalizeAppUrl(value, { allowLocal = false } = {}) {
   try {
@@ -63,78 +77,110 @@ function isTrustedOrigin(origin) {
   }
 }
 
+function statusImage(status, badge = false) {
+  const filename = `${badge ? 'overlay' : 'tray'}-${status}.png`;
+  return nativeImage.createFromPath(join(desktopRoot, 'assets', 'status', filename)).resize({ width: badge ? 16 : 22, height: badge ? 16 : 22 });
+}
+
+function revealMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void showApp();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function currentUpdateAction() {
+  return desktopUpdateAction(desktopUpdateState);
+}
+
+function setUpdateProgressBar() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (desktopUpdateState.phase === 'downloading') {
+    mainWindow.setProgressBar(Math.max(0.01, normalizeUpdateProgress(desktopUpdateState.progress) / 100));
+    return;
+  }
+  mainWindow.setProgressBar(-1);
+}
+
+function desktopUpdateMenuItem() {
+  const item = currentUpdateAction();
+  return {
+    label: item.label,
+    enabled: item.enabled,
+    click: () => {
+      if (item.action === 'install') void promptToInstallUpdate();
+      else if (item.action === 'check') void checkForDesktopUpdates({ manual: true });
+    },
+  };
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Открыть Mova', click: revealMainWindow },
+      { type: 'separator' },
+      { label: desktopCallStatusLabel(desktopCallStatus), enabled: false },
+      { type: 'separator' },
+      desktopUpdateMenuItem(),
+      { type: 'separator' },
+      { label: 'Выйти', click: () => app.quit() },
+    ]),
+  );
+}
+
+function applyDesktopCallStatus(status) {
+  desktopCallStatus = status;
+  const label = desktopCallStatusLabel(status);
+  if (tray) {
+    const image = statusImage(status);
+    if (!image.isEmpty()) tray.setImage(image);
+    tray.setToolTip(`Mova — ${label}`);
+    refreshTrayMenu();
+  }
+  if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
+    const image = status === 'idle' ? null : statusImage(status, true);
+    mainWindow.setOverlayIcon(image && !image.isEmpty() ? image : null, status === 'idle' ? '' : label);
+  }
+}
+
+function createTray() {
+  if (tray) return;
+  const image = statusImage(desktopCallStatus);
+  tray = new Tray(image.isEmpty() ? nativeImage.createFromPath(iconPath).resize({ width: 22, height: 22 }) : image);
+  tray.on('click', revealMainWindow);
+  tray.on('double-click', revealMainWindow);
+  applyDesktopCallStatus(desktopCallStatus);
+}
+
 async function chooseDesktopSource(sources) {
   const pickerSources = buildSharePickerSources(sources);
   if (!pickerSources.length) return null;
-
-  sharePickerWindow?.destroy();
-
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (!owner) return null;
+  activeSharePicker?.finish();
   return new Promise((resolve) => {
     const sourceById = new Map(sources.map((source) => [String(source.id), source]));
-    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-    const picker = new BrowserWindow({
-      title: 'Выбор источника демонстрации',
-      width: 980,
-      height: 760,
-      minWidth: 680,
-      minHeight: 520,
-      parent,
-      modal: Boolean(parent),
-      show: false,
-      autoHideMenuBar: true,
-      backgroundColor: '#17191f',
-      icon: iconPath,
-      resizable: true,
-      ...desktopWindowFrameOptions(process.platform),
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        preload: sharePickerPreloadPath,
-      },
-    });
-    sharePickerWindow = picker;
-
+    const requestId = `share-${Date.now()}-${++sharePickerSequence}`;
     let settled = false;
-    const pickerUrl = pathToFileURL(sharePickerPath).toString();
-    const cleanup = () => {
-      ipcMain.removeListener('share-picker:choose', handleChoose);
-      ipcMain.removeListener('share-picker:cancel', handleCancel);
-      if (sharePickerWindow === picker) sharePickerWindow = null;
-    };
-    const finish = (sourceId = null, closeWindow = true) => {
+    const finish = (sourceId = null) => {
       if (settled) return;
       settled = true;
       const source = sourceId ? sourceById.get(String(sourceId)) || null : null;
-      cleanup();
-      if (closeWindow && !picker.isDestroyed()) picker.destroy();
+      owner.removeListener('closed', finish);
+      if (activeSharePicker?.requestId === requestId) activeSharePicker = null;
       resolve(source);
     };
-    const isPickerSender = (event) => !picker.isDestroyed() && event.sender === picker.webContents;
-    function handleChoose(event, sourceId) {
-      if (!isPickerSender(event) || !sourceById.has(String(sourceId))) return;
-      finish(sourceId);
-    }
-    function handleCancel(event) {
-      if (isPickerSender(event)) finish();
-    }
-
-    ipcMain.on('share-picker:choose', handleChoose);
-    ipcMain.on('share-picker:cancel', handleCancel);
-    picker.on('closed', () => finish(null, false));
-    picker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    picker.webContents.on('will-navigate', (event, url) => {
-      if (url !== pickerUrl) event.preventDefault();
+    activeSharePicker = { requestId, owner, sourceById, finish };
+    owner.once('closed', finish);
+    owner.webContents.send('desktop-share-picker:open', {
+      requestId,
+      sources: pickerSources,
+      tabs: availableSharePickerTabs(pickerSources),
     });
-    picker.webContents.once('did-finish-load', () => {
-      if (picker.isDestroyed()) return;
-      picker.webContents.send('share-picker:sources', {
-        sources: pickerSources,
-        tabs: availableSharePickerTabs(pickerSources),
-      });
-    });
-    picker.once('ready-to-show', () => picker.show());
-    void picker.loadFile(sharePickerPath).catch(() => finish());
   });
 }
 
@@ -175,6 +221,8 @@ function createMenu() {
       label: 'Mova',
       submenu: [
         { role: 'about' },
+        { type: 'separator' },
+        desktopUpdateMenuItem(),
         { type: 'separator' },
         {
           label: 'Изменить адрес сервера…',
@@ -231,10 +279,18 @@ function sendMaximizedState(window) {
 }
 
 function configureWindowShell(window) {
-  if (process.platform !== 'win32') return;
-  window.on('maximize', () => sendMaximizedState(window));
-  window.on('unmaximize', () => sendMaximizedState(window));
-  window.webContents.once('did-finish-load', () => sendMaximizedState(window));
+  window.on('close', (event) => {
+    if (!shouldKeepDesktopWindowOpen(isQuitting)) return;
+    event.preventDefault();
+    window.hide();
+  });
+  if (process.platform === 'win32') {
+    window.on('maximize', () => sendMaximizedState(window));
+    window.on('unmaximize', () => sendMaximizedState(window));
+    window.webContents.once('did-finish-load', () => sendMaximizedState(window));
+  }
+  window.webContents.once('did-finish-load', () => applyDesktopCallStatus(desktopCallStatus));
+  window.webContents.once('did-finish-load', setUpdateProgressBar);
 }
 
 function lockWindowTitle(window) {
@@ -245,6 +301,7 @@ function lockWindowTitle(window) {
 }
 
 async function showSetup() {
+  applyDesktopCallStatus('idle');
   mainWindow?.destroy();
   mainWindow = createWindow({ preload: setupPreloadPath });
   lockWindowTitle(mainWindow);
@@ -278,24 +335,134 @@ async function showApp() {
   createMenu();
 }
 
-function configureUpdates() {
-  if (!app.isPackaged) return;
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.on('update-downloaded', async () => {
-    const result = await dialog.showMessageBox(mainWindow, {
+function updaterDialog(options) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) return dialog.showMessageBox(mainWindow, options);
+  return dialog.showMessageBox(options);
+}
+
+function refreshDesktopUpdateUi() {
+  refreshTrayMenu();
+  createMenu();
+  setUpdateProgressBar();
+}
+
+function setDesktopUpdateState(values) {
+  Object.assign(desktopUpdateState, values);
+  refreshDesktopUpdateUi();
+}
+
+async function promptToInstallUpdate() {
+  if (desktopUpdateState.phase !== 'downloaded' || desktopUpdateState.promptOpen) return;
+  desktopUpdateState.promptOpen = true;
+  const version = desktopUpdateState.version;
+  try {
+    const result = await updaterDialog({
       type: 'info',
       title: 'Обновление Mova',
-      message: 'Новая версия загружена',
-      detail: 'Перезапустить Mova и установить обновление?',
-      buttons: ['Перезапустить', 'Позже'],
+      message: version ? `Mova ${version} готова к установке` : 'Обновление Mova готово к установке',
+      detail: 'Перезапустить приложение сейчас? Если выбрать «Позже», обновление установится при следующем выходе из Mova.',
+      buttons: ['Перезапустить и обновить', 'Позже'],
       defaultId: 0,
       cancelId: 1,
+      noLink: true,
     });
-    if (result.response === 0) autoUpdater.quitAndInstall();
+    if (result.response === 0) {
+      isQuitting = true;
+      autoUpdater.quitAndInstall(false, true);
+    }
+  } finally {
+    desktopUpdateState.promptOpen = false;
+  }
+}
+
+async function checkForDesktopUpdates({ manual = false } = {}) {
+  if (!app.isPackaged) {
+    if (manual) {
+      await updaterDialog({
+        type: 'info',
+        title: 'Обновление Mova',
+        message: 'Проверка обновлений доступна в установленной версии Mova.',
+        buttons: ['Понятно'],
+      });
+    }
+    return;
+  }
+  if (!desktopUpdateState.configured) return;
+  if (desktopUpdateState.phase === 'downloaded') {
+    if (manual) await promptToInstallUpdate();
+    return;
+  }
+  if (desktopUpdateState.phase !== 'idle') return;
+  setDesktopUpdateState({ phase: 'checking', manualRequest: manual, progress: 0 });
+  void autoUpdater.checkForUpdates().catch((error) => {
+    if (desktopUpdateState.phase !== 'idle') handleUpdateError(error);
   });
-  autoUpdater.on('error', (error) => console.warn('Desktop update check failed:', error.message));
-  setTimeout(() => void autoUpdater.checkForUpdates().catch(() => undefined), 10_000);
+}
+
+function handleUpdateError(error) {
+  const showError = desktopUpdateState.manualRequest;
+  const message = error instanceof Error ? error.message : String(error || 'Неизвестная ошибка');
+  setDesktopUpdateState({ phase: 'idle', manualRequest: false, progress: 0 });
+  console.warn('Desktop update check failed:', message);
+  if (showError) {
+    void updaterDialog({
+      type: 'error',
+      title: 'Обновление Mova',
+      message: 'Не удалось проверить обновления.',
+      detail: 'Проверьте подключение к интернету и попробуйте ещё раз.',
+      buttons: ['Понятно'],
+    });
+  }
+}
+
+function configureUpdates() {
+  if (!app.isPackaged || desktopUpdateState.configured) return;
+  desktopUpdateState.configured = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoRunAppAfterInstall = true;
+  autoUpdater.allowDowngrade = false;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.on('checking-for-update', () => {
+    if (desktopUpdateState.phase !== 'checking') setDesktopUpdateState({ phase: 'checking' });
+  });
+  autoUpdater.on('update-available', (info) => {
+    setDesktopUpdateState({ phase: 'downloading', version: String(info?.version || ''), progress: 0 });
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    setDesktopUpdateState({ phase: 'downloading', progress: normalizeUpdateProgress(progress?.percent) });
+  });
+  autoUpdater.on('update-not-available', async () => {
+    const showResult = desktopUpdateState.manualRequest;
+    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0 });
+    if (showResult) {
+      await updaterDialog({
+        type: 'info',
+        title: 'Обновление Mova',
+        message: 'У вас установлена актуальная версия Mova.',
+        detail: `Текущая версия: ${app.getVersion()}`,
+        buttons: ['Понятно'],
+      });
+    }
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    setDesktopUpdateState({
+      phase: 'downloaded',
+      version: String(info?.version || desktopUpdateState.version || ''),
+      progress: 100,
+      manualRequest: false,
+    });
+    void promptToInstallUpdate();
+  });
+  autoUpdater.on('update-cancelled', () => {
+    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0 });
+  });
+  autoUpdater.on('error', handleUpdateError);
+  refreshDesktopUpdateUi();
+  updateStartupTimer = setTimeout(() => void checkForDesktopUpdates(), updateStartupDelayMs);
+  updateStartupTimer.unref?.();
+  updateIntervalTimer = setInterval(() => void checkForDesktopUpdates(), updateCheckIntervalMs);
+  updateIntervalTimer.unref?.();
 }
 
 ipcMain.handle('desktop:save-url', async (event, value) => {
@@ -314,28 +481,63 @@ ipcMain.on('desktop-window:toggle-maximize', (event) => {
   else window.maximize();
 });
 ipcMain.on('desktop-window:close', (event) => controlledMainWindow(event)?.close());
+ipcMain.on('desktop-call:status', (event, value) => {
+  if (!controlledMainWindow(event) || !value || typeof value !== 'object') return;
+  applyDesktopCallStatus(
+    resolveDesktopCallStatus({
+      active: value.active === true,
+      speaking: value.speaking === true,
+      muted: value.muted === true,
+      deafened: value.deafened === true,
+    }),
+  );
+});
+ipcMain.on('desktop-notification:show', (event, value) => {
+  if (!controlledMainWindow(event) || !Notification.isSupported() || !value || typeof value !== 'object') return;
+  const title = String(value.title || 'Mova').slice(0, 120);
+  const body = String(value.body || '').slice(0, 500);
+  const conversationId = String(value.conversationId || '').slice(0, 120);
+  const kind = value.kind === 'call' ? 'call' : 'message';
+  const notification = new Notification({ title, body, icon: iconPath, urgency: kind === 'call' ? 'critical' : 'normal' });
+  notification.on('click', () => {
+    revealMainWindow();
+    mainWindow?.webContents.send('desktop-notification:click', { kind, conversationId });
+  });
+  notification.show();
+});
+ipcMain.on('desktop-share-picker:choose', (event, requestId, sourceId) => {
+  const request = activeSharePicker;
+  if (!request || event.sender !== request.owner.webContents || request.requestId !== requestId || !request.sourceById.has(String(sourceId))) return;
+  request.finish(String(sourceId));
+});
+ipcMain.on('desktop-share-picker:cancel', (event, requestId) => {
+  const request = activeSharePicker;
+  if (!request || event.sender !== request.owner.webContents || request.requestId !== requestId) return;
+  request.finish();
+});
 ipcMain.handle('desktop-window:is-maximized', (event) => controlledMainWindow(event)?.isMaximized() ?? false);
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => {
-    if (mainWindow?.isMinimized()) mainWindow.restore();
-    mainWindow?.show();
-    mainWindow?.focus();
+    revealMainWindow();
   });
 
   app.whenReady().then(async () => {
     app.setName('Mova');
+    createTray();
     appUrl = await readConfiguredUrl();
     configurePermissions();
     await showApp();
     configureUpdates();
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) void showApp();
+      revealMainWindow();
     });
   });
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+app.on('before-quit', () => {
+  isQuitting = true;
+  if (updateStartupTimer) clearTimeout(updateStartupTimer);
+  if (updateIntervalTimer) clearInterval(updateIntervalTimer);
 });

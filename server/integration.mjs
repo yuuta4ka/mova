@@ -116,6 +116,12 @@ try {
     email: `second.${suffix}@mova.test`,
     password: 'strongpass2',
   });
+  await call(`/api/friends/${second.user.id}`, 'POST', undefined, first.token);
+  const requestConversation = await call('/api/conversations', 'GET', undefined, second.token);
+  if (requestConversation.conversations.length !== 1 || requestConversation.conversations[0].lastMessage?.kind !== 'friend_request' || requestConversation.conversations[0].lastMessage?.friendRequest?.status !== 'pending') throw new Error('Friend request did not create a direct chat and system message');
+  await call(`/api/friends/${first.user.id}`, 'PATCH', undefined, second.token);
+  const acceptedRequestMessages = await call(`/api/conversations/${requestConversation.conversations[0].id}/messages`, 'GET', undefined, first.token);
+  if (acceptedRequestMessages.messages[0]?.friendRequest?.status !== 'accepted') throw new Error('Friend request system message was not finalized');
   const profile = await call(
     '/api/profile',
     'PATCH',
@@ -133,6 +139,11 @@ try {
   const conversation = await call('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
   const rtcConfig = await call('/api/rtc-config', 'GET', undefined, first.token);
   if (rtcConfig.iceServers.length !== 2 || rtcConfig.iceServers[1].username !== 'integration-user' || rtcConfig.iceServers[1].urls.length !== 2) throw new Error('Runtime TURN configuration was not returned');
+  const pushConfig = await call('/api/push-config', 'GET', undefined, first.token);
+  if (!pushConfig.publicKey) throw new Error('Web Push public key was not returned');
+  const pushEndpoint = `https://push.example.test/${suffix}`;
+  await call('/api/push-subscriptions', 'POST', { endpoint: pushEndpoint, expirationTime: null, keys: { p256dh: 'integration-p256dh', auth: 'integration-auth' } }, first.token);
+  await call('/api/push-subscriptions', 'DELETE', { endpoint: pushEndpoint }, first.token);
   const uploadedAttachment = await upload('mova-test.txt', 'text/plain', 'mova test', first.token);
   const attachmentMessage = await call(
     `/api/conversations/${conversation.conversation.id}/messages`,
@@ -319,6 +330,12 @@ try {
       conversationId: conversation.conversation.id,
     }),
   );
+  recovered.socket.send(
+    JSON.stringify({
+      type: 'call:sync',
+      conversationId: conversation.conversation.id,
+    }),
+  );
   await leftPromise;
   const returnState = await returnStatePromise;
   const endPromise = waitFor(secondSocket, 'call:end');
@@ -337,11 +354,13 @@ try {
   console.log(
     JSON.stringify({
       profile: profile.user.handle,
+      friendRequestCard: acceptedRequestMessages.messages[0].friendRequest.status,
       activity: profile.user.activity.name,
       presence: presence.user.presence,
       livePresence: livePresence.user.presence === 'idle' && presenceEvent.user.id === first.user.id && presenceEvent.user.isOnline === true,
       latestPreview: conversationOverview.conversations[0].lastMessage.content,
       rtcIceServers: rtcConfig.iceServers.length,
+      pushNotifications: Boolean(pushConfig.publicKey),
       attachment: attachmentMessage.message.attachment.name,
       clientId: attachmentMessage.message.clientId === 'integration-attachment-message',
       sequentialIdempotency: sequentialFirst.message.id === sequentialSecond.message.id && sequentialRows === 1,

@@ -70,6 +70,7 @@ function rowMessage(row) {
     attachment: jsonParse(row.attachment_json),
     replyToId: row.reply_to_id || undefined,
     call: jsonParse(row.call_json),
+    friendRequest: jsonParse(row.friend_request_json),
     clientId: row.client_id || undefined,
     createdAt: row.created_at,
     sentAt: row.sent_at || row.created_at,
@@ -152,6 +153,7 @@ export async function openDatabase(paths) {
       attachment_json TEXT,
       reply_to_id TEXT REFERENCES messages(id),
       call_json TEXT,
+      friend_request_json TEXT,
       client_id TEXT,
       created_at TEXT NOT NULL,
       sent_at TEXT NOT NULL,
@@ -164,13 +166,39 @@ export async function openDatabase(paths) {
       attached_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
       purpose TEXT NOT NULL DEFAULT 'pending'
     );
+    CREATE TABLE IF NOT EXISTS friendships (
+      user_low_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_high_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_low_id, user_high_id)
+    );
+    CREATE TABLE IF NOT EXISTS user_blocks (
+      blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (blocker_id, blocked_id)
+    );
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      subscription_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_uploads_cleanup ON uploads(purpose, created_at);
     CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id, conversation_id);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(reply_to_id);
+    CREATE INDEX IF NOT EXISTS idx_friendships_requested_by ON friendships(requested_by, status);
+    CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id, blocker_id);
+    CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id, updated_at);
   `);
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
+  if (!messageColumns.some((column) => column.name === 'friend_request_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN friend_request_json TEXT');
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_client ON messages(author_id, client_id) WHERE client_id IS NOT NULL');
   const database = new MovaDatabase(sqlite, paths);
   await database.migrateLegacyJson();
@@ -198,6 +226,40 @@ export class MovaDatabase {
       this.sqlite.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  metadata(key) {
+    return this.sqlite.prepare('SELECT value FROM metadata WHERE key=?').get(key)?.value || null;
+  }
+
+  setMetadata(key, value) {
+    this.sqlite.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run(key, value);
+  }
+
+  savePushSubscription(userId, subscription) {
+    const endpoint = String(subscription?.endpoint || '');
+    if (!endpoint) throw Object.assign(new Error('Некорректная push-подписка'), { statusCode: 400 });
+    const now = new Date().toISOString();
+    this.sqlite
+      .prepare(`INSERT INTO push_subscriptions(endpoint,user_id,subscription_json,created_at,updated_at)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,subscription_json=excluded.subscription_json,updated_at=excluded.updated_at`)
+      .run(endpoint, userId, JSON.stringify(subscription), now, now);
+    return endpoint;
+  }
+
+  pushSubscriptions(userId) {
+    return this.sqlite
+      .prepare('SELECT subscription_json FROM push_subscriptions WHERE user_id=? ORDER BY updated_at DESC')
+      .all(userId)
+      .flatMap((row) => {
+        const subscription = jsonParse(row.subscription_json);
+        return subscription?.endpoint ? [subscription] : [];
+      });
+  }
+
+  deletePushSubscription(endpoint, userId) {
+    return this.sqlite.prepare(`DELETE FROM push_subscriptions WHERE endpoint=?${userId ? ' AND user_id=?' : ''}`).run(...(userId ? [endpoint, userId] : [endpoint])).changes > 0;
   }
 
   count(table) {
@@ -359,6 +421,82 @@ export class MovaDatabase {
     return this.sqlite.prepare('SELECT * FROM users WHERE id != ? ORDER BY name COLLATE NOCASE').all(exceptUserId).map(rowUser);
   }
 
+  relationship(viewerId, otherUserId) {
+    if (!viewerId || !otherUserId) return 'none';
+    if (viewerId === otherUserId) return 'self';
+    const block = this.sqlite
+      .prepare(`SELECT blocker_id FROM user_blocks
+        WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?) LIMIT 1`)
+      .get(viewerId, otherUserId, otherUserId, viewerId);
+    if (block) return block.blocker_id === viewerId ? 'blocked' : 'blocked_by';
+    const [userLowId, userHighId] = [viewerId, otherUserId].sort();
+    const friendship = this.sqlite.prepare('SELECT requested_by,status FROM friendships WHERE user_low_id=? AND user_high_id=?').get(userLowId, userHighId);
+    if (!friendship) return 'none';
+    if (friendship.status === 'accepted') return 'friend';
+    if (friendship.status !== 'pending') return 'none';
+    return friendship.requested_by === viewerId ? 'outgoing' : 'incoming';
+  }
+
+  areFriends(firstUserId, secondUserId) {
+    return this.relationship(firstUserId, secondUserId) === 'friend';
+  }
+
+  isBlockedEither(firstUserId, secondUserId) {
+    const relationship = this.relationship(firstUserId, secondUserId);
+    return relationship === 'blocked' || relationship === 'blocked_by';
+  }
+
+  requestFriend(requesterId, otherUserId) {
+    const [userLowId, userHighId] = [requesterId, otherUserId].sort();
+    const now = new Date().toISOString();
+    const existing = this.sqlite.prepare('SELECT requested_by,status,updated_at FROM friendships WHERE user_low_id=? AND user_high_id=?').get(userLowId, userHighId);
+    if (!existing) {
+      this.sqlite.prepare(`INSERT INTO friendships(user_low_id,user_high_id,requested_by,status,created_at,updated_at)
+        VALUES(?,?,?,'pending',?,?)`).run(userLowId, userHighId, requesterId, now, now);
+      return { relationship: 'outgoing', created: true };
+    }
+    if (existing.status === 'accepted') return { relationship: 'friend', created: false };
+    if (existing.status === 'pending') return { relationship: existing.requested_by === requesterId ? 'outgoing' : 'incoming', created: false };
+    const retryAtMs = new Date(existing.updated_at).getTime() + 24 * 60 * 60_000;
+    if (existing.status === 'declined' && existing.requested_by === requesterId && retryAtMs > Date.now()) {
+      return { relationship: 'none', created: false, retryAt: new Date(retryAtMs).toISOString() };
+    }
+    this.sqlite.prepare(`UPDATE friendships SET requested_by=?,status='pending',created_at=?,updated_at=?
+      WHERE user_low_id=? AND user_high_id=?`).run(requesterId, now, now, userLowId, userHighId);
+    return { relationship: 'outgoing', created: true };
+  }
+
+  acceptFriend(userId, requesterId) {
+    const [userLowId, userHighId] = [userId, requesterId].sort();
+    this.sqlite.prepare(`UPDATE friendships SET status='accepted',updated_at=?
+      WHERE user_low_id=? AND user_high_id=? AND status='pending' AND requested_by=?`).run(new Date().toISOString(), userLowId, userHighId, requesterId);
+    return this.relationship(userId, requesterId);
+  }
+
+  rejectFriend(userId, requesterId) {
+    const [userLowId, userHighId] = [userId, requesterId].sort();
+    const result = this.sqlite.prepare(`UPDATE friendships SET status='declined',updated_at=?
+      WHERE user_low_id=? AND user_high_id=? AND status='pending' AND requested_by=?`).run(new Date().toISOString(), userLowId, userHighId, requesterId);
+    return result.changes > 0;
+  }
+
+  removeFriend(firstUserId, secondUserId) {
+    const [userLowId, userHighId] = [firstUserId, secondUserId].sort();
+    this.sqlite.prepare('DELETE FROM friendships WHERE user_low_id=? AND user_high_id=?').run(userLowId, userHighId);
+  }
+
+  blockUser(blockerId, blockedId) {
+    this.transaction(() => {
+      const [userLowId, userHighId] = [blockerId, blockedId].sort();
+      this.sqlite.prepare("DELETE FROM friendships WHERE user_low_id=? AND user_high_id=? AND status!='declined'").run(userLowId, userHighId);
+      this.sqlite.prepare('INSERT OR IGNORE INTO user_blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)').run(blockerId, blockedId, new Date().toISOString());
+    });
+  }
+
+  unblockUser(blockerId, blockedId) {
+    this.sqlite.prepare('DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?').run(blockerId, blockedId);
+  }
+
   insertUser(user) {
     this.sqlite
       .prepare(`INSERT INTO users(id,name,email,handle,color,presence,dnd_until,bio,avatar_url,banner_url,activity_json,last_active_at,password_hash,created_at)
@@ -400,6 +538,16 @@ export class MovaDatabase {
     });
   }
 
+  async deleteConversation(conversationId) {
+    const uploads = this.sqlite.prepare('SELECT file_name FROM uploads WHERE attached_message_id IN (SELECT id FROM messages WHERE conversation_id=?)').all(conversationId);
+    const deleted = this.transaction(() => {
+      this.sqlite.prepare('DELETE FROM uploads WHERE attached_message_id IN (SELECT id FROM messages WHERE conversation_id=?)').run(conversationId);
+      return this.sqlite.prepare('DELETE FROM conversations WHERE id=?').run(conversationId).changes > 0;
+    });
+    if (deleted) await Promise.all(uploads.map((row) => unlink(join(this.paths.uploadsPath, row.file_name)).catch(() => undefined)));
+    return deleted;
+  }
+
   getConversation(conversationId) {
     return rowConversation(this.sqlite.prepare('SELECT * FROM conversations WHERE id = ?').get(conversationId));
   }
@@ -426,9 +574,9 @@ export class MovaDatabase {
   insertMessage(message) {
     this.transaction(() => {
       this.sqlite
-        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,client_id,created_at,sent_at,edited_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null);
+        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,friend_request_json,client_id,created_at,sent_at,edited_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.friendRequest ? JSON.stringify(message.friendRequest) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null);
       if (message.attachment?.url?.startsWith('/uploads/')) this.sqlite.prepare("UPDATE uploads SET attached_message_id=?, purpose='message' WHERE file_name=?").run(message.id, message.attachment.url.slice('/uploads/'.length));
     });
   }
@@ -446,6 +594,18 @@ export class MovaDatabase {
 
   updateMessage(message) {
     this.sqlite.prepare('UPDATE messages SET content=?, edited_at=? WHERE id=? AND conversation_id=?').run(message.content, message.editedAt || null, message.id, message.conversationId);
+  }
+
+  updatePendingFriendRequest(conversationId, requestedBy, status) {
+    const rows = this.sqlite.prepare("SELECT * FROM messages WHERE conversation_id=? AND kind='friend_request' ORDER BY created_at DESC, rowid DESC").all(conversationId);
+    const row = rows.find((item) => {
+      const request = jsonParse(item.friend_request_json);
+      return request?.requestedBy === requestedBy && request.status === 'pending';
+    });
+    if (!row) return null;
+    const friendRequest = { ...jsonParse(row.friend_request_json), status, respondedAt: new Date().toISOString() };
+    this.sqlite.prepare('UPDATE messages SET friend_request_json=? WHERE id=?').run(JSON.stringify(friendRequest), row.id);
+    return rowMessage({ ...row, friend_request_json: JSON.stringify(friendRequest) });
   }
 
   getMessage(messageId, conversationId) {
@@ -469,6 +629,13 @@ export class MovaDatabase {
 
   readStates(conversationId) {
     return this.sqlite.prepare('SELECT user_id, last_read_at FROM memberships WHERE conversation_id=? AND last_read_at IS NOT NULL').all(conversationId).map((row) => ({ userId: row.user_id, readAt: row.last_read_at }));
+  }
+
+  unreadCount(conversationId, userId) {
+    const row = this.sqlite.prepare(`SELECT COUNT(*) AS count FROM messages m
+      JOIN memberships membership ON membership.conversation_id=m.conversation_id AND membership.user_id=?
+      WHERE m.conversation_id=? AND m.author_id!=? AND (membership.last_read_at IS NULL OR m.created_at>membership.last_read_at)`).get(userId, conversationId, userId);
+    return Number(row?.count || 0);
   }
 
   markRead(conversationId, userId, throughMessageId, readAt) {

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RealMessages, VoiceDock } from './RealApp';
 import type { AppConversation, AppMessage, AppUser } from './lib/api';
 
-const callMedia = vi.hoisted(() => ({ state: 'connected', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, error: '', muted: false, deafened: false, joined: true, cameraStream: null as MediaStream | null, screenStream: null as MediaStream | null, remoteVideoStreams: [] as Array<{ userId: string; streamId: string; stream: MediaStream }>, remoteMedia: {} as Record<string, { camera?: string; screen?: string }>, remoteVoiceStates: {} as Record<string, { muted?: boolean; deafened?: boolean }>, reconnectingUsers: {} as Record<string, boolean>, speakingUsers: {} as Record<string, boolean>, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleMute: vi.fn(), toggleDeafen: vi.fn(), leave: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, { connectionState?: string; outboundAudioBytes?: number; inboundAudioBytes?: number; quality?: string; roundTripTimeMs?: number }> }));
+const callMedia = vi.hoisted(() => ({ state: 'connected', createdAt: '2026-08-10T00:00:00.000Z' as string | null, startedAt: '2026-08-10T00:00:00.000Z' as string | null, error: '', muted: false, deafened: false, joined: true, cameraStream: null as MediaStream | null, screenStream: null as MediaStream | null, remoteVideoStreams: [] as Array<{ userId: string; streamId: string; stream: MediaStream }>, remoteMedia: {} as Record<string, { camera?: string; screen?: string }>, remoteVoiceStates: {} as Record<string, { muted?: boolean; deafened?: boolean }>, reconnectingUsers: {} as Record<string, boolean>, speakingUsers: {} as Record<string, boolean>, localSpeaking: false, participants: [] as string[], setParticipantVolume: vi.fn(), toggleMute: vi.fn(), toggleDeafen: vi.fn(), leave: vi.fn(), accept: vi.fn(), conversationIds: [] as string[], diagnostics: {} as Record<string, { connectionState?: string; outboundAudioBytes?: number; inboundAudioBytes?: number; quality?: string; roundTripTimeMs?: number; candidateType?: string; protocol?: string; outboundScreenFramesPerSecond?: number; outboundScreenBitrateKbps?: number; screenQualityLimitationReason?: string }> }));
 
 vi.mock('./hooks/useVoiceCall', () => ({
   normalizeCallState: (state: string) => state === 'active' ? 'connected' : state === 'error' ? 'disconnected' : state,
@@ -308,17 +308,40 @@ describe('call layout', () => {
     expect(view.container.querySelector('[data-participant-id="friend"]')).toHaveAttribute('data-participant-connection', 'connected');
   });
 
-  it('shows connection quality as bars with latency only', async () => {
-    callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'fair', roundTripTimeMs: 146 } };
+  it('shows connection quality as bars with latency and route diagnostics', async () => {
+    callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 128, quality: 'fair', roundTripTimeMs: 146, candidateType: 'host → srflx' } };
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
     const indicator = container.querySelector('.mova-network-quality');
     expect(indicator).toHaveClass('is-fair');
-    expect(indicator).toHaveAttribute('data-tooltip', 'Задержка 146 мс');
+    expect(indicator).toHaveAttribute('data-tooltip', 'Задержка 146 мс · Прямой маршрут');
     expect(indicator).not.toHaveAttribute('title');
     expect(indicator).not.toHaveTextContent('Задержка 146 мс');
     expect(indicator?.querySelectorAll('.mova-network-bars > i')).toHaveLength(4);
     expect(screen.queryByText(/Потери|джиттер|Хорошая сеть|Средняя сеть|Слабая сеть/)).not.toBeInTheDocument();
+  });
+
+  it('reports TURN routing and the actual outbound screen FPS', () => {
+    callMedia.screenStream = screenStream('local-screen', { width: 1920, height: 1080, aspectRatio: 16 / 9 });
+    callMedia.diagnostics = {
+      friend: {
+        connectionState: 'connected',
+        outboundAudioBytes: 128,
+        quality: 'poor',
+        roundTripTimeMs: 320,
+        candidateType: 'relay → relay',
+        protocol: 'udp',
+        outboundScreenFramesPerSecond: 28,
+        outboundScreenBitrateKbps: 4100,
+        screenQualityLimitationReason: 'bandwidth',
+      },
+    };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(container.querySelector('.mova-network-quality')).toHaveAttribute(
+      'data-tooltip',
+      'Задержка 320 мс · Маршрут через TURN · UDP · Демонстрация 28 FPS · 4.1 Мбит/с · ограничено сетью',
+    );
   });
 
   it('does not highlight a screen share when its owner speaks', async () => {
@@ -513,7 +536,9 @@ describe('call layout', () => {
     fireEvent.click(expand);
     const expanded = document.body.querySelector('.mova-call-tile.is-expanded')!;
     expect(expanded).toHaveAttribute('data-expanded-ui', 'visible');
-    expect(document.querySelector('.mova-call-controls')).toBeInTheDocument();
+    const controls = document.querySelector('.mova-call-controls');
+    expect(controls).toBeInTheDocument();
+    expect(controls?.parentElement).toBe(document.body);
 
     act(() => vi.advanceTimersByTime(2_801));
     expect(expanded).toHaveAttribute('data-expanded-ui', 'hidden');
@@ -552,7 +577,9 @@ describe('call layout', () => {
     const expanded = document.body.querySelector('.mova-call-tile.is-expanded')!;
 
     fireEvent.click(screen.getByRole('button', { name: 'Дополнительно' }));
-    expect(document.querySelector('.mova-call-more')).toBeInTheDocument();
+    const menu = document.querySelector('.mova-call-more');
+    expect(menu).toBeInTheDocument();
+    expect(menu?.parentElement).toBe(document.body);
     act(() => vi.advanceTimersByTime(2_801));
     expect(expanded).toHaveAttribute('data-expanded-ui', 'visible');
   });
@@ -592,7 +619,21 @@ describe('call layout', () => {
     const { container } = renderParticipantCount(2, [cameraUser.id]);
 
     expect(container.querySelector('.mova-call-primary-participant .mova-call-label')).toHaveTextContent(cameraUser.name);
-    expect(container.querySelector('.mova-call-self-view .mova-call-tile')).toHaveAttribute('data-self-view', 'true');
+    const selfViewContainer = container.querySelector('.mova-call-self-view') as HTMLDivElement;
+    const selfView = container.querySelector('.mova-call-self-view .mova-call-tile');
+    expect(selfViewContainer).toHaveAttribute('data-pinch-resizable', 'true');
+    expect(selfView).toHaveAttribute('data-self-view', 'true');
+    expect(selfView?.querySelector('.mova-call-label')).not.toBeInTheDocument();
+    expect(selfView).not.toHaveTextContent('· вы');
+    vi.spyOn(selfViewContainer, 'getBoundingClientRect').mockReturnValue({ width: 112, height: 63, x: 0, y: 0, top: 0, left: 0, right: 112, bottom: 63, toJSON: () => ({}) });
+    fireEvent.pointerDown(selfViewContainer, { pointerId: 1, pointerType: 'touch', clientX: 0, clientY: 0 });
+    fireEvent.pointerDown(selfViewContainer, { pointerId: 2, pointerType: 'touch', clientX: 112, clientY: 0 });
+    fireEvent.pointerMove(selfViewContainer, { pointerId: 2, pointerType: 'touch', clientX: 224, clientY: 0 });
+    expect(selfViewContainer).toHaveStyle({ width: '224px' });
+    fireEvent.pointerMove(selfViewContainer, { pointerId: 2, pointerType: 'touch', clientX: 20, clientY: 0 });
+    expect(selfViewContainer).toHaveStyle({ width: '72px' });
+    fireEvent.pointerUp(selfViewContainer, { pointerId: 1, pointerType: 'touch', clientX: 0, clientY: 0 });
+    fireEvent.pointerUp(selfViewContainer, { pointerId: 2, pointerType: 'touch', clientX: 20, clientY: 0 });
     fireEvent.click(await screen.findByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` }));
     const expanded = container.querySelector('.mova-call-tile.is-expanded');
     expect(expanded).toBeInTheDocument();

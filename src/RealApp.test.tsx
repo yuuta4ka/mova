@@ -1,11 +1,12 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatPresenceStatus, PendingCallStage, Product, ProfileEditor, RealMessages, reconcileClientMessage, sortConversationsByActivity, updateConversationLastMessage } from './RealApp';
+import { formatPresenceStatus, PendingCallStage, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage } from './RealApp';
 import { api, realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 import { ToastProvider } from './components/Primitives';
 
 afterEach(() => {
+  delete window.movaDesktopShell;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -28,6 +29,7 @@ const friend: AppUser = {
   color: '#9B83F4',
   presence: 'online',
   createdAt: '2026-08-10T00:00:00.000Z',
+  relationship: 'friend',
 };
 const conversation: AppConversation = {
   id: 'chat',
@@ -37,6 +39,29 @@ const conversation: AppConversation = {
   lastMessage: null,
   createdAt: '2026-08-10T00:00:00.000Z',
 };
+
+describe('voice processing settings', () => {
+  it('offers enhanced RNNoise, standard and disabled modes and persists the selection', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<SettingsModal user={currentUser} open onClose={onClose} onEditProfile={vi.fn()} />);
+
+    const mode = screen.getByRole('combobox', { name: 'Шумоподавление' });
+    expect(mode).toHaveValue('enhanced');
+    expect(within(mode).getByRole('option', { name: 'Усиленное — голосовой фильтр RNNoise' })).toBeInTheDocument();
+    expect(within(mode).getByRole('option', { name: 'Стандартное — обработка браузера' })).toBeInTheDocument();
+    expect(within(mode).getByRole('option', { name: 'Выключено' })).toBeInTheDocument();
+
+    await user.selectOptions(mode, 'standard');
+    await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
+    expect(JSON.parse(localStorage.getItem('mova-audio-settings') || '{}')).toMatchObject({
+      noiseSuppression: true,
+      noiseSuppressionMode: 'standard',
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+});
 
 describe('presence status', () => {
   const now = new Date('2026-08-10T12:00:00.000Z').getTime();
@@ -53,6 +78,7 @@ describe('presence status', () => {
       ),
     ).toBe('был(а) 5 минут назад');
     expect(formatPresenceStatus({ ...friend, isOnline: true }, now)).toBe('в сети');
+    expect(formatPresenceStatus({ ...friend, presence: 'idle', isOnline: true }, now)).toBe('неактивен');
   });
   it('formats hours and days with Russian plural forms', () => {
     expect(
@@ -185,9 +211,10 @@ describe('conversation overview updates', () => {
   };
 
   it('updates the last-message preview and raises its conversation', () => {
-    const result = updateConversationLastMessage([newerConversation, olderConversation], latestMessage);
+    const result = updateConversationLastMessage([newerConversation, { ...olderConversation, isDraft: true }], latestMessage);
     expect(result.map((item) => item.id)).toEqual(['older', 'newer']);
     expect(result[0].lastMessage?.content).toBe('Новое сообщение');
+    expect(result[0].isDraft).toBe(false);
   });
 
   it('does not replace a preview when an older message is edited', () => {
@@ -198,6 +225,26 @@ describe('conversation overview updates', () => {
 
   it('sorts conversations by message activity', () => {
     expect(sortConversationsByActivity([olderConversation, newerConversation]).map((item) => item.id)).toEqual(['newer', 'older']);
+  });
+
+  it('keeps conversations with friends above newer conversations with other users', () => {
+    const stranger: AppUser = { ...friend, id: 'stranger', name: 'Незнакомец', relationship: 'none' };
+    const strangerConversation: AppConversation = {
+      ...newerConversation,
+      id: 'stranger-chat',
+      title: stranger.name,
+      members: [currentUser, stranger],
+    };
+    expect(sortConversationsByActivity([strangerConversation, olderConversation]).map((item) => item.id)).toEqual(['older', 'stranger-chat']);
+  });
+
+  it('places incoming friend requests between friends and other users', () => {
+    const requester: AppUser = { ...friend, id: 'requester-rank', relationship: 'incoming' };
+    const stranger: AppUser = { ...friend, id: 'stranger-rank', relationship: 'none' };
+    const requestConversation: AppConversation = { ...newerConversation, id: 'request-chat', members: [currentUser, requester] };
+    const strangerConversation: AppConversation = { ...newerConversation, id: 'stranger-rank-chat', members: [currentUser, stranger] };
+
+    expect(sortConversationsByActivity([strangerConversation, requestConversation, olderConversation]).map((item) => item.id)).toEqual(['older', 'request-chat', 'stranger-rank-chat']);
   });
 });
 
@@ -224,6 +271,22 @@ describe('optimistic message reconciliation', () => {
 });
 
 describe('Product realtime notification sound', () => {
+  it('asks for notification permission after authentication in the web app', async () => {
+    const promptUser: AppUser = { ...currentUser, id: 'notification-prompt-user', email: 'notification-prompt@mova.test' };
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn() });
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [] });
+
+    const rendered = render(<Product currentUser={promptUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: 'Не пропускайте сообщения и звонки' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Разрешить уведомления' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Позже' }));
+    expect(screen.queryByRole('heading', { name: 'Не пропускайте сообщения и звонки' })).not.toBeInTheDocument();
+    rendered.unmount();
+  });
+
   it('plays once for a user message and keeps a completed-call plaque silent', async () => {
     const notificationUser: AppUser = { ...currentUser, id: 'notification-user', email: 'notification-user@mova.test' };
     const notificationFriend: AppUser = { ...friend, id: 'notification-friend', name: 'Звуковой друг', email: 'notification-friend@mova.test' };
@@ -282,6 +345,48 @@ describe('Product realtime notification sound', () => {
     await waitFor(() => expect(markRead).toHaveBeenCalled());
     unmount();
   });
+
+  it('keeps an incoming message from a non-friend silent', async () => {
+    const notificationUser: AppUser = { ...currentUser, id: 'silent-user', email: 'silent-user@mova.test' };
+    const stranger: AppUser = { ...friend, id: 'silent-stranger', name: 'Незнакомец', email: 'silent-stranger@mova.test', relationship: 'none' };
+    const silentConversation: AppConversation = {
+      ...conversation,
+      id: 'silent-chat',
+      title: stranger.name,
+      members: [notificationUser, stranger],
+    };
+    const audioPlay = vi.fn().mockResolvedValue(undefined);
+    const AudioMock = vi.fn(function AudioMock() {
+      return { volume: 1, play: audioPlay };
+    });
+    vi.stubGlobal('Audio', AudioMock);
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [silentConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [stranger] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+    vi.spyOn(api, 'markConversationRead').mockResolvedValue({ conversationId: silentConversation.id, userId: notificationUser.id, messageIds: [], readAt: '2026-08-10T12:00:00.000Z' });
+    const rendered = render(<Product currentUser={notificationUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+    expect(await screen.findByText(`Это начало вашей переписки с ${stranger.name}.`)).toBeVisible();
+
+    act(() => realtime.listeners.forEach((listener) => listener({
+      type: 'message:new',
+      message: {
+        id: 'silent-message',
+        conversationId: silentConversation.id,
+        authorId: stranger.id,
+        author: stranger,
+        content: 'Бесшумное входящее сообщение',
+        createdAt: '2026-08-10T12:00:00.000Z',
+        readBy: [],
+      },
+    })));
+
+    expect((await screen.findAllByText('Бесшумное входящее сообщение')).length).toBeGreaterThan(0);
+    expect(AudioMock).not.toHaveBeenCalled();
+    expect(audioPlay).not.toHaveBeenCalled();
+    rendered.unmount();
+  });
 });
 
 describe('Product typing surfaces', () => {
@@ -329,6 +434,116 @@ describe('Product typing surfaces', () => {
     expect(sidebarPreview).not.toHaveClass('mova-typing-status');
     expect(container.querySelector('.mova-real-typing')).toHaveClass('is-empty');
     unmount();
+  });
+});
+
+describe('Product incoming friend requests', () => {
+  it('shows a counter, request label, and system-card preview', async () => {
+    const user: AppUser = { ...currentUser, id: 'request-counter-user', email: 'request-counter-user@mova.test' };
+    const requester: AppUser = { ...friend, id: 'request-counter-friend', name: 'Новый знакомый', email: 'request-counter-friend@mova.test', relationship: 'incoming' };
+    const requestMessage: AppMessage = {
+      id: 'request-counter-message',
+      conversationId: 'request-counter-chat',
+      authorId: requester.id,
+      author: requester,
+      kind: 'friend_request',
+      content: 'Заявка в друзья',
+      friendRequest: { requestedBy: requester.id, status: 'pending' },
+      createdAt: '2026-08-13T12:00:00.000Z',
+      readBy: [],
+    };
+    const { author: _author, ...lastMessage } = requestMessage;
+    const requestConversation: AppConversation = {
+      ...conversation,
+      id: requestMessage.conversationId,
+      title: requester.name,
+      members: [user, requester],
+      lastMessage,
+    };
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [requestConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [requester] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [requestMessage] });
+    vi.spyOn(api, 'markConversationRead').mockResolvedValue({ conversationId: requestConversation.id, userId: user.id, messageIds: [requestMessage.id], readAt: '2026-08-13T12:01:00.000Z' });
+    const rendered = render(<Product currentUser={user} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+
+    expect(await screen.findByRole('article', { name: `${requester.name} хочет добавить тебя в друзья` })).toBeVisible();
+    expect(screen.getByLabelText('Входящих заявок в друзья: 1')).toHaveTextContent('1');
+    expect(rendered.container.querySelector('.mova-chat-friend-request-label')).toHaveTextContent('Заявка');
+    expect(rendered.container.querySelector('.mova-real-chat-list small')).toHaveTextContent('Хочет добавить тебя в друзья');
+    rendered.unmount();
+  });
+});
+
+describe('Product direct-chat drafts and deletion', () => {
+  it('keeps an untouched direct chat out of the list and deletes it through the API', async () => {
+    const user = userEvent.setup();
+    const draftUser: AppUser = { ...currentUser, id: 'draft-owner', email: 'draft-owner@mova.test' };
+    const draftContact: AppUser = { ...friend, id: 'draft-contact', name: 'Черновой собеседник', email: 'draft-contact@mova.test', relationship: 'none' };
+    const draftConversation: AppConversation = {
+      ...conversation,
+      id: 'draft-conversation',
+      title: draftContact.name,
+      members: [draftUser, draftContact],
+      lastMessage: null,
+      createdBy: draftUser.id,
+      isDraft: true,
+    };
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [draftContact] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+    vi.spyOn(api, 'createConversation').mockResolvedValue({ conversation: draftConversation });
+    const deleteConversation = vi.spyOn(api, 'deleteConversation').mockResolvedValue({ conversationId: draftConversation.id });
+    const rendered = render(<Product currentUser={draftUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+
+    const search = screen.getByRole('textbox', { name: 'Глобальный поиск' });
+    await user.click(search);
+    await user.type(search, 'Черновой');
+    await user.click(await screen.findByRole('button', { name: new RegExp(draftContact.name) }));
+
+    expect(await screen.findByText(`Это начало вашей переписки с ${draftContact.name}.`)).toBeVisible();
+    expect(rendered.container.querySelector('.mova-real-chat-list>button')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Подробнее' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Удалить чат' }));
+    await user.click(screen.getByRole('button', { name: 'Удалить' }));
+
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith(draftConversation.id));
+    expect(screen.getByText('Выберите разговор или создайте новый')).toBeVisible();
+    rendered.unmount();
+  });
+});
+
+describe('Product unread message counters', () => {
+  it('shows the unread count on a conversation that is not open', async () => {
+    window.localStorage.clear();
+    const user: AppUser = { ...currentUser, id: 'unread-owner', email: 'unread-owner@mova.test' };
+    const openContact: AppUser = { ...friend, id: 'open-contact', name: 'Открытый чат' };
+    const unreadContact: AppUser = { ...friend, id: 'unread-contact', name: 'Непрочитанный чат' };
+    const openConversation: AppConversation = { ...conversation, id: 'open-chat', title: openContact.name, members: [user, openContact], unreadCount: 0 };
+    const unreadConversation: AppConversation = {
+      ...conversation,
+      id: 'unread-chat',
+      title: unreadContact.name,
+      members: [user, unreadContact],
+      unreadCount: 12,
+      lastMessage: { id: 'unread-last', conversationId: 'unread-chat', authorId: unreadContact.id, content: 'Новое сообщение', createdAt: '2026-08-13T12:00:00.000Z' },
+    };
+    window.localStorage.setItem('mova-selected-conversation', openConversation.id);
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [unreadConversation, openConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [openContact, unreadContact] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+    const rendered = render(<Product currentUser={user} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+
+    await screen.findByText(`Это начало вашей переписки с ${openContact.name}.`);
+    const unreadRow = Array.from(rendered.container.querySelectorAll<HTMLButtonElement>('.mova-real-chat-list>button')).find((button) => button.textContent?.includes(unreadContact.name))!;
+    expect(within(unreadRow).getByLabelText('Непрочитанных сообщений: 12')).toHaveTextContent('9+');
+    rendered.unmount();
   });
 });
 
@@ -468,6 +683,23 @@ async function renderMobileProduct(suffix: string) {
 }
 
 describe('Product mobile chat navigation', () => {
+  it('does not enable mobile navigation or render a back button in the desktop app', async () => {
+    window.movaDesktopShell = {
+      platform: 'darwin',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const setup = await renderMobileProduct('desktop-shell');
+
+    expect(setup.container.querySelector('.mova-tg-app')).not.toHaveClass('is-mobile-navigation');
+    expect(screen.queryByRole('button', { name: 'К списку диалогов' })).not.toBeInTheDocument();
+
+    setup.unmount();
+  });
+
   it('keeps the voice dock mounted in both the mobile list and chat views', async () => {
     const user = userEvent.setup();
     const setup = await renderMobileProduct('voice-dock');
@@ -568,11 +800,57 @@ describe('Product mobile chat navigation', () => {
     const app = setup.container.querySelector('.mova-tg-app')!;
 
     await user.click(screen.getByRole('button', { name: 'Новый разговор' }));
-    expect(screen.getByRole('dialog', { name: 'Новый чат' })).toBeVisible();
+    expect(screen.getByRole('menu', { name: 'Создание разговора' })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: 'Создать канал' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('menuitem', { name: 'Создать группу' })).toHaveAttribute('aria-disabled', 'true');
     act(() => window.dispatchEvent(new PopStateEvent('popstate')));
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Новый чат' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('menu', { name: 'Создание разговора' })).not.toBeInTheDocument());
     expect(app).toHaveAttribute('data-mobile-view', 'list');
+  });
+
+  it('opens focused global search from the compose menu and searches users, chats, and links', async () => {
+    const user = userEvent.setup();
+    const setup = await renderMobileProduct('global-search');
+    const linkedMessage: AppMessage = {
+      id: 'search-link-message',
+      conversationId: setup.chat.id,
+      authorId: setup.user.id,
+      author: setup.user,
+      content: 'Документы: https://mova.test/help',
+      createdAt: '2026-08-13T10:00:00.000Z',
+    };
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'message:new', message: linkedMessage })));
+    const messageRequestsBeforeSearch = vi.mocked(api.messages).mock.calls.length;
+
+    await user.click(screen.getByRole('button', { name: 'Новый разговор' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Начать личный чат' }));
+
+    const search = screen.getByRole('textbox', { name: 'Глобальный поиск' });
+    expect(search).toHaveFocus();
+    expect(screen.queryByRole('menu', { name: 'Создание разговора' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Пользователи' })).toHaveAttribute('aria-selected', 'true');
+    const tabs = screen.getByRole('tablist', { name: 'Область поиска' });
+    tabs.scrollLeft = 0;
+    fireEvent.wheel(tabs, { deltaY: 48 });
+    expect(tabs.scrollLeft).toBe(48);
+    expect(screen.queryByText('Введите минимум 2 символа')).not.toBeInTheDocument();
+    expect(screen.queryByText('Результаты появятся только после ввода запроса')).not.toBeInTheDocument();
+    expect(setup.container.querySelector('.mova-search-result')).not.toBeInTheDocument();
+    expect(api.messages).toHaveBeenCalledTimes(messageRequestsBeforeSearch);
+
+    await user.type(search, 'friend');
+    expect(screen.getByRole('button', { name: new RegExp(setup.contact.name) })).toBeVisible();
+
+    await user.click(screen.getByRole('tab', { name: 'Чаты' }));
+    await user.clear(search);
+    await user.type(search, 'global-search');
+    expect(screen.getByRole('button', { name: new RegExp(setup.chat.title) })).toBeVisible();
+
+    await user.clear(search);
+    await user.type(search, 'mova.test/help');
+    await user.click(screen.getByRole('tab', { name: 'Ссылки' }));
+    expect(screen.getByRole('button', { name: /https:\/\/mova\.test\/help/ })).toBeVisible();
   });
 
   it('gives an incoming call priority over list and browser back navigation', async () => {
@@ -597,6 +875,140 @@ describe('Product mobile chat navigation', () => {
 function renderChat(messages: AppMessage[] = []) {
   return render(<RealMessages conversation={conversation} currentUser={currentUser} messages={messages} onSend={vi.fn().mockResolvedValue(undefined)} />);
 }
+
+describe('RealMessages friendship controls', () => {
+  const stranger: AppUser = { ...friend, id: 'stranger-controls', name: 'Незнакомец', relationship: 'none' };
+  const strangerConversation: AppConversation = {
+    ...conversation,
+    id: 'stranger-controls-chat',
+    title: stranger.name,
+    members: [currentUser, stranger],
+  };
+
+  it('adds a friend from the beginning of a dialog and enables calls after confirmation', async () => {
+    const user = userEvent.setup();
+    const updated = { ...stranger, relationship: 'outgoing' as const };
+    const requestFriend = vi.spyOn(api, 'requestFriend').mockResolvedValue({ user: updated });
+    const onRelationshipChange = vi.fn();
+    render(<RealMessages conversation={strangerConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} onRelationshipChange={onRelationshipChange} />);
+
+    expect(screen.getByRole('button', { name: 'Звонки доступны только друзьям' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Добавить в друзья' }));
+
+    await waitFor(() => expect(requestFriend).toHaveBeenCalledWith(stranger.id));
+    expect(onRelationshipChange).toHaveBeenCalledWith(updated);
+    expect(screen.getByRole('button', { name: 'Отменить заявку в друзья' })).toBeVisible();
+  });
+
+  it('accepts an incoming request in the opened profile', async () => {
+    const user = userEvent.setup();
+    const requester: AppUser = { ...stranger, relationship: 'incoming' };
+    const incomingConversation: AppConversation = { ...strangerConversation, members: [currentUser, requester] };
+    const accepted = { ...requester, relationship: 'friend' as const };
+    const acceptFriend = vi.spyOn(api, 'acceptFriend').mockResolvedValue({ user: accepted });
+    render(<RealMessages conversation={incomingConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${incomingConversation.title}` }));
+    const profile = screen.getByRole('complementary', { name: `Информация о ${incomingConversation.title}` });
+    await user.click(within(profile).getByRole('button', { name: 'Принять заявку в друзья' }));
+
+    await waitFor(() => expect(acceptFriend).toHaveBeenCalledWith(requester.id));
+    expect(within(profile).getByRole('button', { name: 'Удалить из друзей' })).toBeVisible();
+  });
+
+  it('accepts an incoming request from its system card', async () => {
+    const user = userEvent.setup();
+    const requester: AppUser = { ...stranger, relationship: 'incoming' };
+    const incomingConversation: AppConversation = { ...strangerConversation, members: [currentUser, requester] };
+    const requestMessage: AppMessage = {
+      id: 'friend-request-card',
+      conversationId: incomingConversation.id,
+      authorId: requester.id,
+      author: requester,
+      kind: 'friend_request',
+      content: 'Заявка в друзья',
+      friendRequest: { requestedBy: requester.id, status: 'pending' },
+      createdAt: '2026-08-13T12:00:00.000Z',
+    };
+    const accepted = { ...requester, relationship: 'friend' as const };
+    const acceptFriend = vi.spyOn(api, 'acceptFriend').mockResolvedValue({ user: accepted });
+    render(<RealMessages conversation={incomingConversation} currentUser={currentUser} messages={[requestMessage]} onSend={vi.fn()} />);
+
+    expect(screen.getByRole('article', { name: `${requester.name} хочет добавить тебя в друзья` })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Принять' }));
+
+    await waitFor(() => expect(acceptFriend).toHaveBeenCalledWith(requester.id));
+    expect(screen.getByRole('article', { name: 'Теперь вы друзья' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Отклонить' })).not.toBeInTheDocument();
+  });
+
+  it('declines an incoming request from its system card', async () => {
+    const user = userEvent.setup();
+    const requester: AppUser = { ...stranger, relationship: 'incoming' };
+    const incomingConversation: AppConversation = { ...strangerConversation, members: [currentUser, requester] };
+    const requestMessage: AppMessage = {
+      id: 'friend-request-decline-card',
+      conversationId: incomingConversation.id,
+      authorId: requester.id,
+      author: requester,
+      kind: 'friend_request',
+      content: 'Заявка в друзья',
+      friendRequest: { requestedBy: requester.id, status: 'pending' },
+      createdAt: '2026-08-13T12:00:00.000Z',
+    };
+    const rejected = { ...requester, relationship: 'none' as const };
+    const rejectFriend = vi.spyOn(api, 'rejectFriend').mockResolvedValue({ user: rejected });
+    render(<RealMessages conversation={incomingConversation} currentUser={currentUser} messages={[requestMessage]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Отклонить' }));
+
+    await waitFor(() => expect(rejectFriend).toHaveBeenCalledWith(requester.id));
+    expect(screen.getByRole('article', { name: 'Заявка отклонена' })).toBeVisible();
+    expect(screen.getByText('Повторную заявку можно будет отправить через 24 часа')).toBeVisible();
+  });
+
+  it('blocks a user from the beginning of a dialog and disables messaging', async () => {
+    const user = userEvent.setup();
+    const blocked = { ...stranger, relationship: 'blocked' as const };
+    const blockUser = vi.spyOn(api, 'blockUser').mockResolvedValue({ user: blocked });
+    render(<RealMessages conversation={strangerConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Заблокировать' }));
+
+    await waitFor(() => expect(blockUser).toHaveBeenCalledWith(stranger.id));
+    expect(screen.getByRole('button', { name: 'Разблокировать' })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: `Сообщение в ${strangerConversation.title}` })).toBeDisabled();
+  });
+});
+
+describe('RealMessages unread navigation', () => {
+  it('shows a counted jump-to-latest button while the message list is scrolled up', async () => {
+    const incoming: AppMessage = {
+      id: 'unread-navigation-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      author: friend,
+      content: 'Непрочитанное сообщение',
+      createdAt: '2026-08-13T12:00:00.000Z',
+      readBy: [],
+    };
+    const rendered = render(<RealMessages conversation={{ ...conversation, unreadCount: 3 }} currentUser={currentUser} messages={[incoming]} unreadCount={3} onSend={vi.fn()} />);
+    const messageList = rendered.container.querySelector<HTMLElement>('.mova-real-messages')!;
+    Object.defineProperties(messageList, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+    });
+    messageList.scrollTop = 200;
+    fireEvent.scroll(messageList);
+
+    const jump = screen.getByRole('button', { name: 'Перейти к последним сообщениям, непрочитанных: 3' });
+    expect(jump).toHaveTextContent('3');
+    const scrollTo = vi.fn();
+    Object.defineProperty(messageList, 'scrollTo', { configurable: true, value: scrollTo });
+    await userEvent.setup().click(jump);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' });
+  });
+});
 
 describe('RealMessages links', () => {
   const linkMessage = (id: string, content: string): AppMessage => ({

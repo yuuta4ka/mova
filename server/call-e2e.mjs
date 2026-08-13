@@ -37,6 +37,8 @@ try {
   const suffix = Date.now();
   const first = await api('/api/register', 'POST', { name: 'Звонящий', email: `caller.${suffix}@mova.test`, password: 'strongpass1' });
   const second = await api('/api/register', 'POST', { name: 'Принимающий', email: `callee.${suffix}@mova.test`, password: 'strongpass2' });
+  await api(`/api/friends/${second.user.id}`, 'POST', undefined, first.token);
+  await api(`/api/friends/${first.user.id}`, 'PATCH', undefined, second.token);
   const conversation = await api('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
 
   const browserCandidates = [process.env.MOVA_BROWSER_PATH, chromium.executablePath(), '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/chromium'].filter(Boolean);

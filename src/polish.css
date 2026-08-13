@@ -120,7 +120,7 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-tg-sidebar .mova-real-chat-list time { color:#7f8490; font-size:12px; }
 .mova-tg-sidebar .mova-real-chat-list small { color:#989da7; font-size:13px; line-height:1.25; }
 .mova-tg-sidebar .mova-real-chat-list>button.is-active time,.mova-tg-sidebar .mova-real-chat-list>button.is-active small { color:#bfc2ca; }
-.mova-tg-compose { right:14px; bottom:14px; width:52px; height:52px; border-radius:17px; box-shadow:0 12px 30px color-mix(in srgb,var(--mova-accent-color,#8774e1) 30%,transparent); }
+.mova-tg-compose { right:14px; bottom:14px; width:52px; height:52px; border-radius:50%; box-shadow:none; }
 .mova-tg-app>.mova-real-thread,.mova-tg-app>.mova-real-welcome { background:#121722; border:1px solid rgba(255,255,255,.045); border-radius:20px; }
 .mova-tg-app>.mova-real-thread { --mova-chat-content-width:880px; }
 .mova-tg-app .mova-real-thread__header { width:calc(100% - 24px); height:60px; min-height:60px; flex-basis:60px; margin-top:10px; padding-inline:8px; background:rgba(26,28,35,.96); border:1px solid var(--mova-ui-line); border-radius:19px; box-shadow:0 10px 30px rgba(0,0,0,.15); backdrop-filter:blur(18px); }
@@ -159,6 +159,7 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-tg-sidebar .mova-real-chat-list>button.is-active { box-shadow:inset 3px 0 0 var(--mova-accent-color,#8774e1); }
   .mova-tg-sidebar .mova-real-chat-list>button>.mova-avatar,.mova-tg-sidebar .mova-real-chat-list>button>.mova-real-group-avatar { width:48px; height:48px; flex-basis:48px; }
   .mova-tg-compose { display:none; }
+  .mova-compose-menu { display:none; }
   .mova-sidebar-resizer { display:none; }
   .mova-settings { grid-template-columns:178px minmax(0,1fr); }
   .mova-settings>main { padding:24px; }
@@ -199,6 +200,7 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-tg-app.is-mobile-navigation .mova-tg-sidebar .mova-real-chat-list>button>.mova-avatar,.mova-tg-app.is-mobile-navigation .mova-tg-sidebar .mova-real-chat-list>button>.mova-real-group-avatar { width:52px; height:52px; flex-basis:52px; }
 .mova-tg-app.is-mobile-navigation.is-mobile-list .mova-tg-sidebar .mova-real-chat-list>button.is-active { background:transparent; box-shadow:none; }
 .mova-tg-app.is-mobile-navigation .mova-tg-compose { display:grid; }
+.mova-tg-app.is-mobile-navigation .mova-compose-menu { display:grid; }
 .mova-tg-app.is-mobile-navigation .mova-sidebar-resizer { display:none; }
 .mova-tg-app.is-mobile-navigation .mova-real-thread__header { box-sizing:border-box; width:100%; max-width:none; height:calc(56px + env(safe-area-inset-top)); min-height:calc(56px + env(safe-area-inset-top)); flex-basis:calc(56px + env(safe-area-inset-top)); margin:0; padding:env(safe-area-inset-top) max(4px,env(safe-area-inset-right)) 0 max(4px,env(safe-area-inset-left)); border-width:0 0 1px; border-radius:0; box-shadow:none; }
 .mova-tg-app.is-mobile-navigation .mova-mobile-chat-back { display:grid; width:44px; height:44px; flex:0 0 44px; color:#b8bac2; border-radius:50%; }

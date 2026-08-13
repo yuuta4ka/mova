@@ -149,7 +149,7 @@ export type PresenceStatus = NonNullable<AvatarProps['status']>;
 
 const presenceLabels: Record<PresenceStatus, string> = {
   online: 'В сети',
-  idle: 'Отошёл',
+  idle: 'Неактивен',
   busy: 'Не беспокоить',
   dnd: 'Не беспокоить',
   offline: 'Не в сети',

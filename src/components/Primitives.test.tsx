@@ -19,7 +19,7 @@ function ToastHarness() {
 describe('interactive primitives', () => {
   it.each([
     ['online', 'В сети'],
-    ['idle', 'Отошёл'],
+    ['idle', 'Неактивен'],
     ['dnd', 'Не беспокоить'],
     ['offline', 'Не в сети'],
     ['invisible', 'Невидимый'],
@@ -31,7 +31,7 @@ describe('interactive primitives', () => {
 
   it('uses StatusIndicator inside avatars', () => {
     render(<Avatar name="Юта" status="idle" />);
-    expect(screen.getByRole('img', { name: 'Отошёл' })).toHaveClass('mova-status-indicator--idle');
+    expect(screen.getByRole('img', { name: 'Неактивен' })).toHaveClass('mova-status-indicator--idle');
   });
 
   it('disables a loading button and exposes busy state', () => {

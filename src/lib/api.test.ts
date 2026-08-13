@@ -56,6 +56,16 @@ describe('session storage', () => {
     expect(sessionStorage.getItem('mova-session')).toBeNull();
     expect(session.get()).toBe('desktop-token');
   });
+
+  it('persists the session when the web app is installed in standalone mode', () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: query === '(display-mode: standalone)' })));
+
+    session.set('pwa-token');
+
+    expect(localStorage.getItem('mova-session')).toBe('pwa-token');
+    expect(sessionStorage.getItem('mova-session')).toBeNull();
+    expect(session.get()).toBe('pwa-token');
+  });
 });
 
 describe('realtime reconnect', () => {
