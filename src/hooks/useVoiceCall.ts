@@ -75,7 +75,7 @@ interface RemoteAudioEntry {
 }
 
 const incomingRingtoneUrl = new URL('../../ringtone.mp3', import.meta.url).href;
-const outgoingRingtoneUrl = new URL('../../calling-sound.mp3', import.meta.url).href;
+const outgoingRingtoneUrl = new URL('../../calling-sound.m4a', import.meta.url).href;
 const connectSoundUrl = new URL('../../connect.mp3', import.meta.url).href;
 const disconnectSoundUrl = new URL('../../disconnect.mp3', import.meta.url).href;
 const leaveSoundUrl = new URL('../../leave.mp3', import.meta.url).href;
@@ -90,6 +90,7 @@ const pendingCallKey = 'mova-pending-call';
 const participantVolumeKey = 'mova-call-participant-volumes';
 const screenVolumeKey = 'mova-call-screen-volumes';
 const reconnectTimeoutMs = 12_000;
+const ringtoneFadeInMs = 2_000;
 
 const microphoneConstraints = (settings: AudioSettings): MediaTrackConstraints => ({
   ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
@@ -134,16 +135,30 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
     const settings = loadAudioSettings();
     const audio = new Audio(kind === 'incoming' ? incomingRingtoneUrl : outgoingRingtoneUrl);
     let active = true;
+    let fadeFrame: number | null = null;
     audio.loop = true;
-    audio.volume = settings.systemVolume / 100;
+    audio.volume = 0;
+    const targetVolume = settings.systemVolume / 100;
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
-    const play = () => void audio.play().catch(() => undefined);
+    const fadeIn = () => {
+      const startedAt = performance.now();
+      const updateVolume = (now: number) => {
+        if (!active) return;
+        const progress = Math.min(1, (now - startedAt) / ringtoneFadeInMs);
+        audio.volume = targetVolume * progress;
+        if (progress < 1) fadeFrame = window.requestAnimationFrame(updateVolume);
+        else fadeFrame = null;
+      };
+      fadeFrame = window.requestAnimationFrame(updateVolume);
+    };
+    const play = () => void audio.play().then(fadeIn).catch(() => undefined);
     if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
     else play();
     return () => {
       if (!active) return;
       active = false;
+      if (fadeFrame !== null) window.cancelAnimationFrame(fadeFrame);
       audio.pause();
       audio.currentTime = 0;
       audio.removeAttribute('src');
