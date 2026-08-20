@@ -265,8 +265,28 @@ try {
   const editPromise = waitFor(secondSocket, 'message:update');
   const editedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${replyMessage.message.id}`, 'PATCH', { content: 'Исправленный ответ' }, first.token);
   const editEvent = await editPromise;
+  const pinPromise = waitFor(secondSocket, 'message:update');
+  const pinnedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${replyMessage.message.id}/pin`, 'POST', undefined, first.token);
+  const pinEvent = await pinPromise;
+  const targetConversationPromise = waitFor(secondSocket, 'conversation:new');
+  const forwardTarget = await call('/api/conversations', 'POST', { kind: 'group', title: 'Пересылка', memberIds: [second.user.id] }, first.token);
+  await targetConversationPromise;
+  const forwardPromise = waitFor(secondSocket, 'message:new');
+  const forwardedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${replyMessage.message.id}/forward`, 'POST', { conversationId: forwardTarget.conversation.id }, first.token);
+  const forwardEvent = await forwardPromise;
+  const deletePromise = waitFor(firstSocket, 'message:delete');
+  const deletedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${replyMessage.message.id}`, 'DELETE', undefined, first.token);
+  const deleteEvent = await deletePromise;
+  const firstHistoryAfterDelete = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
+  const secondHistoryAfterDelete = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, second.token);
+  const globalMessage = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'POST', { content: 'Удалить у всех' }, first.token);
+  const globalDeletePromise = waitFor(secondSocket, 'message:delete');
+  const globallyDeletedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${globalMessage.message.id}?scope=everyone`, 'DELETE', undefined, first.token);
+  const globalDeleteEvent = await globalDeletePromise;
+  const firstHistoryAfterGlobalDelete = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
+  const secondHistoryAfterGlobalDelete = await call(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, second.token);
   const conversationOverview = await call('/api/conversations', 'GET', undefined, second.token);
-  if (conversationOverview.conversations[0]?.lastMessage?.content !== 'Исправленный ответ') throw new Error('Conversation preview did not return the latest edited message');
+  if (conversationOverview.conversations.find((item) => item.id === conversation.conversation.id)?.lastMessage?.content !== 'Исправленный ответ') throw new Error('Conversation preview did not return the latest edited message');
   const heartbeatPromise = waitFor(firstSocket, 'heartbeat:ack');
   firstSocket.send(JSON.stringify({ type: 'heartbeat', sentAt: Date.now() }));
   await heartbeatPromise;
@@ -399,6 +419,10 @@ try {
       voiceListened: voiceListenedReceipt.userId === second.user.id && voiceListenedEvent.messageId === voiceMessage.message.id && storedVoiceMessage.listenedBy[0].userId === second.user.id,
       reply: replyEvent.message.replyTo.id === attachmentMessage.message.id && replyEvent.message.replyTo.attachment.name === 'mova-test.txt',
       edited: editedMessage.message.content === 'Исправленный ответ' && Boolean(editEvent.message.editedAt),
+      pinned: Boolean(pinnedMessage.message.pinnedAt && pinEvent.message.pinnedAt),
+      forwarded: forwardedMessage.message.conversationId === forwardTarget.conversation.id && forwardEvent.message.id === forwardedMessage.message.id,
+      deletedForUser: deletedMessage.messageId === replyMessage.message.id && deleteEvent.messageId === replyMessage.message.id && !firstHistoryAfterDelete.messages.some((message) => message.id === replyMessage.message.id) && secondHistoryAfterDelete.messages.some((message) => message.id === replyMessage.message.id),
+      deletedForEveryone: globallyDeletedMessage.scope === 'everyone' && globalDeleteEvent.messageId === globalMessage.message.id && !firstHistoryAfterGlobalDelete.messages.some((message) => message.id === globalMessage.message.id) && !secondHistoryAfterGlobalDelete.messages.some((message) => message.id === globalMessage.message.id),
       typing: typingStarted.active === true && typingStopped.active === false,
       typingDisconnect: typingStoppedOnDisconnect.active === false,
       sentAt: Boolean(attachmentMessage.message.sentAt),

@@ -167,9 +167,39 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible {
 .mova-tooltip--right:hover .mova-tooltip__content,.mova-tooltip--right:focus-within .mova-tooltip__content { transform:translate(0,50%); }
 .mova-tooltip--bottom .mova-tooltip__content { top:calc(100% + 8px); bottom:auto; }
 
+.mova-chat-actions-menu>.mova-tooltip { display:flex; width:100%; }
+.mova-chat-actions-menu>.mova-tooltip>button {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  width:100%;
+  height:47px;
+  padding:0 11px;
+  color:inherit;
+  background:transparent;
+  border:0;
+  border-radius:9px;
+  font:inherit;
+  font-size:13px;
+  text-align:left;
+  cursor:pointer;
+}
+.mova-chat-actions-menu>.mova-tooltip>button:hover,.mova-chat-actions-menu>.mova-tooltip>button:focus-visible { background:#30323a; outline:0; }
+.mova-chat-actions-menu>.mova-tooltip>button:disabled { opacity:.42; cursor:not-allowed; }
+.mova-chat-actions-menu>.mova-tooltip>button>svg { flex:0 0 22px; }
+.mova-chat-actions-menu>.mova-tooltip>button>span { flex:1; }
+.mova-chat-actions-menu>.mova-tooltip .mova-tooltip__content {
+  right:calc(100% + 8px);
+  bottom:50%;
+  left:auto;
+  transform:translate(-4px,50%);
+}
+.mova-chat-actions-menu>.mova-tooltip:hover .mova-tooltip__content { transform:translate(0,50%); }
+
 .mova-toasts { position:fixed; z-index:520; right:max(18px,env(safe-area-inset-right)); bottom:max(18px,env(safe-area-inset-bottom)); display:grid; gap:8px; width:min(360px,calc(100vw - 32px)); }
-.mova-toast { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; min-height:46px; padding:7px 8px 7px 12px; color:#f3f4f6; background:#25272e; border:1px solid rgba(255,255,255,.1); border-radius:12px; box-shadow:0 16px 42px rgba(0,0,0,.38); font-size:13px; animation:mova-ui-toast-in 180ms ease both; }
-.mova-toast.is-closing { pointer-events:none; animation:mova-ui-toast-out 180ms ease both; }
+.mova-toast { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; min-height:48px; padding:4px 5px 4px 14px; color:#f3f4f6; background:#212121; border:0; border-radius:24px; box-shadow:0 14px 34px rgba(0,0,0,.3); font-size:13px; animation:mova-ui-toast-in 220ms cubic-bezier(.2,.78,.25,1) both; }
+.mova-toast.is-closing { pointer-events:none; animation:mova-ui-toast-out 220ms cubic-bezier(.55,0,.8,.22) both; }
+.mova-toast>.mova-icon-button { width:38px; height:38px; border-radius:50%; }
 .mova-toast--success>svg { color:#66d7b9; }
 .mova-toast--danger>svg { color:#ff7d90; }
 .mova-toast--info>svg { color:#ad9af0; }
@@ -195,8 +225,8 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible {
 @keyframes mova-ui-dialog-out { to { opacity:0; transform:translateY(7px) scale(.985); } }
 @keyframes mova-ui-popover-in { from { opacity:0; transform:translateY(6px) scale(.975); } }
 @keyframes mova-ui-popover-out { to { opacity:0; transform:translateY(4px) scale(.98); } }
-@keyframes mova-ui-toast-in { from { opacity:0; transform:translateY(7px); } }
-@keyframes mova-ui-toast-out { to { opacity:0; transform:translateY(5px); } }
+@keyframes mova-ui-toast-in { from { opacity:0; transform:translateX(12px) scale(.985); } }
+@keyframes mova-ui-toast-out { to { opacity:0; transform:translateX(12px) scale(.985); } }
 
 @media(max-width:650px) {
   .mova-modal-backdrop { align-items:end; padding:10px max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left)); }

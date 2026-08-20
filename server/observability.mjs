@@ -19,6 +19,7 @@ export function routeName(pathname) {
   if (pathname.startsWith('/uploads/')) return '/uploads/:file';
   if (!pathname.startsWith('/api/')) return pathname === '/' ? '/' : '/static';
   return pathname
+    .replace(/\/api\/conversations\/[^/]+\/messages\/[^/]+\/(pin|forward|listened)$/, '/api/conversations/:conversationId/messages/:messageId/$1')
     .replace(/\/api\/conversations\/[^/]+\/messages\/[^/]+$/, '/api/conversations/:conversationId/messages/:messageId')
     .replace(/\/api\/conversations\/[^/]+\/(messages|read)$/, '/api/conversations/:conversationId/$1')
     .replace(/\/api\/conversations\/[^/]+$/, '/api/conversations/:conversationId')

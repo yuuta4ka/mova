@@ -108,6 +108,8 @@ function rowMessage(row) {
     createdAt: row.created_at,
     sentAt: row.sent_at || row.created_at,
     editedAt: row.edited_at || undefined,
+    pinnedAt: row.pinned_at || undefined,
+    pinnedById: row.pinned_by_id || undefined,
   };
 }
 
@@ -206,7 +208,15 @@ export async function openDatabase(paths) {
       client_id TEXT,
       created_at TEXT NOT NULL,
       sent_at TEXT NOT NULL,
-      edited_at TEXT
+      edited_at TEXT,
+      pinned_at TEXT,
+      pinned_by_id TEXT REFERENCES users(id)
+    );
+    CREATE TABLE IF NOT EXISTS message_deletions (
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      deleted_at TEXT NOT NULL,
+      PRIMARY KEY (message_id, user_id)
     );
     CREATE TABLE IF NOT EXISTS voice_message_listens (
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -247,6 +257,7 @@ export async function openDatabase(paths) {
     CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id, conversation_id);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(reply_to_id);
+    CREATE INDEX IF NOT EXISTS idx_message_deletions_user ON message_deletions(user_id, message_id);
     CREATE INDEX IF NOT EXISTS idx_voice_message_listens_user ON voice_message_listens(user_id, listened_at);
     CREATE INDEX IF NOT EXISTS idx_friendships_requested_by ON friendships(requested_by, status);
     CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id, blocker_id);
@@ -261,6 +272,8 @@ export async function openDatabase(paths) {
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
   if (!messageColumns.some((column) => column.name === 'friend_request_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN friend_request_json TEXT');
+  if (!messageColumns.some((column) => column.name === 'pinned_at')) sqlite.exec('ALTER TABLE messages ADD COLUMN pinned_at TEXT');
+  if (!messageColumns.some((column) => column.name === 'pinned_by_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN pinned_by_id TEXT REFERENCES users(id)');
   const conversationColumns = sqlite.prepare('PRAGMA table_info(conversations)').all();
   if (!conversationColumns.some((column) => column.name === 'avatar_url')) sqlite.exec("ALTER TABLE conversations ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_client ON messages(author_id, client_id) WHERE client_id IS NOT NULL');
@@ -697,9 +710,9 @@ export class MovaDatabase {
   insertMessage(message) {
     this.transaction(() => {
       this.sqlite
-        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,friend_request_json,client_id,created_at,sent_at,edited_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.friendRequest ? JSON.stringify(message.friendRequest) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null);
+        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,friend_request_json,client_id,created_at,sent_at,edited_at,pinned_at,pinned_by_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.friendRequest ? JSON.stringify(message.friendRequest) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null, message.pinnedAt || null, message.pinnedById || null);
       if (message.attachment?.url?.startsWith('/uploads/')) this.sqlite.prepare("UPDATE uploads SET attached_message_id=?, purpose='message' WHERE file_name=?").run(message.id, message.attachment.url.slice('/uploads/'.length));
     });
   }
@@ -717,6 +730,29 @@ export class MovaDatabase {
 
   updateMessage(message) {
     this.sqlite.prepare('UPDATE messages SET content=?, edited_at=? WHERE id=? AND conversation_id=?').run(message.content, message.editedAt || null, message.id, message.conversationId);
+  }
+
+  setMessagePinned(messageId, conversationId, pinnedById, pinnedAt) {
+    const result = this.sqlite
+      .prepare('UPDATE messages SET pinned_at=?, pinned_by_id=? WHERE id=? AND conversation_id=?')
+      .run(pinnedAt || null, pinnedAt ? pinnedById : null, messageId, conversationId);
+    return result.changes ? this.getMessage(messageId, conversationId) : null;
+  }
+
+  hideMessage(messageId, conversationId, userId, deletedAt = new Date().toISOString()) {
+    if (!this.getMessage(messageId, conversationId)) return false;
+    this.sqlite.prepare('INSERT OR REPLACE INTO message_deletions(message_id,user_id,deleted_at) VALUES(?,?,?)').run(messageId, userId, deletedAt);
+    return true;
+  }
+
+  hideMessageForEveryone(messageId, conversationId, deletedAt = new Date().toISOString()) {
+    if (!this.getMessage(messageId, conversationId)) return [];
+    const memberIds = this.memberIds(conversationId);
+    this.transaction(() => {
+      const hide = this.sqlite.prepare('INSERT OR REPLACE INTO message_deletions(message_id,user_id,deleted_at) VALUES(?,?,?)');
+      memberIds.forEach((userId) => hide.run(messageId, userId, deletedAt));
+    });
+    return memberIds;
   }
 
   updatePendingFriendRequest(conversationId, requestedBy, status) {
@@ -739,8 +775,13 @@ export class MovaDatabase {
     return rowMessage(this.sqlite.prepare('SELECT * FROM messages WHERE author_id=? AND client_id=?').get(authorId, clientId));
   }
 
-  lastMessage(conversationId) {
-    return rowMessage(this.sqlite.prepare('SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversationId));
+  lastMessage(conversationId, viewerId) {
+    const hiddenFilter = viewerId ? ' AND NOT EXISTS (SELECT 1 FROM message_deletions hidden WHERE hidden.message_id=messages.id AND hidden.user_id=?)' : '';
+    return rowMessage(
+      this.sqlite
+        .prepare(`SELECT * FROM messages WHERE conversation_id=?${hiddenFilter} ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+        .get(...(viewerId ? [conversationId, viewerId] : [conversationId])),
+    );
   }
 
   messages(conversationId, limit = 200) {
@@ -750,11 +791,20 @@ export class MovaDatabase {
       .map(rowMessage);
   }
 
-  messagePage(conversationId, { limit = 80, before } = {}) {
+  messagePage(conversationId, { limit = 80, before, viewerId } = {}) {
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 80));
-    const parameters = before ? [conversationId, before.createdAt, before.createdAt, before.id, safeLimit + 1] : [conversationId, safeLimit + 1];
-    const where = before ? 'conversation_id=? AND (created_at<? OR (created_at=? AND id<?))' : 'conversation_id=?';
-    const rows = this.sqlite.prepare(`SELECT * FROM messages WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...parameters);
+    const conditions = ['messages.conversation_id=?'];
+    const parameters = [conversationId];
+    if (viewerId) {
+      conditions.push('NOT EXISTS (SELECT 1 FROM message_deletions hidden WHERE hidden.message_id=messages.id AND hidden.user_id=?)');
+      parameters.push(viewerId);
+    }
+    if (before) {
+      conditions.push('(messages.created_at<? OR (messages.created_at=? AND messages.id<?))');
+      parameters.push(before.createdAt, before.createdAt, before.id);
+    }
+    parameters.push(safeLimit + 1);
+    const rows = this.sqlite.prepare(`SELECT messages.* FROM messages WHERE ${conditions.join(' AND ')} ORDER BY messages.created_at DESC, messages.id DESC LIMIT ?`).all(...parameters);
     const hasMore = rows.length > safeLimit;
     const page = rows.slice(0, safeLimit);
     const oldest = page.at(-1);

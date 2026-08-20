@@ -145,3 +145,376 @@
   .mova-voice-recorder__status i { animation:none; }
   .mova-voice-message__play { transition:none; }
 }
+
+/* Compact thread bars from the desktop reference. Kept here so they win over shell polish. */
+.mova-voice-player__audio { display:none; }
+.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread:not(.is-in-call)>.mova-real-thread__header {
+  top:0;
+  width:min(696px,calc(100% - 36px));
+  max-width:696px;
+  height:48px;
+  min-height:48px;
+  flex-basis:48px;
+  gap:0;
+  margin:8px 0 0;
+  padding:0 4px;
+  background:#212121;
+  border:0;
+  border-radius:24px;
+  box-shadow:none;
+  backdrop-filter:none;
+  transition:top 220ms cubic-bezier(.2,.78,.25,1);
+}
+.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread.has-voice-player:not(.is-in-call)>.mova-real-thread__header { top:56px; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity { height:44px;border-radius:22px; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity>.mova-avatar,
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity>.mova-real-group-avatar { width:40px;height:40px;flex-basis:40px; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity strong { font-size:16px;font-weight:600;line-height:20px; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity small { color:#a7a7aa;font-size:14px;line-height:18px; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header>div { gap:0; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-icon-button,
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-button { width:40px;height:40px;transform:none; }
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-icon-button>svg,
+.mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-button svg { width:22px;height:22px;stroke-width:2; }
+
+.mova-voice-player {
+  position:absolute;
+  z-index:16;
+  top:8px;
+  left:50%;
+  display:flex;
+  align-items:center;
+  width:min(696px,calc(100% - 36px));
+  max-width:696px;
+  height:48px;
+  padding:0 5px 0 10px;
+  color:#f4f4f5;
+  background:#212121;
+  border:0;
+  border-radius:24px;
+  box-shadow:none;
+  box-sizing:border-box;
+  transform:translateX(-50%);
+  animation:mova-voice-player-in 220ms cubic-bezier(.2,.78,.25,1) both;
+}
+.mova-voice-player.is-closing {
+  pointer-events:none;
+  animation:mova-voice-player-out 220ms cubic-bezier(.55,0,.8,.22) both;
+}
+.mova-voice-player button { font:inherit; }
+.mova-voice-player__transport { display:flex;align-items:center;gap:2px;flex:0 0 auto; }
+.mova-voice-player__transport>button,
+.mova-voice-player__actions button {
+  display:grid;
+  place-items:center;
+  width:38px;
+  height:40px;
+  padding:0;
+  color:#a994f4;
+  background:transparent;
+  border:0;
+  border-radius:50%;
+  cursor:pointer;
+  transition:color 120ms ease,background 120ms ease,transform 120ms ease;
+}
+.mova-voice-player__transport>button:hover,
+.mova-voice-player__actions button:hover { color:#c4b6fb;background:#303034; }
+.mova-voice-player__transport>button:active,
+.mova-voice-player__actions button:active { transform:scale(.92); }
+.mova-voice-player__transport>button:focus-visible,
+.mova-voice-player__actions button:focus-visible,
+.mova-voice-player__progress:focus-visible,
+.mova-voice-player__volume-menu input:focus-visible { outline:2px solid color-mix(in srgb,var(--mova-accent-color,#8774e1) 70%,white);outline-offset:1px; }
+.mova-voice-player__transport svg { stroke-width:2; }
+.mova-voice-player__identity { display:grid;min-width:0;flex:1;gap:0;margin-left:10px; }
+.mova-voice-player__identity strong,
+.mova-voice-player__identity small { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.mova-voice-player__identity strong { color:#f2f2f3;font-size:15px;font-weight:600;line-height:20px; }
+.mova-voice-player__identity small { color:#a7a7aa;font-size:13px;line-height:17px; }
+.mova-voice-player__actions { display:flex;align-items:center;gap:1px;flex:0 0 auto; }
+.mova-voice-player__actions .mova-voice-player__close { color:#aaa; }
+.mova-voice-player__actions .mova-voice-player__close:hover { color:#eee; }
+.mova-voice-player__volume,
+.mova-voice-player__speed-wrap { position:relative; }
+.mova-voice-player__volume>button.is-muted { color:#aaa; }
+.mova-voice-player__volume-menu {
+  position:absolute;
+  z-index:4;
+  top:38px;
+  left:50%;
+  display:grid;
+  place-items:center;
+  width:34px;
+  height:108px;
+  padding:8px 0 7px;
+  visibility:hidden;
+  opacity:0;
+  background:#29292d;
+  border:1px solid rgba(255,255,255,.055);
+  border-radius:15px;
+  box-shadow:0 14px 30px rgba(0,0,0,.34);
+  box-sizing:border-box;
+  transform:translate(-50%,-5px);
+  transition:opacity 130ms ease,transform 130ms ease,visibility 130ms;
+}
+.mova-voice-player__volume::after { content:'';position:absolute;top:35px;right:0;left:0;height:9px; }
+.mova-voice-player__volume.is-open .mova-voice-player__volume-menu { visibility:visible;opacity:1;transform:translate(-50%,0); }
+.mova-voice-player__volume-menu input {
+  width:5px;
+  height:84px;
+  margin:0;
+  padding:0;
+  appearance:none;
+  -webkit-appearance:none;
+  writing-mode:vertical-lr;
+  direction:rtl;
+  background:linear-gradient(to top,var(--mova-accent-color,#8774e1) 0 var(--mova-voice-volume),#777780 var(--mova-voice-volume) 100%);
+  border:0;
+  border-radius:999px;
+  cursor:pointer;
+}
+.mova-voice-player__volume-menu input::-webkit-slider-runnable-track { width:5px;height:84px;background:transparent;border:0;border-radius:999px; }
+.mova-voice-player__volume-menu input::-webkit-slider-thumb { width:13px;height:13px;margin-left:-4px;appearance:none;-webkit-appearance:none;background:#aaa0dd;border:0;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.3); }
+.mova-voice-player__volume-menu input::-moz-range-track { width:5px;height:84px;background:transparent;border:0;border-radius:999px; }
+.mova-voice-player__volume-menu input::-moz-range-progress { width:5px;background:var(--mova-accent-color,#8774e1);border-radius:999px; }
+.mova-voice-player__volume-menu input::-moz-range-thumb { width:13px;height:13px;background:#aaa0dd;border:0;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.3); }
+.mova-voice-player__speed-wrap>button { width:42px;color:#b4b4b8;font-size:15px;line-height:1; }
+.mova-voice-player__speed-wrap>button.is-open { color:#bcb1e8;background:#303034; }
+.mova-voice-player__speed-menu {
+  position:absolute;
+  z-index:5;
+  top:43px;
+  right:0;
+  display:grid;
+  width:180px;
+  padding:7px 8px;
+  color:#f4f4f5;
+  background:#29292d;
+  border:1px solid rgba(255,255,255,.045);
+  border-radius:15px;
+  box-shadow:0 15px 34px rgba(0,0,0,.36);
+  box-sizing:border-box;
+  animation:mova-voice-menu-in 140ms cubic-bezier(.2,.78,.25,1) both;
+}
+.mova-voice-player__speed-menu>button {
+  display:flex;
+  justify-content:flex-start;
+  width:100%;
+  height:32px;
+  padding:0 8px;
+  color:#f1f1f3;
+  background:transparent;
+  border:0;
+  border-radius:9px;
+  font-size:14px;
+  font-weight:500;
+  text-align:left;
+}
+.mova-voice-player__speed-menu>button:hover,
+.mova-voice-player__speed-menu>button.is-selected { color:#fff;background:rgba(255,255,255,.06); }
+.mova-voice-player__progress {
+  position:absolute;
+  right:18px;
+  bottom:1px;
+  left:18px;
+  width:calc(100% - 36px);
+  height:3px;
+  margin:0;
+  padding:0;
+  appearance:none;
+  -webkit-appearance:none;
+  background:linear-gradient(to right,var(--mova-accent-color,#8774e1) 0 calc(var(--mova-voice-progress,0) * 100%),rgba(255,255,255,.09) calc(var(--mova-voice-progress,0) * 100%) 100%);
+  border:0;
+  border-radius:999px;
+  cursor:pointer;
+  overflow:hidden;
+}
+.mova-voice-player__progress::-webkit-slider-runnable-track { height:3px;background:transparent;border:0; }
+.mova-voice-player__progress::-webkit-slider-thumb { width:1px;height:3px;appearance:none;-webkit-appearance:none;background:transparent;border:0; }
+.mova-voice-player__progress::-moz-range-track { height:3px;background:transparent;border:0; }
+.mova-voice-player__progress::-moz-range-thumb { width:1px;height:3px;background:transparent;border:0; }
+
+.mova-tg-app:not(.is-mobile-navigation) .mova-pinned-message {
+  z-index:13;
+  top:64px;
+  width:min(696px,calc(100% - 36px));
+  max-width:696px;
+  height:48px;
+  padding:0 4px 0 0;
+  color:#f3f3f5;
+  background:#212121;
+  border:0;
+  border-radius:24px;
+  box-shadow:none;
+  backdrop-filter:none;
+  transition:top 220ms cubic-bezier(.2,.78,.25,1);
+  animation:mova-voice-player-in 220ms cubic-bezier(.2,.78,.25,1) both;
+}
+.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread.has-voice-player>.mova-pinned-message { top:120px; }
+.mova-pinned-message__jump { height:48px;gap:9px;padding:0;border-radius:24px 10px 10px 24px; }
+.mova-pinned-message__jump:hover { background:rgba(255,255,255,.035); }
+.mova-pinned-message__pin { display:grid;place-items:center;width:48px;height:48px;flex:0 0 48px;color:#a8a8ad; }
+.mova-pinned-message__pin>svg { transform:rotate(-4deg); }
+.mova-pinned-message__accent { width:2px;height:36px;flex:0 0 2px;background:var(--mova-accent-color,#8774e1);border-radius:2px; }
+.mova-pinned-message__thumbnail { width:42px!important;height:40px!important;min-width:42px!important;min-height:40px!important;flex:0 0 42px;background:#303034;border-radius:4px!important; }
+.mova-pinned-message__thumbnail>img { display:block;width:100%;height:100%;object-fit:cover; }
+.mova-pinned-message__copy { display:grid;min-width:0;gap:0;flex:1; }
+.mova-pinned-message__copy strong,
+.mova-pinned-message__copy small { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.mova-pinned-message__copy strong { color:#9f87f0;font-size:14px;font-weight:500;line-height:18px; }
+.mova-pinned-message__copy small { color:#f2f2f3;font-size:14px;line-height:18px; }
+.mova-pinned-message__close { width:40px;height:40px;flex-basis:40px;color:#aaa; }
+.mova-pinned-message__close>svg { width:22px;height:22px; }
+
+@keyframes mova-voice-player-in { from{opacity:0;transform:translate(-50%,-5px) scale(.985)}to{opacity:1;transform:translate(-50%,0) scale(1)} }
+@keyframes mova-voice-player-out { from{opacity:1;transform:translate(-50%,0) scale(1)}to{opacity:0;transform:translate(-50%,-5px) scale(.985)} }
+@keyframes mova-voice-menu-in { from{opacity:0;transform:translateY(-5px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)} }
+
+@media(max-width:760px) {
+  .mova-tg-app.is-mobile-navigation>.mova-real-thread:not(.is-in-call)>.mova-voice-player { top:calc(env(safe-area-inset-top) + 4px);width:calc(100% - 12px); }
+  .mova-tg-app.is-mobile-navigation>.mova-real-thread.has-voice-player:not(.is-in-call)>.mova-real-thread__header { top:52px; }
+  .mova-tg-app.is-mobile-navigation .mova-pinned-message { top:calc(env(safe-area-inset-top) + 60px);width:calc(100% - 12px); }
+  .mova-tg-app.is-mobile-navigation>.mova-real-thread.has-voice-player>.mova-pinned-message { top:calc(env(safe-area-inset-top) + 112px); }
+  .mova-voice-player { padding-left:6px; }
+  .mova-voice-player__transport { gap:0; }
+  .mova-voice-player__transport>button { width:34px; }
+  .mova-voice-player__identity { margin-left:5px; }
+  .mova-voice-player__identity strong { font-size:14px; }
+  .mova-voice-player__identity small { font-size:11px; }
+  .mova-voice-player__actions button { width:36px; }
+  .mova-voice-player__speed-menu { width:156px; }
+}
+
+@media(prefers-reduced-motion:reduce) {
+  .mova-voice-player,.mova-pinned-message,.mova-voice-player__speed-menu { animation:none; }
+  .mova-tg-app .mova-real-thread__header,.mova-pinned-message { transition:none; }
+  .mova-voice-player__volume-menu { transition:none; }
+}
+
+/* Message selection replaces the composer with the compact bottom action bar. */
+.mova-tg-app>.mova-real-thread.is-selecting-messages>.mova-real-composer { visibility:hidden;pointer-events:none; }
+.mova-tg-app>.mova-real-thread>.mova-real-messages { container-type:inline-size;overflow-x:hidden; }
+.mova-tg-app .mova-message-selection-bar {
+  position:absolute;
+  z-index:15;
+  top:auto;
+  right:auto;
+  bottom:14px;
+  left:50%;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  width:min(696px,calc(100% - 64px));
+  max-width:696px;
+  height:48px;
+  padding:0 5px;
+  color:#f5f5f6;
+  background:#212121;
+  border:0;
+  border-radius:24px;
+  box-shadow:0 7px 20px rgba(0,0,0,.24);
+  box-sizing:border-box;
+  transform:translateX(-50%);
+  animation:mova-selection-bar-in 170ms cubic-bezier(.2,.78,.25,1) both;
+}
+.mova-tg-app .mova-message-selection-bar>strong {
+  position:absolute;
+  left:50%;
+  font-size:15px;
+  font-weight:650;
+  line-height:20px;
+  white-space:nowrap;
+  transform:translateX(-50%);
+}
+.mova-message-selection-bar>button,
+.mova-message-selection-bar__delete>button {
+  display:grid;
+  place-items:center;
+  width:40px;
+  height:40px;
+  padding:0;
+  color:#aaa;
+  background:transparent;
+  border:0;
+  border-radius:50%;
+  cursor:pointer;
+  transition:color 120ms ease,background 120ms ease,transform 120ms ease;
+}
+.mova-message-selection-bar>button:hover,
+.mova-message-selection-bar__delete>button:hover { color:#eee;background:#303034; }
+.mova-message-selection-bar>button:active,
+.mova-message-selection-bar__delete>button:active { transform:scale(.92); }
+.mova-message-selection-bar>button:disabled,
+.mova-message-selection-bar__delete>button:disabled { opacity:.38;cursor:default;transform:none; }
+.mova-message-selection-bar__delete { position:relative; }
+.mova-message-selection-bar__delete>button.is-danger { color:#ff4d58; }
+.mova-message-selection-delete-menu {
+  position:absolute;
+  z-index:3;
+  bottom:46px;
+  left:0;
+  display:grid;
+  width:190px;
+  padding:7px;
+  color:#f2f2f4;
+  background:#29292d;
+  border:1px solid rgba(255,255,255,.055);
+  border-radius:14px;
+  box-shadow:0 15px 34px rgba(0,0,0,.36);
+  animation:mova-selection-menu-in 140ms cubic-bezier(.2,.78,.25,1) both;
+}
+.mova-message-selection-delete-menu>button {
+  height:38px;
+  padding:0 10px;
+  color:inherit;
+  background:transparent;
+  border:0;
+  border-radius:9px;
+  font:inherit;
+  font-size:14px;
+  text-align:left;
+  cursor:pointer;
+}
+.mova-message-selection-delete-menu>button:hover { background:rgba(255,255,255,.06); }
+.mova-message-selection-delete-menu>button.is-danger { color:#ff6069; }
+.mova-message-selection-delete-menu>button:disabled { color:#777;cursor:not-allowed; }
+.mova-message-selection-delete-menu>button:disabled:hover { background:transparent; }
+.mova-real-message.is-selectable { cursor:pointer; }
+.mova-real-message.is-selectable::after {
+  inset:-1px auto;
+  left:50%;
+  width:100cqw;
+  background:transparent;
+  border-radius:0;
+  box-shadow:none;
+  transform:translateX(-50%);
+}
+.mova-real-message.is-selectable:hover::after { background:rgba(255,255,255,.035); }
+.mova-real-message.is-selected::after { background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 9%,rgba(255,255,255,.055));box-shadow:none; }
+.mova-message-selector {
+  top:50%;
+  bottom:auto;
+  left:-38px;
+  width:24px;
+  height:24px;
+  color:#fff;
+  background:transparent;
+  border:2px solid rgba(255,255,255,.92);
+  box-shadow:none;
+  box-sizing:border-box;
+  transform:translateY(-50%);
+}
+.mova-real-message.is-selected .mova-message-selector { background:var(--mova-accent-color,#8774e1);border-color:#fff; }
+.mova-real-message.is-selected .mova-message-selector>svg { width:14px;height:14px;stroke-width:2.6; }
+
+@keyframes mova-selection-bar-in { from{opacity:0;transform:translate(-50%,7px) scale(.985)}to{opacity:1;transform:translate(-50%,0) scale(1)} }
+@keyframes mova-selection-menu-in { from{opacity:0;transform:translateY(5px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)} }
+
+@media(max-width:760px) {
+  .mova-tg-app .mova-message-selection-bar { bottom:max(8px,env(safe-area-inset-bottom));width:calc(100% - 24px); }
+  .mova-message-selector { left:-30px; }
+}
+
+@media(prefers-reduced-motion:reduce) {
+  .mova-tg-app .mova-message-selection-bar,.mova-message-selection-delete-menu { animation:none; }
+}

@@ -295,7 +295,7 @@ describe('profile editor polish', () => {
     expect(screen.getByRole('alert')).toHaveClass('is-closing');
     expect(screen.getByRole('alert')).toBeInTheDocument();
 
-    act(() => vi.advanceTimersByTime(190));
+    act(() => vi.advanceTimersByTime(220));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
@@ -1103,7 +1103,24 @@ describe('RealMessages friendship controls', () => {
     const onRelationshipChange = vi.fn();
     render(<RealMessages conversation={strangerConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} onRelationshipChange={onRelationshipChange} />);
 
-    expect(screen.getByRole('button', { name: 'Звонки доступны только друзьям' })).toBeDisabled();
+    const callButton = screen.getByRole('button', { name: 'Звонки доступны только друзьям' });
+    const callTooltip = screen.getByRole('tooltip', { name: 'Вы не в друзьях' });
+    expect(callButton).toBeDisabled();
+    expect(callButton).toHaveAttribute('aria-describedby', callTooltip.id);
+    expect(callButton.parentElement).toHaveClass('mova-tooltip', 'mova-tooltip--bottom');
+
+    await user.click(screen.getByRole('button', { name: 'Подробнее' }));
+    const detailsMenu = screen.getByRole('menu', { name: 'Действия с чатом' });
+    const voiceCallItem = within(detailsMenu).getByRole('menuitem', { name: 'Позвонить' });
+    const videoCallItem = within(detailsMenu).getByRole('menuitem', { name: 'Видеозвонок' });
+    const menuTooltips = within(detailsMenu).getAllByRole('tooltip', { name: 'Вы не в друзьях' });
+    expect(voiceCallItem).toBeDisabled();
+    expect(videoCallItem).toBeDisabled();
+    expect(menuTooltips).toHaveLength(2);
+    expect(voiceCallItem).toHaveAttribute('aria-describedby', menuTooltips[0].id);
+    expect(videoCallItem).toHaveAttribute('aria-describedby', menuTooltips[1].id);
+    await user.click(screen.getByRole('button', { name: 'Подробнее' }));
+
     await user.click(screen.getByRole('button', { name: 'Добавить в друзья' }));
 
     await waitFor(() => expect(requestFriend).toHaveBeenCalledWith(stranger.id));
@@ -1383,6 +1400,143 @@ describe('RealMessages attachments', () => {
     expect(screen.getByRole('button', { name: 'Скорость воспроизведения 1.5×' })).toBeVisible();
   });
 
+  it('opens one functional top player with volume, mute, seek, speed and close controls', async () => {
+    window.localStorage.removeItem('mova-voice-message-volume');
+    const user = userEvent.setup();
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const message: AppMessage = {
+      id: 'voice-player-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: '',
+      attachment: {
+        name: 'Голосовое сообщение.webm',
+        type: 'audio/webm;codecs=opus',
+        size: 2048,
+        url: '/uploads/player-voice.webm',
+        durationMs: 12_400,
+        waveform: [0.2, 0.6, 0.35, 0.8, 0.45, 1, 0.4, 0.7],
+      },
+      createdAt: new Date().toISOString(),
+      author: friend,
+    };
+    const { container } = renderChat([message]);
+
+    await user.click(screen.getByRole('button', { name: 'Воспроизвести голосовое сообщение' }));
+    expect(play).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('region', { name: 'Проигрыватель голосового сообщения' })).toBeVisible();
+    expect(screen.getByText(friend.name, { selector: '.mova-voice-player__identity strong' })).toBeVisible();
+
+    const audio = container.querySelector<HTMLAudioElement>('.mova-voice-player__audio')!;
+    expect(audio.volume).toBe(1);
+    const mute = screen.getByRole('button', { name: 'Выключить звук голосового сообщения' });
+    await user.click(mute);
+    expect(audio.muted).toBe(true);
+    expect(screen.getByRole('button', { name: 'Включить звук голосового сообщения' })).toHaveAttribute('aria-pressed', 'true');
+    expect(container.querySelector('.mova-voice-player__volume')).toHaveClass('is-open');
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Громкость голосового сообщения' }), { target: { value: '0.35' } });
+    expect(audio.volume).toBe(0.35);
+    expect(audio.muted).toBe(false);
+    fireEvent.pointerMove(window, { clientX: 500, clientY: 500, pointerType: 'mouse' });
+    expect(container.querySelector('.mova-voice-player__volume')).not.toHaveClass('is-open');
+
+    await user.click(screen.getByRole('button', { name: 'Скорость голосового сообщения 1X' }));
+    expect(screen.getByRole('menu', { name: 'Скорость воспроизведения' })).toBeVisible();
+    await user.click(screen.getByRole('menuitemradio', { name: '2x' }));
+    expect(audio.playbackRate).toBe(2);
+    expect(screen.getByRole('button', { name: 'Скорость голосового сообщения 2X' })).toHaveTextContent('2X');
+    await user.click(screen.getByRole('button', { name: 'Скорость голосового сообщения 2X' }));
+    expect(screen.getByRole('menu', { name: 'Скорость воспроизведения' })).toBeVisible();
+    fireEvent.pointerMove(window, { clientX: 500, clientY: 500, pointerType: 'mouse' });
+    expect(screen.queryByRole('menu', { name: 'Скорость воспроизведения' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Вперёд на 10 секунд' }));
+    expect(audio.currentTime).toBe(10);
+    await user.click(screen.getByRole('button', { name: 'Закрыть голосовое сообщение' }));
+    expect(screen.queryByRole('region', { name: 'Проигрыватель голосового сообщения' })).not.toBeInTheDocument();
+    expect(container.querySelector('.mova-voice-player')).toHaveClass('is-closing');
+    expect(container.querySelector('.mova-real-thread')).not.toHaveClass('has-voice-player');
+    await waitFor(() => expect(container.querySelector('.mova-voice-player')).not.toBeInTheDocument());
+    expect(pause).toHaveBeenCalled();
+  });
+
+  it('closes the top player automatically when voice playback ends', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const message: AppMessage = {
+      id: 'finished-voice-player-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: '',
+      attachment: {
+        name: 'Голосовое сообщение.webm',
+        type: 'audio/webm;codecs=opus',
+        size: 2048,
+        url: '/uploads/finished-voice.webm',
+        durationMs: 4_000,
+        waveform: [0.2, 0.6, 0.35, 0.8],
+      },
+      createdAt: new Date().toISOString(),
+      author: friend,
+    };
+    const { container } = renderChat([message]);
+
+    await user.click(screen.getByRole('button', { name: 'Воспроизвести голосовое сообщение' }));
+    expect(await screen.findByRole('region', { name: 'Проигрыватель голосового сообщения' })).toBeVisible();
+
+    fireEvent.ended(container.querySelector<HTMLAudioElement>('.mova-voice-player__audio')!);
+
+    expect(screen.queryByRole('region', { name: 'Проигрыватель голосового сообщения' })).not.toBeInTheDocument();
+    expect(container.querySelector('.mova-voice-player')).toHaveClass('is-closing');
+    await waitFor(() => expect(container.querySelector('.mova-voice-player')).not.toBeInTheDocument());
+  });
+
+  it('keeps voice playback and its top player active when another conversation opens', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const voiceMessage: AppMessage = {
+      id: 'persistent-voice-player-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      content: '',
+      attachment: {
+        name: 'Голосовое сообщение.webm',
+        type: 'audio/webm;codecs=opus',
+        size: 2048,
+        url: '/uploads/persistent-voice.webm',
+        durationMs: 8_000,
+        waveform: [0.2, 0.6, 0.35, 0.8],
+      },
+      createdAt: new Date().toISOString(),
+      author: friend,
+    };
+    const otherFriend = { ...friend, id: 'other-voice-friend', name: 'Другой контакт' };
+    const otherConversation: AppConversation = {
+      ...conversation,
+      id: 'other-voice-chat',
+      title: otherFriend.name,
+      members: [currentUser, otherFriend],
+    };
+    const rendered = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[voiceMessage]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Воспроизвести голосовое сообщение' }));
+    expect(await screen.findByRole('region', { name: 'Проигрыватель голосового сообщения' })).toBeVisible();
+    const pausesBeforeSwitch = pause.mock.calls.length;
+
+    rendered.rerender(<RealMessages conversation={otherConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    expect(screen.getByRole('region', { name: 'Проигрыватель голосового сообщения' })).toBeVisible();
+    expect(rendered.container.querySelector('.mova-voice-player__audio')).toHaveAttribute('data-voice-message-id', voiceMessage.id);
+    expect(pause).toHaveBeenCalledTimes(pausesBeforeSwitch);
+  });
+
   it('hides the voice dot after the current user has listened', () => {
     const message: AppMessage = {
       id: 'listened-voice-message',
@@ -1450,7 +1604,7 @@ describe('RealMessages composer behavior', () => {
 
     scrollHeight = 24;
     fireEvent.change(composer, { target: { value: 'Коротко' } });
-    expect(composer).toHaveStyle({ height: '44px', overflowY: 'hidden' });
+    expect(composer).toHaveStyle({ height: '40px', overflowY: 'hidden' });
   });
 
   it('renders Apple emoji in the composer while keeping the textarea editable', () => {
@@ -1752,8 +1906,7 @@ describe('RealMessages replies and editing', () => {
 
     expect(screen.getByText('изменено')).toBeVisible();
     expect(container.querySelector('.mova-message-meta .mova-message-edited')).toHaveTextContent('изменено');
-    fireEvent.contextMenu(screen.getByText('Текст с опечаткой').closest('article')!);
-    await user.click(screen.getByRole('menuitem', { name: 'Редактировать' }));
+    await user.click(screen.getByRole('button', { name: 'Редактировать сообщение' }));
     const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
     await user.clear(composer);
     await user.type(composer, 'Исправленный текст');
@@ -1764,9 +1917,8 @@ describe('RealMessages replies and editing', () => {
 
   it('cancels editing with Escape and keeps the established empty composer state', async () => {
     const user = userEvent.setup();
-    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[own]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={vi.fn().mockResolvedValue(undefined)} />);
-    fireEvent.contextMenu(container.querySelector('.mova-real-message')!);
-    await user.click(screen.getByRole('menuitem', { name: 'Редактировать' }));
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[own]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={vi.fn().mockResolvedValue(undefined)} />);
+    await user.click(screen.getByRole('button', { name: 'Редактировать сообщение' }));
     const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
 
     expect(composer).toHaveValue('Текст с опечаткой');
@@ -1831,24 +1983,164 @@ describe('RealMessages context actions and selection', () => {
     expect(screen.getByText('Редактирование сообщения')).toBeVisible();
   });
 
-  it('keeps Reply and Edit keyboard-accessible in the existing context menu', async () => {
+  it('shows the requested context actions and keeps them keyboard-accessible', async () => {
     const user = userEvent.setup();
     const onEdit = vi.fn().mockResolvedValue(undefined);
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming, own]} onSend={vi.fn().mockResolvedValue(undefined)} onEdit={onEdit} />);
 
     fireEvent.contextMenu(container.querySelectorAll('.mova-real-message')[0]);
+    expect(within(screen.getByRole('menu', { name: 'Действия с сообщением' })).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Ответить',
+      'Копировать',
+      'Перевести',
+      'Закрепить',
+      'Переслать',
+      'Выбрать',
+      'Удалить',
+    ]);
     const replyAction = screen.getByRole('menuitem', { name: 'Ответить' });
-    expect(screen.queryByRole('menuitem', { name: 'Редактировать' })).not.toBeInTheDocument();
     replyAction.focus();
     await user.keyboard('{Enter}');
     expect(screen.getByText('В ответ Друг')).toBeVisible();
 
     await user.click(screen.getByRole('button', { name: 'Отменить ответ' }));
-    fireEvent.contextMenu(container.querySelectorAll('.mova-real-message')[1]);
-    const editAction = screen.getByRole('menuitem', { name: 'Редактировать' });
+    const editAction = screen.getByRole('button', { name: 'Редактировать сообщение' });
     editAction.focus();
     await user.keyboard('{Enter}');
     expect(screen.getByText('Редактирование сообщения')).toBeVisible();
+  });
+
+  it('hides the message context menu after the pointer moves sufficiently far away', () => {
+    const { container } = renderChat([incoming]);
+    fireEvent.contextMenu(container.querySelector('.mova-real-message')!, { clientX: 120, clientY: 120 });
+    expect(screen.getByRole('menu', { name: 'Действия с сообщением' })).toBeVisible();
+
+    fireEvent.pointerMove(window, { clientX: 170, clientY: 160, pointerType: 'mouse' });
+    expect(screen.getByRole('menu', { name: 'Действия с сообщением' })).toBeVisible();
+    fireEvent.pointerMove(window, { clientX: 700, clientY: 650, pointerType: 'mouse' });
+    expect(screen.queryByRole('menu', { name: 'Действия с сообщением' })).not.toBeInTheDocument();
+  });
+
+  it('copies, pins and selects a message from the context menu', async () => {
+    const user = userEvent.setup();
+    const onPinMessage = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming]} onSend={vi.fn().mockResolvedValue(undefined)} onPinMessage={onPinMessage} />);
+    const article = container.querySelector('.mova-real-message')!;
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText');
+
+    fireEvent.contextMenu(article);
+    await user.click(screen.getByRole('menuitem', { name: 'Копировать' }));
+    expect(writeText).toHaveBeenCalledWith(incoming.content);
+
+    fireEvent.contextMenu(article);
+    await user.click(screen.getByRole('menuitem', { name: 'Закрепить' }));
+    expect(onPinMessage).toHaveBeenCalledWith(incoming.id, true);
+
+    fireEvent.contextMenu(article);
+    await user.click(screen.getByRole('menuitem', { name: 'Выбрать' }));
+    expect(article).toHaveClass('is-selectable', 'is-selected');
+    expect(screen.getByText('1 сообщение')).toBeVisible();
+  });
+
+  it('shows bottom bulk actions, deletes own selections for everyone and exits with Escape', async () => {
+    const user = userEvent.setup();
+    const onDeleteMessage = vi.fn().mockResolvedValue(undefined);
+    const secondOwn = { ...own, id: 'quick-own-second', content: 'Второе своё сообщение' };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[own, secondOwn]} onSend={vi.fn().mockResolvedValue(undefined)} onDeleteMessage={onDeleteMessage} onForwardMessage={vi.fn().mockResolvedValue(undefined)} />);
+    const articles = container.querySelectorAll('.mova-real-message');
+
+    fireEvent.contextMenu(articles[0]);
+    await user.click(screen.getByRole('menuitem', { name: 'Выбрать' }));
+    await user.click(articles[1]);
+    expect(screen.getByRole('toolbar', { name: 'Действия с выбранными сообщениями' })).toBeVisible();
+    expect(screen.getByText('2 сообщения')).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: 'Удалить выбранные сообщения' }));
+    expect(screen.getByRole('menu', { name: 'Как удалить сообщения' })).toBeVisible();
+    await user.click(screen.getByRole('menuitem', { name: 'Удалить у всех' }));
+    await user.click(screen.getByRole('button', { name: 'Удалить у всех' }));
+    expect(onDeleteMessage).toHaveBeenCalledTimes(2);
+    expect(onDeleteMessage).toHaveBeenNthCalledWith(1, own.id, 'everyone');
+    expect(onDeleteMessage).toHaveBeenNthCalledWith(2, secondOwn.id, 'everyone');
+    expect(screen.queryByRole('toolbar', { name: 'Действия с выбранными сообщениями' })).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(articles[0]);
+    await user.click(screen.getByRole('menuitem', { name: 'Выбрать' }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('toolbar', { name: 'Действия с выбранными сообщениями' })).not.toBeInTheDocument();
+    expect(articles[0]).not.toHaveClass('is-selectable', 'is-selected');
+  });
+
+  it('forwards every selected message from the bottom action bar', async () => {
+    const user = userEvent.setup();
+    const destination: AppConversation = { ...conversation, id: 'bulk-destination', kind: 'group', title: 'Команда', members: [currentUser, friend] };
+    const onForwardMessage = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incoming, own]} availableConversations={[conversation, destination]} onSend={vi.fn().mockResolvedValue(undefined)} onForwardMessage={onForwardMessage} />);
+    const articles = container.querySelectorAll('.mova-real-message');
+
+    fireEvent.contextMenu(articles[0]);
+    await user.click(screen.getByRole('menuitem', { name: 'Выбрать' }));
+    await user.click(articles[1]);
+    await user.click(screen.getByRole('button', { name: 'Переслать выбранные сообщения' }));
+    expect(screen.getByRole('dialog', { name: 'Переслать 2 сообщения' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: /Команда/ }));
+
+    expect(onForwardMessage).toHaveBeenCalledTimes(2);
+    expect(onForwardMessage).toHaveBeenNthCalledWith(1, incoming.id, destination.id);
+    expect(onForwardMessage).toHaveBeenNthCalledWith(2, own.id, destination.id);
+    expect(screen.queryByRole('toolbar', { name: 'Действия с выбранными сообщениями' })).not.toBeInTheDocument();
+  });
+
+  it('renders the pinned message bar with the reference thumbnail and numbered title', () => {
+    const pinnedImage: AppMessage = {
+      ...incoming,
+      id: 'pinned-image',
+      content: 'Фотография',
+      pinnedAt: '2026-08-20T18:10:00.000Z',
+      attachment: { name: 'photo.png', type: 'image/png', size: 1024, url: '/uploads/photo.png' },
+    };
+    const olderPinned: AppMessage = {
+      ...incoming,
+      id: 'older-pinned',
+      content: 'Ссылка',
+      pinnedAt: '2026-08-20T18:00:00.000Z',
+    };
+    const { container } = renderChat([olderPinned, pinnedImage]);
+
+    const pinned = screen.getByLabelText('Закреплённое сообщение');
+    expect(pinned).toHaveTextContent('Закреплённое сообщение #1');
+    expect(pinned).toHaveTextContent('Фотография');
+    expect(container.querySelector('.mova-pinned-message__thumbnail img')).toHaveAttribute('src', '/uploads/photo.png');
+  });
+
+  it('forwards to a chosen chat and confirms deletion', async () => {
+    const user = userEvent.setup();
+    const destination: AppConversation = { ...conversation, id: 'destination', kind: 'group', title: 'Команда', members: [currentUser, friend] };
+    const onForwardMessage = vi.fn().mockResolvedValue(undefined);
+    const onDeleteMessage = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <RealMessages
+        conversation={conversation}
+        currentUser={currentUser}
+        messages={[incoming]}
+        availableConversations={[conversation, destination]}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+        onForwardMessage={onForwardMessage}
+        onDeleteMessage={onDeleteMessage}
+      />,
+    );
+    const article = container.querySelector('.mova-real-message')!;
+
+    fireEvent.contextMenu(article);
+    await user.click(screen.getByRole('menuitem', { name: 'Переслать' }));
+    await user.click(screen.getByRole('button', { name: /Команда/ }));
+    expect(onForwardMessage).toHaveBeenCalledWith(incoming.id, destination.id);
+
+    fireEvent.contextMenu(article);
+    await user.click(screen.getByRole('menuitem', { name: 'Удалить' }));
+    expect(screen.getByRole('dialog', { name: 'Удалить сообщение?' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Удалить у себя' }));
+    expect(onDeleteMessage).toHaveBeenCalledWith(incoming.id, 'self');
   });
 
   it('keeps selected and search-highlight as separate states', async () => {
@@ -1952,8 +2244,7 @@ describe('RealMessages ArrowUp editing', () => {
     const user = userEvent.setup();
     const { container } = renderEditable([olderOwn, latestOwn]);
 
-    fireEvent.contextMenu(container.querySelectorAll('.mova-real-message')[0]);
-    await user.click(screen.getByRole('menuitem', { name: 'Редактировать' }));
+    await user.click(screen.getAllByRole('button', { name: 'Редактировать сообщение' })[0]);
     const composer = screen.getByRole('textbox', { name: 'Сообщение в Друг' });
     await user.clear(composer);
     await user.keyboard('{ArrowUp}');

@@ -141,4 +141,19 @@ describe('interactive primitives', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Закрыть уведомление' }));
     expect(document.querySelector('.mova-toast.is-closing')).toBeInTheDocument();
   });
+
+  it('automatically closes a toast with an exit animation after its display time', () => {
+    vi.useFakeTimers();
+    render(<ToastProvider><ToastHarness /></ToastProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Показать' }));
+
+    act(() => vi.advanceTimersByTime(3599));
+    expect(document.querySelector('.mova-toast')).not.toHaveClass('is-closing');
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.querySelector('.mova-toast')).toHaveClass('is-closing');
+    act(() => vi.advanceTimersByTime(219));
+    expect(document.querySelector('.mova-toast')).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.querySelector('.mova-toast')).not.toBeInTheDocument();
+  });
 });

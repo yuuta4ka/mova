@@ -12,6 +12,26 @@ afterEach(() => {
 });
 
 describe('message attachments', () => {
+  it('uses the dedicated endpoints for pinning, forwarding and deletion', async () => {
+    const message = { id: 'message', conversationId: 'chat', authorId: 'me', author: { id: 'me' } };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: { ...message, pinnedAt: '2026-08-20T00:00:00.000Z' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: { ...message, conversationId: 'target' } }), { status: 201, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ type: 'message:delete', conversationId: 'chat', messageId: 'message', userId: 'me', deletedAt: '2026-08-20T00:00:00.000Z', scope: 'self', lastMessage: null }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ type: 'message:delete', conversationId: 'chat', messageId: 'message', userId: 'me', deletedAt: '2026-08-20T00:00:00.000Z', scope: 'everyone', lastMessage: null }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.setMessagePinned('chat', 'message', true);
+    await api.forwardMessage('chat', 'message', 'target');
+    await api.deleteMessage('chat', 'message');
+    await api.deleteMessage('chat', 'message', 'everyone');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/conversations/chat/messages/message/pin', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/conversations/chat/messages/message/forward', expect.objectContaining({ method: 'POST', body: JSON.stringify({ conversationId: 'target' }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/conversations/chat/messages/message', expect.objectContaining({ method: 'DELETE' }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/conversations/chat/messages/message?scope=everyone', expect.objectContaining({ method: 'DELETE' }));
+  });
+
   it('marks a voice message as listened through its dedicated receipt endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       conversationId: 'chat',

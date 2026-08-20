@@ -34,13 +34,13 @@
   position:relative;
   display:flex;
   box-sizing:border-box;
-  width:calc(100% - 32px);
-  max-width:min(780px,var(--mova-chat-content-width));
+  width:calc(100% - 28px);
+  max-width:696px;
   flex:0 0 auto;
   align-self:center;
   flex-direction:column;
   gap:0;
-  margin:0 0 14px;
+  margin:0 0 8px;
   padding:0;
   background:transparent;
   border:0;
@@ -63,8 +63,8 @@
   margin-bottom:max(8px,env(safe-area-inset-bottom));
 }
 .mova-tg-app.is-mobile-navigation>.mova-real-thread:not(.is-call-chat-open)>.mova-real-composer>.mova-composer-panel {
-  border-radius:17px;
-  box-shadow:0 5px 18px rgba(0,0,0,.16);
+  border-radius:24px;
+  box-shadow:none;
 }
 .mova-real-typing {
   display:flex;
@@ -90,13 +90,13 @@
   min-width:0;
   flex-direction:column;
   padding:4px 5px;
-  background:color-mix(in srgb,var(--mova-background-color,#20293c) 22%,#181a20);
-  border:1px solid rgba(255,255,255,.1);
-  border-radius:18px;
-  box-shadow:0 6px 20px rgba(0,0,0,.16);
-  transition:border-color 160ms ease,background 160ms ease,box-shadow 160ms ease;
+  background:#212121;
+  border:0;
+  border-radius:24px;
+  box-shadow:none;
+  transition:background 160ms ease;
 }
-.mova-composer-panel:focus-within { background:color-mix(in srgb,var(--mova-background-color,#20293c) 28%,#1a1c22);border-color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 38%,rgba(255,255,255,.1));box-shadow:0 7px 22px rgba(0,0,0,.18),0 0 0 2px color-mix(in srgb,var(--mova-accent-color,#8774e1) 10%,transparent); }
+.mova-composer-panel:focus-within { background:#212121;box-shadow:none; }
 .mova-composer-context,.mova-attachment-draft {
   display:flex;
   align-items:center;
@@ -132,7 +132,7 @@
 }
 .mova-composer-row__remove:hover,.mova-emoji-picker__close:hover,.mova-emoji-picker__header label>button:hover { color:#f1eff6;background:rgba(255,255,255,.075); }
 .mova-composer-input-row { display:flex;align-items:flex-end;gap:3px;min-width:0; }
-.mova-composer-input-row>.mova-icon-button,.mova-composer-send { display:grid;place-items:center;width:40px;height:40px;flex:0 0 40px;align-self:flex-end;padding:0;border:1px solid transparent;border-radius:13px; }
+.mova-composer-input-row>.mova-icon-button,.mova-composer-send { display:grid;place-items:center;width:40px;height:40px;flex:0 0 40px;align-self:flex-end;padding:0;border:1px solid transparent;border-radius:20px; }
 .mova-composer-input-row>.mova-icon-button { color:#aaa;background:transparent;transition:color 140ms ease,background 140ms ease,border-color 140ms ease,transform 140ms ease; }
 .mova-composer-input-row>.mova-icon-button:hover { color:#eee;background:rgba(255,255,255,.065);border-color:rgba(255,255,255,.055); }
 .mova-composer-input-row>.mova-icon-button:active { transform:scale(.92); }
@@ -149,11 +149,11 @@
   display:block;
   width:100%;
   min-width:0;
-  min-height:44px;
+  min-height:40px;
   max-height:120px;
   flex:1;
   margin:0;
-  padding:10px 6px;
+  padding:9px 6px;
   color:#f2f2f4;
   background:transparent;
   border:0;
@@ -170,7 +170,7 @@
   position:absolute;
   z-index:0;
   inset:0;
-  padding:10px 6px;
+  padding:9px 6px;
   color:#f2f2f4;
   font:inherit;
   font-size:16px;
@@ -259,7 +259,7 @@
   .mova-tg-app .mova-real-composer { width:calc(100% - 16px);max-width:none;margin-bottom:max(8px,env(safe-area-inset-bottom));background:transparent; }
   .mova-real-typing { height:23px;flex-basis:23px;padding-inline:9px;font-size:11px; }
   .mova-real-typing.is-empty { height:0;flex-basis:0;padding:0; }
-  .mova-composer-panel { border-width:1px;border-radius:17px;box-shadow:0 5px 18px rgba(0,0,0,.16); }
+  .mova-composer-panel { border-width:0;border-radius:24px;box-shadow:none; }
   .mova-composer-context,.mova-attachment-draft { min-height:44px;margin-inline:2px; }
   .mova-emoji-picker[data-layout="sheet"] { position:fixed;right:0;bottom:0;left:0;width:100%;max-width:none;min-height:445px;padding:12px 12px max(12px,env(safe-area-inset-bottom));border-width:1px 0 0;border-radius:24px 24px 0 0;transform-origin:bottom center; }
   .mova-emoji-picker[data-layout="sheet"] .mova-emoji-picker__header label { height:44px; }

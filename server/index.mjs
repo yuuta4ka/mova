@@ -378,7 +378,7 @@ function messageDto(message, readStates = database.readStates(message.conversati
 }
 function conversationDto(conversation, userId) {
   const members = database.members(conversation.id).map((member) => userDto(member, userId));
-  const storedLastMessage = database.lastMessage(conversation.id);
+  const storedLastMessage = database.lastMessage(conversation.id, userId);
   const lastMessage = storedLastMessage
     ? {
         ...storedLastMessage,
@@ -991,7 +991,7 @@ async function handleApi(request, response) {
       if (cursor === null) return json(response, 400, { error: 'Некорректный курсор истории' });
       const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 80)));
       const readStates = database.readStates(messageMatch[1]);
-      const page = database.messagePage(messageMatch[1], { limit, before: cursor });
+      const page = database.messagePage(messageMatch[1], { limit, before: cursor, viewerId: user.id });
       return json(response, 200, { ...page, messages: page.messages.map((message) => messageDto(message, readStates, user.id)) });
     }
     if (messageMatch && request.method === 'POST') {
@@ -1061,6 +1061,46 @@ async function handleApi(request, response) {
       if (created) broadcastToConversation(message.conversationId, { type: 'message:voice-listened', ...result });
       return json(response, 200, result);
     }
+    const pinMessageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/pin$/);
+    if (pinMessageMatch && !isMember(user.id, pinMessageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
+    if (pinMessageMatch && (request.method === 'POST' || request.method === 'DELETE')) {
+      const message = database.getMessage(pinMessageMatch[2], pinMessageMatch[1]);
+      if (!message) return json(response, 404, { error: 'Сообщение не найдено' });
+      if (message.kind && message.kind !== 'user') return json(response, 400, { error: 'Системное сообщение нельзя закрепить' });
+      const pinnedAt = request.method === 'POST' ? new Date().toISOString() : null;
+      const updated = database.setMessagePinned(message.id, message.conversationId, user.id, pinnedAt);
+      const dto = messageDto(updated, undefined, user.id);
+      broadcastMessage('message:update', updated);
+      return json(response, 200, { message: dto });
+    }
+    const forwardMessageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/forward$/);
+    if (forwardMessageMatch && !isMember(user.id, forwardMessageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
+    if (forwardMessageMatch && request.method === 'POST') {
+      const source = database.getMessage(forwardMessageMatch[2], forwardMessageMatch[1]);
+      if (!source) return json(response, 404, { error: 'Сообщение не найдено' });
+      if (source.kind && source.kind !== 'user') return json(response, 400, { error: 'Системное сообщение нельзя переслать' });
+      const data = await body(request);
+      const targetConversationId = String(data.conversationId || '');
+      if (!targetConversationId || !isMember(user.id, targetConversationId)) return json(response, 403, { error: 'Нет доступа к выбранному чату' });
+      if (!canInteractInConversation(targetConversationId, user.id)) return json(response, 403, { error: 'Обмен сообщениями недоступен из-за блокировки' });
+      const wasEmptyConversation = !database.lastMessage(targetConversationId);
+      const createdAt = new Date().toISOString();
+      const forwarded = {
+        id: id('msg'),
+        conversationId: targetConversationId,
+        authorId: user.id,
+        content: source.content,
+        ...(source.attachment ? { attachment: source.attachment } : {}),
+        createdAt,
+        sentAt: createdAt,
+        readBy: [],
+      };
+      database.insertMessage(forwarded);
+      const dto = messageDto(forwarded, undefined, user.id);
+      if (wasEmptyConversation) broadcastToConversation(targetConversationId, { type: 'conversation:new', conversationId: targetConversationId });
+      broadcastMessage('message:new', forwarded);
+      return json(response, 201, { message: dto });
+    }
     const editMessageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/);
     if (editMessageMatch && !isMember(user.id, editMessageMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (editMessageMatch && request.method === 'PATCH') {
@@ -1083,6 +1123,26 @@ async function handleApi(request, response) {
       const dto = messageDto(message, undefined, user.id);
       broadcastMessage('message:update', message);
       return json(response, 200, { message: dto });
+    }
+    if (editMessageMatch && request.method === 'DELETE') {
+      const message = database.getMessage(editMessageMatch[2], editMessageMatch[1]);
+      if (!message) return json(response, 404, { error: 'Сообщение не найдено' });
+      const deletedAt = new Date().toISOString();
+      const scope = url.searchParams.get('scope') === 'everyone' ? 'everyone' : 'self';
+      if (scope === 'everyone' && message.authorId !== user.id) return json(response, 403, { error: 'У всех можно удалить только своё сообщение' });
+      const deletionTargets = scope === 'everyone'
+        ? database.hideMessageForEveryone(message.id, message.conversationId, deletedAt)
+        : (database.hideMessage(message.id, message.conversationId, user.id, deletedAt) ? [user.id] : []);
+      let requesterEvent = null;
+      for (const targetUserId of deletionTargets) {
+        const storedLastMessage = database.lastMessage(message.conversationId, targetUserId);
+        const lastMessageDto = storedLastMessage ? messageDto(storedLastMessage, undefined, targetUserId) : null;
+        const lastMessage = lastMessageDto ? (({ author: _author, ...preview }) => preview)(lastMessageDto) : null;
+        const event = { type: 'message:delete', conversationId: message.conversationId, messageId: message.id, userId: targetUserId, deletedAt, scope, lastMessage };
+        if (targetUserId === user.id) requesterEvent = event;
+        sendToUser(targetUserId, event);
+      }
+      return json(response, 200, requesterEvent);
     }
     return json(response, 404, { error: 'Не найдено' });
   } catch (error) {

@@ -1,11 +1,11 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronUp, Clock, CloudOff, Copy, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Power, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
-import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, useToast } from './components/Primitives';
-import { formatVoiceDuration, isVoiceAttachment, VoiceMessage } from './components/VoiceMessage';
+import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, Tooltip, useToast } from './components/Primitives';
+import { formatVoiceDuration, isVoiceAttachment, useVoiceMessagePlayer, VoiceMessage, VoiceMessagePlayerBar, VoicePlaybackAudio } from './components/VoiceMessage';
 import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
 import { EmojiPicker } from './components/EmojiPicker';
 import { buildMediaGallery, MediaViewer } from './components/MediaViewer';
@@ -1824,18 +1824,16 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [call.createdAt, call.startedAt, callState]);
+  const callButton = (
+    <Button variant="secondary" size="sm" aria-label={canCall ? 'Позвонить' : 'Звонки доступны только друзьям'} disabled={!canCall} leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
+      Позвонить
+    </Button>
+  );
+  const callButtonWithHint = canCall ? callButton : <Tooltip label="Вы не в друзьях" side="bottom">{callButton}</Tooltip>;
   if (!sameConversation)
-    return (
-      <Button variant="secondary" size="sm" aria-label={canCall ? 'Позвонить' : 'Звонки доступны только друзьям'} title={canCall ? undefined : 'Добавьте пользователя в друзья, чтобы звонить'} disabled={!canCall} leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
-        Позвонить
-      </Button>
-    );
+    return callButtonWithHint;
   if (callState === 'idle')
-    return (
-      <Button variant="secondary" size="sm" aria-label={canCall ? 'Позвонить' : 'Звонки доступны только друзьям'} title={canCall ? undefined : 'Добавьте пользователя в друзья, чтобы звонить'} disabled={!canCall} leadingIcon={<Phone size={16} />} onClick={() => onStartCall(false)}>
-        Позвонить
-      </Button>
-    );
+    return callButtonWithHint;
   if (callState === 'available' && call.joined) return null;
   if (callState === 'available')
     return bannerHost
@@ -2502,6 +2500,10 @@ interface RealMessagesProps {
   onRetryHistory?: () => void;
   onLoadOlder?: () => Promise<void>;
   onEdit?: (messageId: string, content: string) => Promise<void>;
+  availableConversations?: AppConversation[];
+  onPinMessage?: (messageId: string, pinned: boolean) => Promise<void>;
+  onForwardMessage?: (messageId: string, conversationId: string) => Promise<void>;
+  onDeleteMessage?: (messageId: string, scope?: 'self' | 'everyone') => Promise<void>;
   onDeleteConversation?: () => void;
   onRelationshipChange?: (user: AppUser) => void;
   onMarkRead?: (throughMessageId: string) => Promise<void>;
@@ -2519,7 +2521,8 @@ interface RealMessagesViewProps extends RealMessagesProps {
   onStartCall: (video: boolean) => void;
 }
 
-function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, onDeleteConversation = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange }: RealMessagesViewProps) {
+function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, availableConversations = [], onPinMessage, onForwardMessage, onDeleteMessage, onDeleteConversation = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange }: RealMessagesViewProps) {
+  const toast = useToast();
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -2545,6 +2548,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [replyingTo, setReplyingTo] = useState<AppMessage | null>(null);
   const [editingMessage, setEditingMessage] = useState<AppMessage | null>(null);
   const [messageMenu, setMessageMenu] = useState<{ message: AppMessage; x: number; y: number } | null>(null);
+  const [forwardingMessages, setForwardingMessages] = useState<AppMessage[] | null>(null);
+  const [deletingMessages, setDeletingMessages] = useState<{ messages: AppMessage[]; scope: 'self' | 'everyone'; fromSelection: boolean } | null>(null);
+  const [selectionDeleteOpen, setSelectionDeleteOpen] = useState(false);
+  const [messageActionBusy, setMessageActionBusy] = useState(false);
   const [replyHighlightId, setReplyHighlightId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState(false);
   const [imagePreviewId, setImagePreviewId] = useState<string | null>(null);
@@ -2553,6 +2560,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [callChatOpen, setCallChatOpen] = useState(false);
   const [callChatUnread, setCallChatUnread] = useState(0);
   const voiceRecorder = useVoiceRecorder();
+  const voicePlayer = useVoiceMessagePlayer();
   const [callChatWidth, setCallChatWidth] = useState(() => {
     const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-call-chat-width');
     const saved = stored === null ? NaN : Number(stored);
@@ -2585,8 +2593,13 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const canCall = conversation.kind !== 'direct' || relationship === 'friend';
   const messageStructure = useMemo(() => getMessageStructure(messages), [messages]);
   const mediaGallery = useMemo(() => buildMediaGallery(messages), [messages]);
+  const pinnedMessages = useMemo(() => [...messages].filter((message) => message.pinnedAt).sort((left, right) => String(right.pinnedAt).localeCompare(String(left.pinnedAt))), [messages]);
+  const pinnedMessage = pinnedMessages[0] || null;
+  const forwardDestinations = useMemo(() => availableConversations.filter((item) => item.id !== conversation.id), [availableConversations, conversation.id]);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
   const matchingMessages = useMemo(() => (normalizedSearch ? messages.filter((message) => message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)).reverse() : []), [messages, normalizedSearch]);
+  const selectedMessageItems = useMemo(() => messages.filter((message) => selectedMessages.includes(message.id)), [messages, selectedMessages]);
+  const canDeleteSelectionForEveryone = selectedMessageItems.length > 0 && selectedMessageItems.every((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user'));
   const activeMatchId = matchingMessages[activeMatchIndex]?.id || matchingMessages[0]?.id;
   const matchCount = matchingMessages.length;
   const status = conversation.kind === 'direct' ? formatPresenceStatus(other) : `${conversation.members.length} участников`;
@@ -2602,6 +2615,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setProfileInfoOpen(false);
     setEmojiOpen(false);
     setMessageMenu(null);
+    setForwardingMessages(null);
+    setDeletingMessages(null);
+    setSelectionDeleteOpen(false);
     setImagePreviewId(null);
   }, [mobileActive]);
 
@@ -2639,15 +2655,39 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setMessageMenu(null);
     };
+    const closeWhenPointerLeaves = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') return;
+      const menuRight = messageMenu.x + 194;
+      const menuBottom = messageMenu.y + 234;
+      const horizontalDistance = event.clientX < messageMenu.x ? messageMenu.x - event.clientX : event.clientX > menuRight ? event.clientX - menuRight : 0;
+      const verticalDistance = event.clientY < messageMenu.y ? messageMenu.y - event.clientY : event.clientY > menuBottom ? event.clientY - menuBottom : 0;
+      if (Math.hypot(horizontalDistance, verticalDistance) > 88) setMessageMenu(null);
+    };
     window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
+    window.addEventListener('pointermove', closeWhenPointerLeaves, { passive: true });
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('pointermove', closeWhenPointerLeaves);
+    };
   }, [messageMenu]);
+
+  useEffect(() => {
+    if (!selectingMessages) return;
+    const closeSelection = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setSelectingMessages(false);
+      setSelectedMessages([]);
+      setSelectionDeleteOpen(false);
+    };
+    window.addEventListener('keydown', closeSelection);
+    return () => window.removeEventListener('keydown', closeSelection);
+  }, [selectingMessages]);
 
   useLayoutEffect(() => {
     const input = composerInput.current;
     if (!input) return;
     input.style.height = '0px';
-    const height = Math.min(120, Math.max(44, input.scrollHeight));
+    const height = Math.min(120, Math.max(40, input.scrollHeight));
     input.style.height = `${height}px`;
     input.style.overflowY = input.scrollHeight > 120 ? 'auto' : 'hidden';
   }, [value, editingMessage]);
@@ -2657,21 +2697,31 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     const header = threadHeaderRef.current;
     const composer = composerRef.current;
     if (!thread || !header || !composer) return;
+    const topOverlays = [header, ...thread.querySelectorAll<HTMLElement>('.mova-voice-player,.mova-pinned-message')];
     const updateOverlayMetrics = () => {
       const threadRect = thread.getBoundingClientRect();
-      const headerRect = header.getBoundingClientRect();
       const composerRect = composer.getBoundingClientRect();
-      thread.style.setProperty('--mova-chat-header-overlay-height', `${Math.max(0, headerRect.bottom - threadRect.top)}px`);
+      const overlayBottom = Math.max(...topOverlays.map((element) => element.getBoundingClientRect().bottom));
+      thread.style.setProperty('--mova-chat-header-overlay-height', `${Math.max(0, overlayBottom - threadRect.top)}px`);
       thread.style.setProperty('--mova-chat-composer-overlay-height', `${Math.max(0, threadRect.bottom - composerRect.top)}px`);
     };
     updateOverlayMetrics();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(updateOverlayMetrics);
-    observer.observe(thread);
-    observer.observe(header);
-    observer.observe(composer);
-    return () => observer.disconnect();
-  }, []);
+    let animationFrame = 0;
+    const transitionStartedAt = performance.now();
+    const followOverlayTransition = (timestamp: number) => {
+      updateOverlayMetrics();
+      if (timestamp - transitionStartedAt < 240) animationFrame = window.requestAnimationFrame(followOverlayTransition);
+    };
+    if (typeof window.requestAnimationFrame === 'function') animationFrame = window.requestAnimationFrame(followOverlayTransition);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateOverlayMetrics);
+    observer?.observe(thread);
+    topOverlays.forEach((element) => observer?.observe(element));
+    observer?.observe(composer);
+    return () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      observer?.disconnect();
+    };
+  }, [pinnedMessage?.id, voicePlayer.active?.id, voicePlayer.open]);
 
   const rememberComposerSelection = () => {
     const input = composerInput.current;
@@ -2725,6 +2775,99 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       input.focus();
       input.setSelectionRange(message.content.length, message.content.length);
     }, 0);
+  };
+  const copyMessage = async (message: AppMessage) => {
+    setMessageMenu(null);
+    const text = message.content || attachmentLabel(message.attachment) || 'Вложение';
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else {
+        const copyBuffer = document.createElement('textarea');
+        copyBuffer.value = text;
+        copyBuffer.style.position = 'fixed';
+        copyBuffer.style.opacity = '0';
+        document.body.append(copyBuffer);
+        copyBuffer.select();
+        const copied = document.execCommand('copy');
+        copyBuffer.remove();
+        if (!copied) throw new Error('Копирование недоступно');
+      }
+      toast.push('Сообщение скопировано.', 'success');
+    } catch {
+      toast.push('Не удалось скопировать сообщение.', 'danger');
+    }
+  };
+  const translateMessage = (message: AppMessage) => {
+    setMessageMenu(null);
+    if (!message.content.trim()) {
+      toast.push('В сообщении нет текста для перевода.', 'info');
+      return;
+    }
+    const targetLanguage = /[а-яё]/iu.test(message.content) ? 'en' : 'ru';
+    const url = new URL('https://translate.google.com/');
+    url.searchParams.set('sl', 'auto');
+    url.searchParams.set('tl', targetLanguage);
+    url.searchParams.set('text', message.content);
+    url.searchParams.set('op', 'translate');
+    window.open(url.toString(), '_blank', 'noopener,noreferrer');
+  };
+  const togglePinnedMessage = async (message: AppMessage) => {
+    setMessageMenu(null);
+    if (!onPinMessage) {
+      toast.push('Закрепление пока недоступно.', 'danger');
+      return;
+    }
+    setMessageActionBusy(true);
+    try {
+      const pinned = !message.pinnedAt;
+      await onPinMessage(message.id, pinned);
+      toast.push(pinned ? 'Сообщение закреплено.' : 'Сообщение откреплено.', 'success');
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : 'Не удалось изменить закрепление.', 'danger');
+    } finally {
+      setMessageActionBusy(false);
+    }
+  };
+  const openMessageSelection = (message: AppMessage) => {
+    setMessageMenu(null);
+    setSelectingMessages(true);
+    setSelectedMessages([message.id]);
+  };
+  const forwardMessageTo = async (targetConversationId: string) => {
+    if (!forwardingMessages?.length || !onForwardMessage || messageActionBusy) return;
+    setMessageActionBusy(true);
+    try {
+      await Promise.all(forwardingMessages.map((message) => onForwardMessage(message.id, targetConversationId)));
+      const count = forwardingMessages.length;
+      setForwardingMessages(null);
+      setSelectingMessages(false);
+      setSelectedMessages([]);
+      toast.push(count === 1 ? 'Сообщение переслано.' : `${count} ${russianCount(count, 'сообщение переслано', 'сообщения пересланы', 'сообщений пересланы')}.`, 'success');
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : 'Не удалось переслать сообщения.', 'danger');
+    } finally {
+      setMessageActionBusy(false);
+    }
+  };
+  const deleteChosenMessages = async () => {
+    if (!deletingMessages?.messages.length || !onDeleteMessage || messageActionBusy) return;
+    setMessageActionBusy(true);
+    try {
+      await Promise.all(deletingMessages.messages.map((message) => onDeleteMessage(message.id, deletingMessages.scope)));
+      const count = deletingMessages.messages.length;
+      const fromSelection = deletingMessages.fromSelection;
+      setDeletingMessages(null);
+      if (fromSelection) {
+        setSelectingMessages(false);
+        setSelectedMessages([]);
+        setSelectionDeleteOpen(false);
+      }
+      toast.push(count === 1 ? 'Сообщение удалено.' : `${count} ${russianCount(count, 'сообщение удалено', 'сообщения удалены', 'сообщений удалены')}.`, 'success');
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : 'Не удалось удалить сообщения.', 'danger');
+    } finally {
+      setMessageActionBusy(false);
+    }
   };
 
   const jumpToMessage = useCallback((messageId: string) => {
@@ -2987,6 +3130,12 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setReplyingTo(null);
     setEditingMessage(null);
     setEmojiOpen(false);
+    setMessageMenu(null);
+    setForwardingMessages(null);
+    setDeletingMessages(null);
+    setSelectionDeleteOpen(false);
+    setSelectingMessages(false);
+    setSelectedMessages([]);
     setImagePreviewId(null);
     composerSelection.current = { start: 0, end: 0 };
     setMuted(localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
@@ -3159,9 +3308,20 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       : relationship === 'friend'
         ? 'Удалить из друзей'
         : 'Добавить в друзья';
+  const callMenuItem = (video: boolean) => {
+    const label = video ? 'Видеозвонок' : 'Позвонить';
+    const item = (
+      <button type="button" role="menuitem" disabled={!canCall} onClick={() => startCall(video)}>
+        {video ? <Video size={22} /> : <Phone size={22} />}
+        <span>{label}</span>
+      </button>
+    );
+    return canCall ? item : <Tooltip label="Вы не в друзьях">{item}</Tooltip>;
+  };
 
   return (
-    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen ? 'is-call-chat-open' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-chat-width': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
+    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen ? 'is-call-chat-open' : ''} ${voicePlayer.open ? 'has-voice-player' : ''} ${pinnedMessage ? 'has-pinned-message' : ''} ${selectingMessages ? 'is-selecting-messages' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-chat-width': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
+      <VoicePlaybackAudio player={voicePlayer} />
       {draggingFile && (
         <div className="mova-file-drop-overlay">
           <Upload size={28} />
@@ -3169,6 +3329,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           <span>Изображение или файл до 8 МБ</span>
         </div>
       )}
+      <VoiceMessagePlayerBar player={voicePlayer} />
       <header ref={threadHeaderRef} className="mova-real-thread__header">
         {onMobileBack && (
           <IconButton label="К списку диалогов" className="mova-mobile-chat-back" onClick={onMobileBack}>
@@ -3391,14 +3552,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             <span>{muted ? 'Включить уведомления' : 'Выключить уведомления'}</span>
             {muted && <Check size={17} />}
           </button>
-          <button type="button" role="menuitem" disabled={!canCall} title={canCall ? undefined : 'Звонки доступны только друзьям'} onClick={() => startCall(false)}>
-            <Phone size={22} />
-            <span>Позвонить</span>
-          </button>
-          <button type="button" role="menuitem" disabled={!canCall} title={canCall ? undefined : 'Звонки доступны только друзьям'} onClick={() => startCall(true)}>
-            <Video size={22} />
-            <span>Видеозвонок</span>
-          </button>
+          {callMenuItem(false)}
+          {callMenuItem(true)}
           <button
             type="button"
             role="menuitem"
@@ -3439,19 +3594,69 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           onDeleteConversation();
         }}
       />
+      {pinnedMessage && (
+        <div className="mova-pinned-message" aria-label="Закреплённое сообщение">
+          <button type="button" className="mova-pinned-message__jump" onClick={() => jumpToMessage(pinnedMessage.id)}>
+            <span className="mova-pinned-message__pin"><Pin size={19} aria-hidden="true" /></span>
+            <i className="mova-pinned-message__accent" aria-hidden="true" />
+            {pinnedMessage.attachment?.type.startsWith('image/') && (
+              <CachedImage className="mova-pinned-message__thumbnail" src={attachmentSource(pinnedMessage.attachment)} alt="" />
+            )}
+            <span className="mova-pinned-message__copy">
+              <strong>Закреплённое сообщение{pinnedMessages.length > 1 ? ' #1' : ''}</strong>
+              <small><AppleEmoji text={pinnedMessage.content || attachmentLabel(pinnedMessage.attachment) || 'Вложение'} /></small>
+            </span>
+          </button>
+          <button type="button" className="mova-pinned-message__close" aria-label="Открепить сообщение" disabled={messageActionBusy} onClick={() => void togglePinnedMessage(pinnedMessage)}>
+            <X size={17} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {selectingMessages && (
-        <div className="mova-message-selection-bar">
+        <div className="mova-message-selection-bar" role="toolbar" aria-label="Действия с выбранными сообщениями">
+          <div className="mova-message-selection-bar__delete" onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) setSelectionDeleteOpen(false);
+          }}>
+            <button
+              type="button"
+              className="is-danger"
+              aria-label="Удалить выбранные сообщения"
+              aria-haspopup="menu"
+              aria-expanded={selectionDeleteOpen}
+              disabled={!selectedMessages.length || messageActionBusy || !onDeleteMessage}
+              onClick={() => setSelectionDeleteOpen((open) => !open)}
+            >
+              <Trash2 size={21} />
+            </button>
+            {selectionDeleteOpen && (
+              <div className="mova-message-selection-delete-menu" role="menu" aria-label="Как удалить сообщения">
+                <button type="button" role="menuitem" onClick={() => {
+                  setDeletingMessages({ messages: selectedMessageItems, scope: 'self', fromSelection: true });
+                  setSelectionDeleteOpen(false);
+                }}>Удалить у себя</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="is-danger"
+                  disabled={!canDeleteSelectionForEveryone}
+                  title={canDeleteSelectionForEveryone ? undefined : 'У всех можно удалить только свои сообщения'}
+                  onClick={() => {
+                    setDeletingMessages({ messages: selectedMessageItems, scope: 'everyone', fromSelection: true });
+                    setSelectionDeleteOpen(false);
+                  }}
+                >Удалить у всех</button>
+              </div>
+            )}
+          </div>
+          <strong>{selectedMessages.length ? `${selectedMessages.length} ${russianCount(selectedMessages.length, 'сообщение', 'сообщения', 'сообщений')}` : 'Выберите сообщения'}</strong>
           <button
             type="button"
-            onClick={() => {
-              setSelectingMessages(false);
-              setSelectedMessages([]);
-            }}
-            aria-label="Завершить выбор"
+            aria-label="Переслать выбранные сообщения"
+            disabled={!selectedMessages.length || messageActionBusy || !onForwardMessage}
+            onClick={() => setForwardingMessages(selectedMessageItems)}
           >
-            <X size={19} />
+            <Forward size={22} />
           </button>
-          <strong>{selectedMessages.length ? `Выбрано: ${selectedMessages.length}` : 'Выберите сообщения'}</strong>
         </div>
       )}
       <div className="mova-real-messages" ref={messagesContainer} onScroll={syncMessageBottom}>
@@ -3588,7 +3793,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                   if (selectingMessages) return;
                   event.preventDefault();
                   const width = 194;
-                  const height = own && onEdit ? 100 : 54;
+                  const height = 234;
+                  setDetailsOpen(false);
+                  setEmojiOpen(false);
                   setMessageMenu({
                     message,
                     x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
@@ -3644,6 +3851,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                     ) : voiceAttachment ? (
                       <VoiceMessage
                         attachment={message.attachment}
+                        messageId={message.id}
+                        authorName={message.author.name}
+                        createdAt={message.createdAt}
+                        player={voicePlayer}
                         unlistened={voiceUnlistened}
                         onListen={!own && voiceUnlistened && onVoiceListen ? () => onVoiceListen(message.id) : undefined}
                       />
@@ -3751,7 +3962,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             ) : (
               <>
                 <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
-                  <Paperclip size={19} aria-hidden="true" />
+                  <Paperclip size={22} aria-hidden="true" />
                 </IconButton>
                 <div className={`mova-composer-textarea${value ? ' has-value' : ''}`}>
                   {value && (
@@ -3808,7 +4019,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                       }
                     }}
                     aria-label={`Сообщение в ${conversation.title}`}
-                    placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение...'}
+                    placeholder={blocked ? 'Пользователь заблокирован' : editingMessage ? 'Измените сообщение…' : 'Сообщение'}
                   />
                 </div>
                 <IconButton
@@ -3820,7 +4031,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                   onPointerDown={rememberComposerSelection}
                   onClick={() => setEmojiOpen((open) => !open)}
                 >
-                  <Smile size={19} aria-hidden="true" />
+                  <Smile size={21} aria-hidden="true" />
                 </IconButton>
                 {value.trim() || attachment || editingMessage ? (
                   <button className="mova-composer-send" type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
@@ -3828,7 +4039,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                   </button>
                 ) : (
                   <IconButton label="Записать голосовое сообщение" className="mova-composer-mic" disabled={blocked} onClick={() => void startVoiceRecording()}>
-                    <Mic size={20} aria-hidden="true" />
+                    <Mic size={23} aria-hidden="true" />
                   </IconButton>
                 )}
               </>
@@ -3847,19 +4058,78 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           <MediaViewer items={mediaGallery} activeId={imagePreviewId} onClose={() => setImagePreviewId(null)} />,
           document.body,
         )}
+      <DialogSurface open={Boolean(forwardingMessages)} onClose={() => !messageActionBusy && setForwardingMessages(null)} className="mova-forward-message-dialog" labelledBy="mova-forward-message-title">
+        <header>
+          <h2 id="mova-forward-message-title">{forwardingMessages && forwardingMessages.length > 1 ? `Переслать ${forwardingMessages.length} ${russianCount(forwardingMessages.length, 'сообщение', 'сообщения', 'сообщений')}` : 'Переслать сообщение'}</h2>
+          <IconButton data-dialog-close label="Закрыть" disabled={messageActionBusy} onClick={() => setForwardingMessages(null)}><X size={19} /></IconButton>
+        </header>
+        <div className="mova-forward-message-list">
+          {forwardDestinations.length ? forwardDestinations.map((item) => (
+            <button type="button" key={item.id} disabled={messageActionBusy} onClick={() => void forwardMessageTo(item.id)}>
+              <ConversationAvatar conversation={item} currentUser={currentUser} />
+              <span>
+                <strong><AppleEmoji text={item.title} /></strong>
+                <small>{item.kind === 'group' ? `${item.members.length} участников` : item.members.find((member) => member.id !== currentUser.id)?.handle || 'Личный чат'}</small>
+              </span>
+              <Forward size={18} aria-hidden="true" />
+            </button>
+          )) : <p>Нет других чатов, в которые можно переслать сообщение.</p>}
+        </div>
+      </DialogSurface>
+      <ConfirmDialog
+        open={Boolean(deletingMessages)}
+        title={deletingMessages && deletingMessages.messages.length > 1 ? `Удалить ${deletingMessages.messages.length} ${russianCount(deletingMessages.messages.length, 'сообщение', 'сообщения', 'сообщений')}?` : 'Удалить сообщение?'}
+        description={deletingMessages?.scope === 'everyone'
+          ? 'Выбранные сообщения исчезнут у всех участников чата.'
+          : 'Выбранные сообщения исчезнут из истории на этом устройстве и в других ваших активных сессиях.'}
+        confirmLabel={deletingMessages?.scope === 'everyone' ? 'Удалить у всех' : 'Удалить у себя'}
+        onCancel={() => !messageActionBusy && setDeletingMessages(null)}
+        onConfirm={() => void deleteChosenMessages()}
+      />
       {createPortal(
           <div className="mova-message-context-layer" style={{ pointerEvents: messageMenu ? 'auto' : 'none' }} onPointerDown={(event) => { if (event.target === event.currentTarget) setMessageMenu(null); }} onContextMenu={(event) => event.preventDefault()}>
             <PopoverSurface open={Boolean(messageMenu)} className="mova-message-context-menu" ariaLabel="Действия с сообщением" style={messageMenu ? { left: messageMenu.x, top: messageMenu.y } : undefined}>
               <button type="button" role="menuitem" onClick={() => messageMenu && replyToMessage(messageMenu.message)}>
-                <Reply size={16} />
+                <Reply size={19} />
                 <span>Ответить</span>
               </button>
-              {messageMenu?.message.authorId === currentUser.id && onEdit && (
-                <button type="button" role="menuitem" onClick={() => messageMenu && editOwnMessage(messageMenu.message)}>
-                  <Pencil size={15} />
-                  <span>Редактировать</span>
-                </button>
-              )}
+              <button type="button" role="menuitem" onClick={() => messageMenu && void copyMessage(messageMenu.message)}>
+                <Copy size={18} />
+                <span>Копировать</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => messageMenu && translateMessage(messageMenu.message)}>
+                <Languages size={19} />
+                <span>Перевести</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => messageMenu && void togglePinnedMessage(messageMenu.message)}>
+                <Pin size={18} />
+                <span>{messageMenu?.message.pinnedAt ? 'Открепить' : 'Закрепить'}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => {
+                if (!messageMenu) return;
+                setForwardingMessages([messageMenu.message]);
+                setMessageMenu(null);
+              }}>
+                <Forward size={19} />
+                <span>Переслать</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => messageMenu && openMessageSelection(messageMenu.message)}>
+                <CircleCheck size={19} />
+                <span>Выбрать</span>
+              </button>
+              <button type="button" role="menuitem" className="is-danger" onClick={() => {
+                if (!messageMenu) return;
+                if (!onDeleteMessage) {
+                  setMessageMenu(null);
+                  toast.push('Удаление пока недоступно.', 'danger');
+                  return;
+                }
+                setDeletingMessages({ messages: [messageMenu.message], scope: 'self', fromSelection: false });
+                setMessageMenu(null);
+              }}>
+                <Trash2 size={18} />
+                <span>Удалить</span>
+              </button>
             </PopoverSurface>
           </div>,
           document.body,
@@ -4635,6 +4905,17 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           return next;
         });
       }
+      if (event.type === 'message:delete' && event.userId === currentUserRef.current.id) {
+        const cacheKey = messageCacheKey(currentUserRef.current.id, event.conversationId);
+        const cachedEntry = messageCache.get(cacheKey);
+        if (cachedEntry) messageCache.set(cacheKey, { ...cachedEntry, value: cachedEntry.value.filter((message) => message.id !== event.messageId), updatedAt: Date.now() });
+        if (event.conversationId === selectedIdRef.current) setMessages((items) => items.filter((message) => message.id !== event.messageId));
+        setConversations((items) => {
+          const next = items.map((conversation) => conversation.id === event.conversationId ? { ...conversation, lastMessage: event.lastMessage } : conversation);
+          conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+          return next;
+        });
+      }
       if (event.type === 'typing' && event.userId !== currentUserRef.current.id) updateTypingUser(event.conversationId, event.userId, event.active);
       if (event.type === 'message:read' && event.conversationId === selectedIdRef.current) {
         const readIds = new Set(event.messageIds);
@@ -5126,6 +5407,47 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return next;
     });
   };
+  const setMessagePinned = async (messageId: string, pinned: boolean) => {
+    if (!selectedId) return;
+    const result = await api.setMessagePinned(selectedId, messageId, pinned);
+    setMessages((items) => {
+      const next = items.map((message) => message.id === result.message.id ? result.message : message);
+      const cached = messageCache.get(messageCacheKey(currentUser.id, selectedId));
+      messageCache.set(messageCacheKey(currentUser.id, selectedId), { ...cached, value: next, updatedAt: Date.now() });
+      return next;
+    });
+    setConversations((items) => {
+      const next = updateConversationLastMessage(items, result.message, true);
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  };
+  const forwardMessage = async (messageId: string, targetConversationId: string) => {
+    if (!selectedId) return;
+    const result = await api.forwardMessage(selectedId, messageId, targetConversationId);
+    const targetCacheKey = messageCacheKey(currentUser.id, targetConversationId);
+    const cached = messageCache.get(targetCacheKey);
+    if (cached) messageCache.set(targetCacheKey, { ...cached, value: reconcileClientMessage(cached.value, result.message), updatedAt: Date.now() });
+    if (selectedIdRef.current === targetConversationId) setMessages((items) => reconcileClientMessage(items, result.message));
+    setConversations((items) => {
+      const next = updateConversationLastMessage(items, result.message);
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  };
+  const deleteMessage = async (messageId: string, scope: 'self' | 'everyone' = 'self') => {
+    if (!selectedId) return;
+    const result = await api.deleteMessage(selectedId, messageId, scope);
+    const cacheKey = messageCacheKey(currentUser.id, selectedId);
+    const cached = messageCache.get(cacheKey);
+    if (cached) messageCache.set(cacheKey, { ...cached, value: cached.value.filter((message) => message.id !== messageId), updatedAt: Date.now() });
+    setMessages((items) => items.filter((message) => message.id !== messageId));
+    setConversations((items) => {
+      const next = items.map((conversation) => conversation.id === selectedId ? { ...conversation, lastMessage: result.lastMessage } : conversation);
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  };
   const openGlobalSearch = useCallback((tab: GlobalSearchTab = 'users') => {
     setComposeMenuOpen(false);
     setAccountOpen(false);
@@ -5416,6 +5738,10 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           onRetryHistory={() => setMessagesLoadAttempt((attempt) => attempt + 1)}
           onLoadOlder={loadOlderMessages}
           onEdit={edit}
+          availableConversations={conversations}
+          onPinMessage={setMessagePinned}
+          onForwardMessage={forwardMessage}
+          onDeleteMessage={deleteMessage}
           onRelationshipChange={applyRelationshipUser}
           onMarkRead={(throughMessageId) => markConversationRead(selected.id, throughMessageId)}
           onVoiceListen={(messageId) => markVoiceListened(selected.id, messageId)}

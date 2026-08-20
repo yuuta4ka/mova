@@ -52,6 +52,8 @@ export interface AppMessage {
   createdAt: string;
   sentAt?: string;
   editedAt?: string;
+  pinnedAt?: string;
+  pinnedById?: string;
   readBy?: MessageReadReceipt[];
   listenedBy?: VoiceListenReceipt[];
   clientId?: string;
@@ -259,6 +261,9 @@ export const api = {
     });
   },
   editMessage: (conversationId: string, messageId: string, content: string) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
+  setMessagePinned: (conversationId: string, messageId: string, pinned: boolean) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}/pin`, { method: pinned ? 'POST' : 'DELETE' }),
+  forwardMessage: (conversationId: string, messageId: string, targetConversationId: string) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}/forward`, { method: 'POST', body: JSON.stringify({ conversationId: targetConversationId }) }),
+  deleteMessage: (conversationId: string, messageId: string, scope: 'self' | 'everyone' = 'self') => request<{ type: 'message:delete'; conversationId: string; messageId: string; userId: string; deletedAt: string; scope: 'self' | 'everyone'; lastMessage: Omit<AppMessage, 'author'> | null }>(`/api/conversations/${conversationId}/messages/${messageId}${scope === 'everyone' ? '?scope=everyone' : ''}`, { method: 'DELETE' }),
   markConversationRead: (conversationId: string, throughMessageId: string) =>
     request<{
       conversationId: string;
@@ -288,6 +293,7 @@ export type RealtimeEvent =
   | { type: 'heartbeat:ack'; sentAt: number }
   | { type: 'message:new'; message: AppMessage }
   | { type: 'message:update'; message: AppMessage }
+  | { type: 'message:delete'; conversationId: string; messageId: string; userId: string; deletedAt: string; scope?: 'self' | 'everyone'; lastMessage: Omit<AppMessage, 'author'> | null }
   | {
       type: 'message:read';
       conversationId: string;

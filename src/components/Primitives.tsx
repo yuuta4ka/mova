@@ -345,41 +345,51 @@ export function ConfirmDialog({ open, title, description, confirmLabel = 'Уда
   );
 }
 
-interface ToastItem { id: number; message: string; tone: 'success' | 'danger' | 'info'; state: 'open' | 'closing' }
+interface ToastItem { id: number; key: string; message: string; tone: 'success' | 'danger' | 'info'; state: 'open' | 'closing' }
 const ToastContext = createContext<{ push: (message: string, tone?: ToastItem['tone']) => void }>({ push: () => undefined });
+const toastLifetimeMs = 3600;
+const toastExitMs = 220;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const idRef = useRef(0);
   const timers = useRef(new Map<number, number>());
+  const activeIds = useRef(new Map<string, number>());
   const dismiss = useCallback((id: number) => {
     const timer = timers.current.get(id);
     if (timer) window.clearTimeout(timer);
     setToasts((items) => items.map((item) => item.id === id ? { ...item, state: 'closing' } : item));
     timers.current.set(id, window.setTimeout(() => {
-      setToasts((items) => items.filter((item) => item.id !== id));
+      setToasts((items) => {
+        const removed = items.find((item) => item.id === id);
+        if (removed && activeIds.current.get(removed.key) === id) activeIds.current.delete(removed.key);
+        return items.filter((item) => item.id !== id);
+      });
       timers.current.delete(id);
-    }, surfaceExitMs));
+    }, toastExitMs));
   }, []);
   const schedule = useCallback((id: number) => {
     const current = timers.current.get(id);
     if (current) window.clearTimeout(current);
-    timers.current.set(id, window.setTimeout(() => dismiss(id), 3600));
+    timers.current.set(id, window.setTimeout(() => dismiss(id), toastLifetimeMs));
   }, [dismiss]);
   const push = useCallback((message: string, tone: ToastItem['tone'] = 'info') => {
-    let targetId = 0;
+    const key = `${tone}:${message}`;
+    const targetId = activeIds.current.get(key) || ++idRef.current;
+    activeIds.current.set(key, targetId);
     setToasts((items) => {
-      const repeated = items.find((item) => item.message === message && item.tone === tone);
+      const repeated = items.find((item) => item.id === targetId);
       if (repeated) {
-        targetId = repeated.id;
-        return items.map((item) => item.id === repeated.id ? { ...item, state: 'open' } : item);
+        return items.map((item) => item.id === targetId ? { ...item, state: 'open' } : item);
       }
-      targetId = ++idRef.current;
-      return [...items, { id: targetId, message, tone, state: 'open' }];
+      return [...items, { id: targetId, key, message, tone, state: 'open' }];
     });
-    window.setTimeout(() => schedule(targetId));
+    schedule(targetId);
   }, [schedule]);
-  useEffect(() => () => timers.current.forEach((timer) => window.clearTimeout(timer)), []);
+  useEffect(() => () => {
+    timers.current.forEach((timer) => window.clearTimeout(timer));
+    activeIds.current.clear();
+  }, []);
   return <ToastContext.Provider value={{ push }}>{children}<div className="mova-toasts" aria-live="polite">{toasts.map((toast) => {
     const Icon = toast.tone === 'success' ? Check : toast.tone === 'danger' ? TriangleAlert : Info;
     return <div key={toast.id} className={`mova-toast mova-toast--${toast.tone} ${toast.state === 'closing' ? 'is-closing' : ''}`} role={toast.tone === 'danger' ? 'alert' : 'status'}><Icon size={17} aria-hidden /><span>{toast.message}</span><IconButton label="Закрыть уведомление" size="sm" onClick={() => dismiss(toast.id)}><X size={14} /></IconButton></div>;
