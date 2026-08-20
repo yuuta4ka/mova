@@ -268,6 +268,21 @@ export async function openDatabase(paths) {
   const userColumns = sqlite.prepare('PRAGMA table_info(users)').all();
   if (!userColumns.some((column) => column.name === 'email_verified_at')) sqlite.exec('ALTER TABLE users ADD COLUMN email_verified_at TEXT');
   if (!userColumns.some((column) => column.name === 'session_version')) sqlite.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1');
+  const legacyEmailResetKey = 'legacy_email_verification_reset_2026_08_20';
+  const emailVerificationLaunchAt = '2026-08-20T18:50:12.460Z';
+  if (!sqlite.prepare('SELECT 1 FROM metadata WHERE key=?').get(legacyEmailResetKey)) {
+    sqlite.exec('BEGIN IMMEDIATE');
+    try {
+      sqlite
+        .prepare('UPDATE users SET email_verified_at=NULL WHERE created_at < ? AND email_verified_at=created_at')
+        .run(emailVerificationLaunchAt);
+      sqlite.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(legacyEmailResetKey, new Date().toISOString());
+      sqlite.exec('COMMIT');
+    } catch (error) {
+      sqlite.exec('ROLLBACK');
+      throw error;
+    }
+  }
   sqlite.exec('UPDATE users SET session_version=COALESCE(session_version, 1)');
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
