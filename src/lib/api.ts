@@ -10,7 +10,7 @@ export interface AppUser {
   bio?: string;
   avatarDataUrl?: string;
   bannerDataUrl?: string;
-  activity?: { name: string; startedAt: string } | null;
+  activity?: { type?: 'game'; name: string; startedAt: string } | null;
   lastActiveAt?: string;
   createdAt: string;
   relationship?: 'self' | 'none' | 'outgoing' | 'incoming' | 'friend' | 'blocked' | 'blocked_by';
@@ -73,6 +73,7 @@ export interface AppConversation {
   id: string;
   kind: 'direct' | 'group';
   title: string;
+  avatarDataUrl?: string;
   members: AppUser[];
   lastMessage: Omit<AppMessage, 'author'> | null;
   unreadCount?: number;
@@ -189,6 +190,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ presence, dndUntil }),
     }),
+  updateActivity: (name: string | null) =>
+    request<{ user: AppUser }>('/api/activity', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
   users: () => request<{ users: AppUser[] }>('/api/users'),
   requestFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}`, { method: 'POST' }),
   acceptFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}`, { method: 'PATCH' }),
@@ -197,7 +203,7 @@ export const api = {
   blockUser: (userId: string) => request<{ user: AppUser }>(`/api/blocks/${userId}`, { method: 'POST' }),
   unblockUser: (userId: string) => request<{ user: AppUser }>(`/api/blocks/${userId}`, { method: 'DELETE' }),
   conversations: () => request<{ conversations: AppConversation[] }>('/api/conversations'),
-  createConversation: (data: { kind: 'direct' | 'group'; title?: string; memberIds: string[] }) =>
+  createConversation: (data: { kind: 'direct' | 'group'; title?: string; memberIds: string[]; avatarDataUrl?: string }) =>
     request<{ conversation: AppConversation }>('/api/conversations', {
       method: 'POST',
       body: JSON.stringify(data),

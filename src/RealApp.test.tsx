@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatPresenceStatus, loadConversationDrafts, mergeMessageHistory, PendingCallStage, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage } from './RealApp';
+import { formatPresenceStatus, loadConversationDrafts, mergeMessageHistory, PendingCallStage, presenceUpdateForSystemIdle, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage, updateConversationUser } from './RealApp';
 import { api, realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 import { ToastProvider } from './components/Primitives';
 
@@ -61,6 +61,30 @@ describe('voice processing settings', () => {
     });
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it('shows and persists auto-launch only in the desktop application', async () => {
+    const setAutoLaunch = vi.fn().mockResolvedValue(false);
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      getAutoLaunch: vi.fn().mockResolvedValue(true),
+      setAutoLaunch,
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const user = userEvent.setup();
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Приложение' }));
+    const autoLaunch = await screen.findByRole('checkbox', { name: /Запускать Mova с системой/ });
+    await waitFor(() => expect(autoLaunch).toBeChecked());
+    await user.click(autoLaunch);
+    await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
+
+    expect(setAutoLaunch).toHaveBeenCalledWith(false);
+  });
 });
 
 describe('presence status', () => {
@@ -78,6 +102,7 @@ describe('presence status', () => {
       ),
     ).toBe('был(а) 5 минут назад');
     expect(formatPresenceStatus({ ...friend, isOnline: true }, now)).toBe('в сети');
+    expect(formatPresenceStatus({ ...friend, isOnline: true, activity: { type: 'game', name: 'Minecraft', startedAt: '2026-08-10T11:00:00.000Z' } }, now)).toBe('играет в Minecraft');
     expect(formatPresenceStatus({ ...friend, presence: 'idle', isOnline: true }, now)).toBe('неактивен');
   });
   it('formats hours and days with Russian plural forms', () => {
@@ -101,6 +126,14 @@ describe('presence status', () => {
         now,
       ),
     ).toBe('был(а) 2 дня назад');
+  });
+  it('uses operating-system idle time without overriding manual statuses', () => {
+    expect(presenceUpdateForSystemIdle('online', 899)).toBeNull();
+    expect(presenceUpdateForSystemIdle('online', 900)).toBe('idle');
+    expect(presenceUpdateForSystemIdle('idle', 30)).toBe('online');
+    expect(presenceUpdateForSystemIdle('idle', 60)).toBeNull();
+    expect(presenceUpdateForSystemIdle('dnd', 0)).toBeNull();
+    expect(presenceUpdateForSystemIdle('invisible', 0)).toBeNull();
   });
 });
 
@@ -245,6 +278,18 @@ describe('conversation overview updates', () => {
     const strangerConversation: AppConversation = { ...newerConversation, id: 'stranger-rank-chat', members: [currentUser, stranger] };
 
     expect(sortConversationsByActivity([strangerConversation, requestConversation, olderConversation]).map((item) => item.id)).toEqual(['older', 'request-chat', 'stranger-rank-chat']);
+  });
+
+  it('updates only the direct chat that contains the changed user', () => {
+    const other: AppUser = { ...friend, id: 'other', name: 'Другой', handle: '@other' };
+    const otherConversation: AppConversation = { ...newerConversation, id: 'other-chat', title: other.name, members: [currentUser, other] };
+    const renamedFriend = { ...friend, name: 'Новое имя', bio: 'Новое описание', avatarDataUrl: '/uploads/new-avatar.png' };
+
+    const updatedFriendChat = updateConversationUser(olderConversation, renamedFriend, currentUser.id);
+    const untouchedOtherChat = updateConversationUser(otherConversation, renamedFriend, currentUser.id);
+
+    expect(updatedFriendChat).toMatchObject({ title: renamedFriend.name, members: [currentUser, renamedFriend] });
+    expect(untouchedOtherChat).toBe(otherConversation);
   });
 });
 
@@ -699,7 +744,7 @@ const dispatchTouch = (target: EventTarget, type: 'touchstart' | 'touchmove' | '
   target.dispatchEvent(event);
 };
 
-async function renderMobileProduct(suffix: string) {
+async function renderMobileProduct(suffix: string, extraUsers: AppUser[] = []) {
   stubMobileNavigationViewport();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -710,7 +755,7 @@ async function renderMobileProduct(suffix: string) {
   const connect = vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
   const close = vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
   vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [chat] });
-  vi.spyOn(api, 'users').mockResolvedValue({ users: [contact] });
+  vi.spyOn(api, 'users').mockResolvedValue({ users: [contact, ...extraUsers] });
   vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
   vi.spyOn(api, 'markConversationRead').mockResolvedValue({ conversationId: chat.id, userId: user.id, messageIds: [], readAt: '2026-08-10T12:00:00.000Z' });
   const rendered = render(<Product currentUser={user} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
@@ -840,12 +885,70 @@ describe('Product mobile chat navigation', () => {
 
     await user.click(screen.getByRole('button', { name: 'Новый разговор' }));
     expect(screen.getByRole('menu', { name: 'Создание разговора' })).toBeVisible();
-    expect(screen.getByRole('menuitem', { name: 'Создать канал' })).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByRole('menuitem', { name: 'Создать группу' })).toHaveAttribute('aria-disabled', 'true');
+    const channel = screen.getByRole('menuitem', { name: 'Создать канал — в разработке' });
+    expect(channel).toBeDisabled();
+    expect(channel).toHaveAttribute('aria-disabled', 'true');
+    expect(channel).toHaveTextContent('В разработке');
+    expect(screen.getByRole('menuitem', { name: 'Создать группу' })).not.toHaveAttribute('aria-disabled');
     act(() => window.dispatchEvent(new PopStateEvent('popstate')));
 
     await waitFor(() => expect(screen.queryByRole('menu', { name: 'Создание разговора' })).not.toBeInTheDocument());
     expect(app).toHaveAttribute('data-mobile-view', 'list');
+  });
+
+  it('creates a group from friends in two steps with a title and photo', async () => {
+    const user = userEvent.setup();
+    const stranger: AppUser = {
+      ...friend,
+      id: 'mobile-group-stranger',
+      name: 'Не в друзьях',
+      email: 'mobile-group-stranger@mova.test',
+      handle: '@not_friend',
+      relationship: 'none',
+    };
+    const setup = await renderMobileProduct('create-group', [stranger]);
+    const createdGroup: AppConversation = {
+      id: 'created-group',
+      kind: 'group',
+      title: 'Наша группа',
+      avatarDataUrl: '/uploads/group-avatar.png',
+      members: [setup.user, setup.contact],
+      lastMessage: null,
+      createdAt: '2026-08-20T12:00:00.000Z',
+      createdBy: setup.user.id,
+    };
+    const createConversation = vi.spyOn(api, 'createConversation').mockResolvedValue({ conversation: createdGroup });
+
+    await user.click(screen.getByRole('button', { name: 'Новый разговор' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Создать группу' }));
+
+    expect(screen.getByRole('heading', { name: 'Добавить участников' })).toBeVisible();
+    expect(screen.getByRole('checkbox', { name: new RegExp(setup.contact.name) })).toBeVisible();
+    expect(screen.queryByText(stranger.name)).not.toBeInTheDocument();
+    const next = screen.getByRole('button', { name: 'Перейти к названию группы' });
+    expect(next).toBeDisabled();
+
+    await user.click(screen.getByRole('checkbox', { name: new RegExp(setup.contact.name) }));
+    expect(next).toBeEnabled();
+    await user.click(next);
+
+    expect(screen.getByRole('heading', { name: 'Создать группу' })).toBeVisible();
+    expect(within(screen.getByRole('region', { name: 'Участники группы' })).getByText(setup.contact.name)).toBeVisible();
+    const photo = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'group.png', { type: 'image/png' });
+    const photoInput = document.querySelector<HTMLInputElement>('.mova-group-photo input')!;
+    await user.upload(photoInput, photo);
+    expect(await screen.findByAltText('Фото группы')).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: 'Название группы' }), createdGroup.title);
+    await user.click(screen.getByRole('button', { name: 'Создать группу' }));
+
+    await waitFor(() => expect(createConversation).toHaveBeenCalledWith({
+      kind: 'group',
+      title: createdGroup.title,
+      memberIds: [setup.contact.id],
+      avatarDataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+    }));
+    expect((await screen.findAllByText(createdGroup.title)).length).toBeGreaterThan(0);
+    setup.unmount();
   });
 
   it('opens focused global search from the compose menu and searches users, chats, and links', async () => {

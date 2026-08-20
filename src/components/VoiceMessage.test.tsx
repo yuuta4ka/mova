@@ -40,4 +40,16 @@ describe('voice message waveform', () => {
     rerender(<VoiceMessage attachment={voiceAttachment} unlistened={false} onListen={onListen} />);
     expect(screen.queryByRole('img', { name: 'Голосовое сообщение ещё не прослушано' })).not.toBeInTheDocument();
   });
+
+  it('primes an unloaded mobile audio element on the first play tap', () => {
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    const { container } = render(<VoiceMessage attachment={voiceAttachment} />);
+
+    expect(container.querySelector('audio')).toHaveAttribute('preload', 'auto');
+    fireEvent.click(screen.getByRole('button', { name: 'Воспроизвести голосовое сообщение' }));
+
+    expect(load).toHaveBeenCalledOnce();
+    expect(play).toHaveBeenCalledOnce();
+  });
 });

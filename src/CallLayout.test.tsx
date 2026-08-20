@@ -246,6 +246,15 @@ describe('call layout', () => {
     expect(container.querySelector('.mova-call-tile.is-speaking')).toHaveAttribute('data-speaking', 'true');
   });
 
+  it('does not reuse cumulative outbound bytes as current speech activity', () => {
+    callMedia.localSpeaking = false;
+    callMedia.diagnostics = { friend: { connectionState: 'connected', outboundAudioBytes: 9_999, quality: 'good', roundTripTimeMs: 42 } };
+    const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(container.querySelector('[data-participant-id="me"]')).not.toHaveClass('is-speaking');
+    expect(container.querySelector('.mova-call-stage')).toHaveAttribute('data-audio-sending', 'false');
+  });
+
   it('shows participant connection and media presence directly on two-user tiles', () => {
     callMedia.participants = ['friend'];
     callMedia.diagnostics = { friend: { connectionState: 'connected' } };

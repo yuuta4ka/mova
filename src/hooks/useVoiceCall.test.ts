@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, realtime, type RealtimeEvent } from '../lib/api';
 import { defaultAudioSettings, saveAudioSettings, withNoiseSuppressionMode } from '../lib/audioSettings';
-import { isJoinedCallState, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackVolume, useVoiceCall, type CallState } from './useVoiceCall';
+import { isJoinedCallState, isOutgoingVoiceTransmitted, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackVolume, shouldPlaySelfConnectSound, useVoiceCall, type CallState } from './useVoiceCall';
 
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
@@ -29,6 +29,23 @@ describe('voice call state model', () => {
 
   it.each<CallState>(['idle', 'ringing', 'incoming', 'connecting', 'available'])('keeps %s outside the joined call session', (state) => {
     expect(isJoinedCallState(state)).toBe(false);
+  });
+
+  it('plays the local join sound only when entering an existing group call', () => {
+    expect(shouldPlaySelfConnectSound(false, false)).toBe(false);
+    expect(shouldPlaySelfConnectSound(true, true)).toBe(false);
+    expect(shouldPlaySelfConnectSound(true, false)).toBe(true);
+  });
+
+  it('marks local speech only after audio bytes advance on a connected active sender', () => {
+    const active = [{ connected: true, senderActive: true, previousBytes: 120, currentBytes: 180 }];
+    expect(isOutgoingVoiceTransmitted(true, false, active)).toBe(true);
+    expect(isOutgoingVoiceTransmitted(false, false, active)).toBe(false);
+    expect(isOutgoingVoiceTransmitted(true, true, active)).toBe(false);
+    expect(isOutgoingVoiceTransmitted(true, false, [{ ...active[0], connected: false }])).toBe(false);
+    expect(isOutgoingVoiceTransmitted(true, false, [{ ...active[0], senderActive: false }])).toBe(false);
+    expect(isOutgoingVoiceTransmitted(true, false, [{ ...active[0], currentBytes: 120 }])).toBe(false);
+    expect(isOutgoingVoiceTransmitted(true, false, [{ connected: true, senderActive: true, currentBytes: 180 }])).toBe(false);
   });
 
   it('deafens participant microphones without muting screen-share audio', () => {

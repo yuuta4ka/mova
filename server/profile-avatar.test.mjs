@@ -6,6 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import WebSocket from 'ws';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const avatarContents = Buffer.from(
@@ -41,6 +42,20 @@ async function request(path, { method = 'GET', token, body } = {}) {
   const result = await response.json();
   if (!response.ok) throw new Error(JSON.stringify(result));
   return result;
+}
+
+async function openSocket(token) {
+  const socket = new WebSocket(`${baseUrl.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`);
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for realtime ready')), 3_000);
+    socket.once('error', reject);
+    socket.on('message', (raw) => {
+      if (JSON.parse(raw).type !== 'ready') return;
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+  return socket;
 }
 
 beforeAll(async () => {
@@ -84,13 +99,14 @@ describe('profile avatar persistence', () => {
       password: 'strongpass1',
     };
     const registered = await request('/api/register', { method: 'POST', body: credentials });
+    const socket = await openSocket(registered.token);
     const updated = await request('/api/profile', {
       method: 'PATCH',
       token: registered.token,
       body: {
-        name: credentials.name,
+        name: 'Аватар Новый',
         handle: '@avatar_test',
-        bio: '',
+        bio: 'Описание должно пережить отключение',
         avatarDataUrl,
         bannerDataUrl: '',
         activity: null,
@@ -98,8 +114,18 @@ describe('profile avatar persistence', () => {
     });
 
     expect(updated.user.avatarDataUrl).toMatch(/^\/uploads\/.+\.png$/);
+    socket.close();
+    await new Promise((resolve) => socket.once('close', resolve));
 
-    const storedProfile = await request('/api/me', { token: registered.token });
+    let storedProfile;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      storedProfile = await request('/api/me', { token: registered.token });
+      if (storedProfile.user.lastActiveAt !== registered.user.lastActiveAt) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(storedProfile.user.name).toBe(updated.user.name);
+    expect(storedProfile.user.bio).toBe(updated.user.bio);
     expect(storedProfile.user.avatarDataUrl).toBe(updated.user.avatarDataUrl);
 
     const loggedIn = await request('/api/login', {
@@ -109,8 +135,10 @@ describe('profile avatar persistence', () => {
     expect(loggedIn.user.avatarDataUrl).toBe(updated.user.avatarDataUrl);
 
     const sqlite = new DatabaseSync(join(testDirectory, 'db.sqlite'), { readOnly: true });
-    const storedRow = sqlite.prepare('SELECT avatar_url FROM users WHERE id=?').get(registered.user.id);
+    const storedRow = sqlite.prepare('SELECT name,bio,avatar_url FROM users WHERE id=?').get(registered.user.id);
     sqlite.close();
+    expect(storedRow.name).toBe(updated.user.name);
+    expect(storedRow.bio).toBe(updated.user.bio);
     expect(storedRow.avatar_url).toBe(updated.user.avatarDataUrl);
 
     const avatarResponse = await fetch(`${baseUrl}${storedProfile.user.avatarDataUrl}`);

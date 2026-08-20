@@ -14,8 +14,8 @@ import {
   Video,
 } from 'lucide-react';
 
-const version = '0.1.8';
-const releaseTag = '0.1.8';
+const version = '0.1.9';
+const releaseTag = '0.1.9';
 const githubUrl = 'https://github.com/yuuta4ka/mova';
 const donationUrl = 'https://donatex.gg/donate/yuuta';
 const releaseBase = `https://github.com/yuuta4ka/mova/releases/download/v${releaseTag}`;

@@ -1,5 +1,5 @@
 import EmojiConvertor from 'emoji-js';
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 
 const emoji = new EmojiConvertor();
 emoji.img_set = 'apple';
@@ -27,7 +27,7 @@ export function appleEmojiHtml(text: string) {
     });
 }
 
-export function AppleEmoji({ text, className = '' }: { text: string; className?: string }) {
+export const AppleEmoji = memo(function AppleEmoji({ text, className = '' }: { text: string; className?: string }) {
   const root = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     const cleanups = [...(root.current?.querySelectorAll<HTMLImageElement>('img.emoji') || [])].map((image) => {
@@ -43,7 +43,7 @@ export function AppleEmoji({ text, className = '' }: { text: string; className?:
     return () => cleanups.forEach((cleanup) => cleanup());
   }, [text]);
   return <span ref={root} className={`mova-apple-text ${className}`.trim()} dangerouslySetInnerHTML={{ __html: appleEmojiHtml(text) }} />;
-}
+});
 
 export function isEmojiOnlyText(text: string) {
   const rendered = appleEmojiHtml(text.trim());

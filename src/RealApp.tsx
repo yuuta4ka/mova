@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, AtSign, Ban, Bell, BellOff, Check, CheckCheck, ChevronDown, ChevronUp, Clock, CloudOff, Copy, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronUp, Clock, CloudOff, Copy, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Power, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
@@ -38,7 +38,7 @@ const russianCount = (value: number, one: string, few: string, many: string) => 
 export const formatPresenceStatus = (user?: AppUser, now = Date.now()) => {
   if (!user) return 'не в сети';
   const online = user.isOnline ?? user.presence === 'online';
-  if (online) return user.presence === 'idle' ? 'неактивен' : user.presence === 'dnd' ? 'не беспокоить' : 'в сети';
+  if (online) return user.presence === 'idle' ? 'неактивен' : user.presence === 'dnd' ? 'не беспокоить' : user.activity?.name ? `играет в ${user.activity.name}` : 'в сети';
   if (!user.lastActiveAt) return 'был(а) недавно';
   const elapsed = Math.max(0, now - new Date(user.lastActiveAt).getTime());
   if (elapsed < 60_000) return 'был(а) только что';
@@ -48,6 +48,11 @@ export const formatPresenceStatus = (user?: AppUser, now = Date.now()) => {
   if (hours < 24) return `был(а) ${hours} ${russianCount(hours, 'час', 'часа', 'часов')} назад`;
   const days = Math.floor(hours / 24);
   return `был(а) ${days} ${russianCount(days, 'день', 'дня', 'дней')} назад`;
+};
+export const presenceUpdateForSystemIdle = (presence: AppUser['presence'], idleSeconds: number): 'online' | 'idle' | null => {
+  if (presence === 'online' && idleSeconds >= 15 * 60) return 'idle';
+  if (presence === 'idle' && idleSeconds < 45) return 'online';
+  return null;
 };
 const messageSoundUrl = new URL('../sound-message.mp3', import.meta.url).href;
 const loadedImageSources = new Set<string>();
@@ -216,6 +221,14 @@ export const updateConversationLastMessage = (items: AppConversation[], message:
         : conversation,
     ),
   );
+};
+export const updateConversationUser = (conversation: AppConversation, updatedUser: AppUser, currentUserId: string) => {
+  if (!conversation.members.some((member) => member.id === updatedUser.id)) return conversation;
+  return {
+    ...conversation,
+    members: conversation.members.map((member) => member.id === updatedUser.id ? { ...member, ...updatedUser } : member),
+    title: conversation.kind === 'direct' && updatedUser.id !== currentUserId ? updatedUser.name : conversation.title,
+  };
 };
 const conversationPreviewText = (conversation: AppConversation, currentUserId: string) => {
   const message = conversation.lastMessage;
@@ -519,7 +532,7 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
 }
 
 export function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void }) {
-  const [section, setSection] = useState<'profile' | 'appearance' | 'audio' | 'screen'>('audio');
+  const [section, setSection] = useState<'profile' | 'appearance' | 'audio' | 'screen' | 'application'>('audio');
   const [settings, setSettings] = useState<AudioSettings>(defaultAudioSettings);
   const [screenSettings, setScreenSettings] = useState<ScreenShareSettings>(defaultScreenShareSettings);
   const [backgroundColor, setBackgroundColor] = useState(defaultBackgroundColor);
@@ -530,6 +543,8 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
   const [testing, setTesting] = useState(false);
   const [level, setLevel] = useState(0);
   const [testProcessingStatus, setTestProcessingStatus] = useState('');
+  const [autoLaunch, setAutoLaunch] = useState(true);
+  const [desktopSettingsError, setDesktopSettingsError] = useState('');
   const testStream = useRef<MediaStream | null>(null);
   const testPipeline = useRef<MicrophonePipeline | null>(null);
   const testContext = useRef<AudioContext | null>(null);
@@ -571,6 +586,10 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
       setScreenSettings(loadScreenShareSettings());
       setBackgroundColor(loadBackgroundColor());
       setAccentColor(loadAccentColor());
+      setDesktopSettingsError('');
+      if (window.movaDesktopShell?.getAutoLaunch) {
+        void window.movaDesktopShell.getAutoLaunch().then(setAutoLaunch).catch(() => setDesktopSettingsError('Не удалось прочитать настройку автозапуска.'));
+      }
       void refreshDevices(false);
     } else stopTest();
   }, [open, refreshDevices, stopTest]);
@@ -633,7 +652,14 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
       setDeviceError(error instanceof Error ? error.message : 'Не удалось воспроизвести звук');
     }
   };
-  const save = () => {
+  const save = async () => {
+    try {
+      setDesktopSettingsError('');
+      if (window.movaDesktopShell?.setAutoLaunch) await window.movaDesktopShell.setAutoLaunch(autoLaunch);
+    } catch {
+      setDesktopSettingsError('Не удалось изменить автозапуск Mova.');
+      return;
+    }
     saveAudioSettings(settings);
     saveScreenShareSettings(screenSettings);
     saveBackgroundColor(backgroundColor);
@@ -664,12 +690,18 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
             <MonitorUp size={17} />
             Демонстрация
           </button>
+          {window.movaDesktopShell && (
+            <button type="button" className={section === 'application' ? 'is-active' : ''} onClick={() => setSection('application')}>
+              <Power size={17} />
+              Приложение
+            </button>
+          )}
         </aside>
         <main>
           <header>
             <div>
-              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : 'Голос и звук'}</h2>
-              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : 'Устройства и обработка голоса'}</p>
+              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : section === 'application' ? 'Приложение' : 'Голос и звук'}</h2>
+              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : section === 'application' ? 'Запуск Mova и desktop-возможности' : 'Устройства и обработка голоса'}</p>
             </div>
             <IconButton data-dialog-close label="Закрыть настройки" onClick={onClose}>
               <X size={18} />
@@ -696,6 +728,18 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
             <BackgroundDefaults color={backgroundColor} onChange={setBackgroundColor} accentColor={accentColor} onAccentChange={setAccentColor} />
           ) : section === 'screen' ? (
             <ScreenShareDefaults settings={screenSettings} onChange={setScreenSettings} />
+          ) : section === 'application' ? (
+            <div className="mova-audio-settings mova-application-settings">
+              <section>
+                <h3><Power size={18} /> Запуск системы</h3>
+                <ToggleSetting label="Запускать Mova с системой" description="Mova запустится свёрнутой в область уведомлений. По умолчанию включено." checked={autoLaunch} onChange={setAutoLaunch} />
+              </section>
+              <section>
+                <h3><Gamepad2 size={18} /> Игровая активность</h3>
+                <p>Desktop-версия автоматически показывает друзьям, в какую игру вы играете. Веб-версия не получает доступ к запущенным процессам.</p>
+              </section>
+              {desktopSettingsError && <div className="mova-auth-error">{desktopSettingsError}</div>}
+            </div>
           ) : (
             <div className="mova-audio-settings">
               <section>
@@ -799,7 +843,7 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
             <Button variant="ghost" onClick={onClose}>
               Отмена
             </Button>
-            <Button onClick={save}>Сохранить настройки</Button>
+            <Button onClick={() => void save()}>Сохранить настройки</Button>
           </footer>
         </main>
     </DialogSurface>
@@ -945,7 +989,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
         <div className="mova-current-activity">
           <Gamepad2 size={16} />
           <span>
-            <strong>{user.activity.name}</strong>
+            <strong>Играет в {user.activity.name}</strong>
             <small>уже {activityTime(user.activity.startedAt)}</small>
           </span>
         </div>
@@ -1070,40 +1114,68 @@ function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
 }
 
 function ConversationAvatar({ conversation, currentUser }: { conversation: AppConversation; currentUser: AppUser }) {
-  if (conversation.kind === 'group')
-    return (
-      <span className="mova-real-group-avatar">
-        <Users size={19} />
-      </span>
-    );
+  if (conversation.kind === 'group') return <Avatar name={conversation.title} src={conversation.avatarDataUrl} color="#ff9638" size="lg" />;
   const person = conversation.members.find((member) => member.id !== currentUser.id) ?? currentUser;
   return <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} status={avatarStatus(person.presence, person.isOnline)} size="lg" />;
 }
 
-function CreateConversation({ open, users, onClose, onCreated }: { open: boolean; users: AppUser[]; onClose: () => void; onCreated: (conversation: AppConversation) => void }) {
-  const [kind, setKind] = useState<'direct' | 'group'>('direct');
+export function CreateGroup({ open, users, onClose, onCreated }: { open: boolean; users: AppUser[]; onClose: () => void; onCreated: (conversation: AppConversation) => void }) {
+  const [step, setStep] = useState<'members' | 'details'>('members');
   const [title, setTitle] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [memberQuery, setMemberQuery] = useState('');
+  const [avatarDataUrl, setAvatarDataUrl] = useState('');
+  const [imageLoading, setImageLoading] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     if (open) {
-      setKind('direct');
+      setStep('members');
       setTitle('');
       setSelected([]);
       setMemberQuery('');
+      setAvatarDataUrl('');
+      setImageLoading(false);
       setError('');
     }
   }, [open]);
+  const friends = useMemo(() => users.filter((user) => user.relationship === 'friend'), [users]);
+  const selectedUsers = useMemo(
+    () => selected.map((id) => friends.find((user) => user.id === id)).filter((user): user is AppUser => Boolean(user)),
+    [friends, selected],
+  );
+  const visibleUsers = useMemo(() => {
+    const normalizedQuery = memberQuery.trim().toLocaleLowerCase();
+    return normalizedQuery
+      ? friends.filter((user) => `${user.name} ${user.handle}`.toLocaleLowerCase().includes(normalizedQuery))
+      : friends;
+  }, [friends, memberQuery]);
+  const selectGroupImage = async (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Выберите изображение для группы');
+      return;
+    }
+    setImageLoading(true);
+    setError('');
+    try {
+      const prepared = await prepareImageDataUrl(file, { maxDimension: 1024, maxBytes: 650_000, quality: 0.94, skipBelowBytes: 120_000 });
+      setAvatarDataUrl(prepared.dataUrl);
+    } catch (imageError) {
+      setError(imageError instanceof Error ? imageError.message : 'Не удалось подготовить изображение');
+    } finally {
+      setImageLoading(false);
+    }
+  };
   const create = async () => {
     setLoading(true);
     setError('');
     try {
       const result = await api.createConversation({
-        kind,
+        kind: 'group',
         title,
-        memberIds: kind === 'direct' ? selected.slice(0, 1) : selected,
+        memberIds: selected,
+        avatarDataUrl,
       });
       onCreated(result.conversation);
       onClose();
@@ -1113,97 +1185,91 @@ function CreateConversation({ open, users, onClose, onCreated }: { open: boolean
       setLoading(false);
     }
   };
-  const visibleUsers = users.filter((user) => `${user.name} ${user.handle}`.toLocaleLowerCase().includes(memberQuery.toLocaleLowerCase()));
-  const selectedUsers = selected.map((id) => users.find((user) => user.id === id)).filter((user): user is AppUser => Boolean(user));
   return (
-    <DialogSurface open={open} onClose={onClose} className="mova-glass-card mova-create-modal" labelledBy="create-title" initialFocus="first">
-        <header>
-          <div>
-            <h2 id="create-title">Новый чат</h2>
-            <p>{kind === 'direct' ? 'Выберите человека — и можно начинать' : 'Название и участники в одном окне'}</p>
-          </div>
-          <IconButton data-dialog-close label="Закрыть" onClick={onClose}>
-            <X size={19} />
-          </IconButton>
-        </header>
-        <div className="mova-create-tabs" role="tablist" aria-label="Тип нового чата">
-          <button
-            type="button"
-            className={kind === 'direct' ? 'is-active' : ''}
-            onClick={() => {
-              setKind('direct');
-              setSelected((items) => items.slice(0, 1));
-            }}
-          >
-            <MessageCircle size={17} />
-            <span><strong>Личный</strong><small>Один на один</small></span>
-          </button>
-          <button type="button" className={kind === 'group' ? 'is-active' : ''} onClick={() => setKind('group')}>
-            <Users size={17} />
-            <span><strong>Группа</strong><small>Для нескольких людей</small></span>
-          </button>
-        </div>
-        <div className="mova-create-fields">
-          {kind === 'group' && (
-            <label className="mova-create-name mova-control-shell">
-              <Users size={17} />
-              <input data-dialog-initial autoFocus value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="Название группы" />
-              <small>{title.trim().length}/80</small>
-            </label>
-          )}
-          <label className="mova-create-search mova-control-shell">
-            <Search size={17} />
-            <input data-dialog-initial={kind === 'direct' || undefined} autoFocus={kind === 'direct'} value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Имя или @username" />
-            {memberQuery && <button type="button" aria-label="Очистить поиск" onClick={() => setMemberQuery('')}><X size={14} /></button>}
+    <DialogSurface open={open} onClose={onClose} className="mova-group-create-modal" labelledBy="group-create-title" initialFocus="first">
+      <header>
+        <IconButton
+          data-dialog-close={step === 'members' || undefined}
+          label={step === 'members' ? 'Закрыть создание группы' : 'Назад к выбору участников'}
+          onClick={step === 'members' ? onClose : () => { setStep('members'); setError(''); }}
+        >
+          <ArrowLeft size={23} />
+        </IconButton>
+        <h2 id="group-create-title">{step === 'members' ? 'Добавить участников' : 'Создать группу'}</h2>
+      </header>
+      {step === 'members' ? (
+        <div className="mova-group-members-step">
+          <label className="mova-group-create-search">
+            <Search size={20} />
+            <input data-dialog-initial autoFocus value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Поиск" aria-label="Поиск друзей" />
+            {memberQuery && <button type="button" aria-label="Очистить поиск друзей" onClick={() => setMemberQuery('')}><X size={16} /></button>}
           </label>
-        </div>
-        {kind === 'group' && selectedUsers.length > 0 && (
-          <div className="mova-create-selected" aria-label="Выбранные участники">
-            {selectedUsers.map((user) => (
-              <button key={user.id} type="button" onClick={() => setSelected((items) => items.filter((id) => id !== user.id))}>
-                <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="xs" />
-                <span><AppleEmoji text={user.name} /></span>
-                <X size={12} />
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="mova-create-members">
-          <span>{kind === 'group' ? `Участники${selected.length ? ` · ${selected.length}` : ''}` : 'Люди'}</span>
-          {users.length === 0 ? (
-            <div className="mova-no-users">Других пользователей пока нет. Зарегистрируйте второй аккаунт в новой вкладке.</div>
-          ) : visibleUsers.length === 0 ? (
-            <div className="mova-no-users">Пользователь не найден</div>
-          ) : (
-            visibleUsers.map((user) => {
-              const active = selected.includes(user.id);
+          <div className="mova-group-friends" aria-label="Друзья">
+            {!friends.length ? (
+              <div className="mova-group-create-empty"><UserPlus size={28} /><strong>Сначала добавьте друзей</strong><span>В группу можно пригласить людей из списка друзей.</span></div>
+            ) : !visibleUsers.length ? (
+              <div className="mova-group-create-empty"><Search size={28} /><strong>Ничего не найдено</strong><span>Попробуйте изменить запрос.</span></div>
+            ) : visibleUsers.map((person) => {
+              const active = selected.includes(person.id);
               return (
-                <button type="button" key={user.id} className={active ? 'is-active' : ''} onClick={() => setSelected((items) => (kind === 'direct' ? [user.id] : active ? items.filter((id) => id !== user.id) : [...items, user.id]))}>
-                  <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} status={avatarStatus(user.presence)} size="sm" />
-                  <span>
-                    <strong><AppleEmoji text={user.name} /></strong>
-                    <small>{user.handle}</small>
-                  </span>
-                  <i>{active && <Check size={14} />}</i>
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={active}
+                  key={person.id}
+                  className={active ? 'is-active' : ''}
+                  onClick={() => setSelected((items) => active ? items.filter((id) => id !== person.id) : items.length < 199 ? [...items, person.id] : items)}
+                >
+                  <i>{active && <Check size={15} />}</i>
+                  <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} size="md" />
+                  <span><strong><AppleEmoji text={person.name} /></strong><small>{formatPresenceStatus(person)}</small></span>
                 </button>
               );
-            })
-          )}
+            })}
+          </div>
         </div>
-        {error && <div className="mova-auth-error">{error}</div>}
-        <footer>
-          <span>{kind === 'group' && selected.length ? `${selected.length} ${russianCount(selected.length, 'участник', 'участника', 'участников')}` : ''}</span>
-          <Button variant="ghost" onClick={onClose}>Отмена</Button>
-          <Button loading={loading} disabled={!selected.length || (kind === 'group' && title.trim().length < 2)} onClick={create}>
-            {kind === 'group' ? 'Создать' : 'Открыть чат'}
-          </Button>
-        </footer>
+      ) : (
+        <div className="mova-group-details-step">
+          <section className="mova-group-details-card">
+            <label className={`mova-group-photo${avatarDataUrl ? ' has-image' : ''}`} aria-label="Выбрать фото группы">
+              {avatarDataUrl ? <img src={avatarDataUrl} alt="Фото группы" /> : <><Camera size={39} /><Plus size={20} /></>}
+              {imageLoading && <span><LoaderCircle className="mova-spin" size={25} /></span>}
+              <input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void selectGroupImage(file); }} />
+            </label>
+            <label className="mova-group-title-field">
+              <span>Название группы</span>
+              <input data-dialog-initial autoFocus value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} aria-label="Название группы" />
+            </label>
+          </section>
+          <section className="mova-group-selected-card" aria-label="Участники группы">
+            <h3>{selectedUsers.length} {russianCount(selectedUsers.length, 'участник', 'участника', 'участников')}</h3>
+            {selectedUsers.map((person) => (
+              <div key={person.id}>
+                <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} size="md" />
+                <span><strong><AppleEmoji text={person.name} /></strong><small>{formatPresenceStatus(person)}</small></span>
+              </div>
+            ))}
+          </section>
+        </div>
+      )}
+      {error && <div className="mova-group-create-error" role="alert">{error}</div>}
+      <button
+        type="button"
+        className="mova-group-create-next"
+        aria-label={step === 'members' ? 'Перейти к названию группы' : 'Создать группу'}
+        aria-busy={loading || imageLoading || undefined}
+        disabled={!selected.length || loading || imageLoading || (step === 'details' && title.trim().length < 2)}
+        onClick={() => step === 'members' ? setStep('details') : void create()}
+      >
+        {loading ? <LoaderCircle className="mova-spin" size={24} /> : <ArrowRight size={27} />}
+        {selected.length > 0 && step === 'members' && <b>{selected.length}</b>}
+      </button>
     </DialogSurface>
   );
 }
 
 function LegacyVoiceCallBar({ conversation, currentUser, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; currentUser: AppUser; onOpenSettings?: () => void }) {
-  const call = useVoiceCall(conversation.id, currentUser.id);
+  const call = useVoiceCall(conversation.id, currentUser.id, { direct: conversation.kind === 'direct' });
   const callState = normalizeCallState(call.state);
   const [moreOpen, setMoreOpen] = useState(false);
   const [showSelf, setShowSelf] = useState(true);
@@ -1617,7 +1683,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const hasScreen = Boolean(localScreen || screenTiles.length);
     const peerDiagnostics = Object.values(call.diagnostics || {});
     const callConnected = peerDiagnostics.some((peer) => peer.connectionState === 'connected');
-    const microphoneSending = peerDiagnostics.some((peer) => peer.outboundAudioBytes > 0);
+    const microphoneSending = call.localSpeaking;
     const microphoneReceiving = peerDiagnostics.some((peer) => peer.inboundAudioBytes > 0);
     const networkQuality = !peerDiagnostics.length ? 'unknown' : peerDiagnostics.some((peer) => peer.quality === 'poor') ? 'poor' : peerDiagnostics.some((peer) => peer.quality === 'fair') ? 'fair' : 'good';
     const latency = peerDiagnostics.reduce<number | undefined>((maximum, peer) => (peer.roundTripTimeMs === undefined ? maximum : Math.max(maximum ?? 0, peer.roundTripTimeMs)), undefined);
@@ -1654,9 +1720,9 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const remoteParticipantTiles: ReactNode[] = [];
     const selfTile = showSelf
       ? localCamera ? (
-          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView onExpandedStateChange={setExpandedMedia} />
+          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={`${currentUser.name} · вы`} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView onExpandedStateChange={setExpandedMedia} />
         ) : (
-          <CallAvatarTile key="local-avatar" participantId={currentUser.id} user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={call.localSpeaking && microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
+          <CallAvatarTile key="local-avatar" participantId={currentUser.id} user={currentUser} label={`${currentUser.name} · вы`} muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
         )
       : null;
     remoteParticipantIds.forEach(({ userId, connectionState }) => {
@@ -3004,6 +3070,15 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             )}
           </section>
           <section className="mova-contact-info__card">
+            {conversation.kind === 'direct' && other?.activity && (other.isOnline ?? other.presence === 'online') && (
+              <div>
+                <Gamepad2 size={25} />
+                <span>
+                  <strong>{other.activity.name}</strong>
+                  <small>Играет уже {activityTime(other.activity.startedAt)}</small>
+                </span>
+              </div>
+            )}
             {conversation.kind === 'direct' && (
               <div className="mova-message-body">
                 <AtSign size={25} />
@@ -3605,7 +3680,7 @@ export function RealMessages(props: RealMessagesProps) {
   const [callCanvasOpen, setCallCanvasOpen] = useState(true);
   const startWithCamera = useRef(false);
   const pendingStart = useRef<{ conversation: AppConversation; video: boolean } | null>(null);
-  const voiceSession = useVoiceCall(voiceConversation.id, props.currentUser.id);
+  const voiceSession = useVoiceCall(voiceConversation.id, props.currentUser.id, { direct: voiceConversation.kind === 'direct' });
   const voiceState = normalizeCallState(voiceSession.state);
   useEffect(() => {
     if (voiceState === 'idle' && voiceConversation.id !== props.conversation.id) setVoiceConversation(props.conversation);
@@ -3768,9 +3843,10 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return next;
     });
   }, [currentUser.id]);
-  const voiceSession = useVoiceCall(voiceConversationId, currentUser.id);
+  const activeVoiceConversation = conversations.find((conversation) => conversation.id === voiceConversationId) || null;
+  const voiceSession = useVoiceCall(voiceConversationId, currentUser.id, { direct: activeVoiceConversation?.kind === 'direct' });
   const voiceState = normalizeCallState(voiceSession.state);
-  const voiceConversation = conversations.find((conversation) => conversation.id === voiceConversationId) || null;
+  const voiceConversation = activeVoiceConversation;
   const voiceDockVisible = Boolean(voiceConversation && !callCanvasOpen && (isJoinedCallState(voiceState) || (voiceState === 'available' && voiceSession.joined)));
   const toast = useToast();
   const resolveSidebarWidth = (rawWidth: number) => (rawWidth < SIDEBAR_COLLAPSE_THRESHOLD ? SIDEBAR_COMPACT_WIDTH : Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, rawWidth)));
@@ -4041,10 +4117,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return next;
     });
     setConversations((items) => {
-      const next = sortConversationsByActivity(items.map((conversation) => ({
-        ...conversation,
-        members: conversation.members.map((member) => member.id === updatedUser.id ? { ...member, ...updatedUser } : member),
-      })));
+      const next = sortConversationsByActivity(items.map((conversation) => updateConversationUser(conversation, updatedUser, currentUserRef.current.id)));
       conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
       return next;
     });
@@ -4433,17 +4506,21 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       }
       if (event.type === 'relationship:update') applyRelationshipUser(event.user);
       if (event.type === 'profile:update' || event.type === 'presence:update') {
+        if (event.user.id === currentUserRef.current.id) onUserUpdate(event.user);
         setUsers((items) => {
           const next = items.map((user) => (user.id === event.user.id ? { ...event.user, relationship: user.relationship } : user));
           userCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
           return next;
         });
         setConversations((items) => {
-          const next = items.map((conversation) => ({
-            ...conversation,
-            members: conversation.members.map((member) => (member.id === event.user.id ? { ...event.user, relationship: member.relationship } : member)),
-            title: conversation.kind === 'direct' && event.user.id !== currentUser.id ? event.user.name : conversation.title,
-          }));
+          const next = items.map((conversation) => {
+            const member = conversation.members.find((item) => item.id === event.user.id);
+            return updateConversationUser(
+              conversation,
+              member ? { ...event.user, relationship: member.relationship } : event.user,
+              currentUserRef.current.id,
+            );
+          });
           conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
           return next;
         });
@@ -4471,22 +4548,77 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       typingExpiryTimers.current.clear();
       realtime.close();
     };
-  }, [applyRelationshipUser, applyVoiceListenReceipt, reloadConversations, removeConversationFromClient, selectConversation, currentUser.id, persistentReady, syncActiveMessages, syncOverview, toast, updateTypingUser]);
+  }, [applyRelationshipUser, applyVoiceListenReceipt, reloadConversations, removeConversationFromClient, selectConversation, currentUser.id, onUserUpdate, persistentReady, syncActiveMessages, syncOverview, toast, updateTypingUser]);
   useEffect(() => {
+    const desktopShell = window.movaDesktopShell;
+    if (desktopShell?.getSystemIdleTime) {
+      let active = true;
+      let checking = false;
+      const synchronizeDesktopPresence = async () => {
+        if (checking) return;
+        checking = true;
+        try {
+          const idleSeconds = await desktopShell.getSystemIdleTime!();
+          if (!active) return;
+          const nextPresence = presenceUpdateForSystemIdle(currentUserRef.current.presence, idleSeconds);
+          if (nextPresence) {
+            const result = await api.updatePresence(nextPresence);
+            if (active) onUserUpdate(result.user);
+          }
+        } catch {
+          // A temporary IPC/network failure is retried on the next interval.
+        } finally {
+          checking = false;
+        }
+      };
+      void synchronizeDesktopPresence();
+      const timer = window.setInterval(() => void synchronizeDesktopPresence(), 30_000);
+      return () => {
+        active = false;
+        window.clearInterval(timer);
+      };
+    }
     const markActive = () => {
       lastActivity.current = Date.now();
-      if (currentUserRef.current.presence === 'idle') void api.updatePresence('online').then((result) => onUserUpdate(result.user));
+      if (currentUserRef.current.presence === 'idle') void api.updatePresence('online').then((result) => onUserUpdate(result.user)).catch(() => undefined);
     };
     const events = ['pointerdown', 'keydown', 'mousemove'];
     events.forEach((event) => window.addEventListener(event, markActive, { passive: true }));
     const timer = window.setInterval(() => {
-      if (currentUserRef.current.presence === 'online' && Date.now() - lastActivity.current >= 15 * 60_000) void api.updatePresence('idle').then((result) => onUserUpdate(result.user));
+      if (currentUserRef.current.presence === 'online' && Date.now() - lastActivity.current >= 15 * 60_000) void api.updatePresence('idle').then((result) => onUserUpdate(result.user)).catch(() => undefined);
     }, 30_000);
     return () => {
       events.forEach((event) => window.removeEventListener(event, markActive));
       window.clearInterval(timer);
     };
   }, [onUserUpdate]);
+  useEffect(() => {
+    const desktopShell = window.movaDesktopShell;
+    if (!desktopShell?.getGameActivity || !desktopShell.onGameActivityChange) return;
+    let active = true;
+    let requestedName: string | null | undefined;
+    const synchronizeGame = (activity: { name: string; startedAt: string } | null) => {
+      const name = activity?.name?.trim() || null;
+      realtime.send({ type: 'activity:update', name });
+      if (requestedName === name) return;
+      requestedName = name;
+      void api.updateActivity(name).then((result) => {
+        if (active) onUserUpdate(result.user);
+      }).catch(() => {
+        if (active) requestedName = undefined;
+      });
+    };
+    const dispose = desktopShell.onGameActivityChange(synchronizeGame);
+    const disposeRealtime = realtime.subscribe((event) => {
+      if (event.type === 'ready') void desktopShell.getGameActivity!().then((activity) => active && synchronizeGame(activity)).catch(() => undefined);
+    });
+    void desktopShell.getGameActivity().then((activity) => active && synchronizeGame(activity)).catch(() => undefined);
+    return () => {
+      active = false;
+      dispose();
+      disposeRealtime();
+    };
+  }, [currentUser.id, onUserUpdate]);
   useEffect(() => {
     if (currentUser.presence !== 'dnd' || !currentUser.dndUntil || currentUser.dndUntil === 'forever') return;
     const remaining = new Date(currentUser.dndUntil).getTime() - Date.now();
@@ -5008,11 +5140,11 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
         )}
         {!searchActive && composeMenuOpen && (
           <div className="mova-compose-menu" role="menu" aria-label="Создание разговора">
-            <button type="button" role="menuitem" aria-disabled="true">
+            <button type="button" role="menuitem" className="is-coming-soon" aria-label="Создать канал — в разработке" aria-disabled="true" disabled>
               <Megaphone size={24} />
-              <span>Создать канал</span>
+              <span><strong>Создать канал</strong><small>В разработке</small></span>
             </button>
-            <button type="button" role="menuitem" aria-disabled="true">
+            <button type="button" role="menuitem" onClick={() => { setComposeMenuOpen(false); setCreateOpen(true); }}>
               <Users size={24} />
               <span>Создать группу</span>
             </button>
@@ -5104,14 +5236,14 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
             <span><img src="/mova-logo.png" alt="" /></span>
             <h1>Mova</h1>
             <p>Выберите разговор или создайте новый</p>
-            <Button leadingIcon={<Plus size={17} />} onClick={() => setCreateOpen(true)}>
+            <Button leadingIcon={<Plus size={17} />} onClick={() => openGlobalSearch('users')}>
               Новый разговор
             </Button>
           </div>
         </section>
       )}
       {voiceDockVisible && voiceConversation && <VoiceDock conversation={voiceConversation} call={voiceSession} onReturn={returnToCall} />}
-      <CreateConversation
+      <CreateGroup
         open={createOpen}
         users={users}
         onClose={() => setCreateOpen(false)}

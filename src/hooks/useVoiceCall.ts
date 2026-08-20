@@ -9,6 +9,20 @@ export type LegacyCallState = CallState | 'active' | 'error';
 export type JoinedCallState = 'connected' | 'reconnecting' | 'disconnected';
 export const normalizeCallState = (state: LegacyCallState): CallState => (state === 'active' ? 'connected' : state === 'error' ? 'disconnected' : state);
 export const isJoinedCallState = (state: CallState): state is JoinedCallState => ['connected', 'reconnecting', 'disconnected'].includes(state);
+export const shouldPlaySelfConnectSound = (joiningExistingCall: boolean, direct: boolean) => joiningExistingCall && !direct;
+export interface OutgoingAudioSample {
+  connected: boolean;
+  senderActive: boolean;
+  previousBytes?: number;
+  currentBytes: number;
+}
+export const isOutgoingVoiceTransmitted = (voiceDetected: boolean, muted: boolean, samples: OutgoingAudioSample[]) =>
+  voiceDetected && !muted && samples.some((sample) =>
+    sample.connected
+    && sample.senderActive
+    && sample.previousBytes !== undefined
+    && sample.currentBytes > sample.previousBytes,
+  );
 export interface ScreenShareQuality {
   width: number;
   height: number;
@@ -91,6 +105,7 @@ const participantVolumeKey = 'mova-call-participant-volumes';
 const screenVolumeKey = 'mova-call-screen-volumes';
 const reconnectTimeoutMs = 12_000;
 const ringtoneFadeInMs = 2_000;
+const ringtoneVolumeScale = 0.7;
 
 const microphoneConstraints = (settings: AudioSettings): MediaTrackConstraints => ({
   ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
@@ -138,7 +153,7 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
     let fadeFrame: number | null = null;
     audio.loop = true;
     audio.volume = 0;
-    const targetVolume = settings.systemVolume / 100;
+    const targetVolume = (settings.systemVolume / 100) * ringtoneVolumeScale;
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
     const fadeIn = () => {
@@ -237,7 +252,7 @@ function startVoiceActivityMonitor(analyser: AnalyserNode, onChange: (speaking: 
 
 const fallbackIceServers: RTCIceServer[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
 
-export function useVoiceCall(conversationId: string | null, currentUserId?: string) {
+export function useVoiceCall(conversationId: string | null, currentUserId?: string, { direct = false }: { direct?: boolean } = {}) {
   const [state, setState] = useState<CallState>('idle');
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
@@ -273,6 +288,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const localGain = useRef<GainNode | null>(null);
   const localVoiceMonitor = useRef<(() => void) | null>(null);
   const localSpeakingRef = useRef(false);
+  const outgoingAudioBytes = useRef(new Map<string, number>());
+  const inspectOutgoingVoiceRef = useRef<() => Promise<void>>(async () => undefined);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const activeScreenQuality = useRef<ScreenShareQuality>({ width: 1920, height: 1080, frameRate: 30 });
@@ -749,6 +766,44 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     setDiagnostics(next);
   }, []);
 
+  const inspectOutgoingVoice = useCallback(async () => {
+    const track = localStream.current?.getAudioTracks()[0];
+    if (!localSpeakingRef.current || mutedRef.current || !track?.enabled || track.readyState !== 'live') {
+      outgoingAudioBytes.current.clear();
+      setLocalSpeaking(false);
+      return;
+    }
+    const samples = await Promise.all([...peers.current.entries()].map(async ([userId, peer]): Promise<OutgoingAudioSample> => {
+      const connected = peer.connectionState === 'connected';
+      const senderActive = connected && peer.getSenders().some((sender) => sender.track === track && sender.track.enabled && sender.track.readyState === 'live');
+      if (!senderActive) {
+        outgoingAudioBytes.current.delete(userId);
+        return { connected, senderActive, currentBytes: 0 };
+      }
+      try {
+        const reports = await peer.getStats();
+        let currentBytes = 0;
+        reports.forEach((report) => {
+          const mediaKind = report.kind || report.mediaType;
+          if (report.type === 'outbound-rtp' && mediaKind === 'audio' && !report.isRemote) currentBytes += Number(report.bytesSent || 0);
+        });
+        const previousBytes = outgoingAudioBytes.current.get(userId);
+        outgoingAudioBytes.current.set(userId, currentBytes);
+        return { connected, senderActive, previousBytes, currentBytes };
+      } catch {
+        outgoingAudioBytes.current.delete(userId);
+        return { connected, senderActive: false, currentBytes: 0 };
+      }
+    }));
+    const currentTrack = localStream.current?.getAudioTracks()[0];
+    const transmitted = currentTrack === track
+      && track.enabled
+      && track.readyState === 'live'
+      && isOutgoingVoiceTransmitted(localSpeakingRef.current, mutedRef.current, samples);
+    setLocalSpeaking(transmitted);
+  }, []);
+  inspectOutgoingVoiceRef.current = inspectOutgoingVoice;
+
   const announceLocalState = useCallback(() => {
     if (!conversationId) return;
     realtime.send({
@@ -790,7 +845,16 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       localAudioContext.current = context;
       localVoiceMonitor.current = startVoiceActivityMonitor(analyser, (speaking) => {
         localSpeakingRef.current = speaking;
-        setLocalSpeaking(speaking);
+        if (!speaking) {
+          outgoingAudioBytes.current.clear();
+          setLocalSpeaking(false);
+          return;
+        }
+        void inspectOutgoingVoiceRef.current().then(() => {
+          window.setTimeout(() => {
+            if (localSpeakingRef.current) void inspectOutgoingVoiceRef.current();
+          }, 100);
+        });
       });
       await context.resume().catch(() => undefined);
     } catch {
@@ -798,7 +862,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     }
   }, []);
 
-  const connectAudio = useCallback(async () => {
+  const connectAudio = useCallback(async (playSelfConnectSound = false) => {
     if (!conversationId) return;
     if (stateRef.current === 'connecting') return;
     if (localStream.current) {
@@ -859,7 +923,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       realtime.send({ type: 'voice:join', conversationId });
       markConnected();
       setJoined(true);
-      playCallSound('connect');
+      if (playSelfConnectSound) playCallSound('connect');
       setStoredCall(activeCallKey, conversationId);
       setStoredCall(pendingCallKey, null);
       if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
@@ -935,6 +999,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setRemoteVoiceStates({});
       setReconnectingUsers({});
       localSpeakingRef.current = false;
+      outgoingAudioBytes.current.clear();
       setLocalSpeaking(false);
       setSpeakingUsers({});
       if (localAudioContext.current?.state !== 'closed') void localAudioContext.current?.close().catch(() => undefined);
@@ -1216,6 +1281,18 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     return () => window.clearInterval(timer);
   }, [inspectPeerConnections, state]);
 
+  useEffect(() => {
+    if (!isJoinedCallState(state)) {
+      outgoingAudioBytes.current.clear();
+      setLocalSpeaking(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (localSpeakingRef.current) void inspectOutgoingVoice();
+    }, 300);
+    return () => window.clearInterval(timer);
+  }, [inspectOutgoingVoice, state]);
+
   const switchMicrophone = useCallback(async (settings: AudioSettings) => {
     const previousSourceStream = localSourceStream.current;
     const previousLocalStream = localStream.current;
@@ -1353,7 +1430,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     setStoredCall(pendingCallKey, conversationId);
     if (!joiningExistingCall) realtime.send({ type: 'call:accept', conversationId });
     setIncomingFrom(null);
-    await connectAudio();
+    await connectAudio(shouldPlaySelfConnectSound(joiningExistingCall, direct));
   };
   const decline = () => {
     if (conversationId) realtime.send({ type: 'call:decline', conversationId });

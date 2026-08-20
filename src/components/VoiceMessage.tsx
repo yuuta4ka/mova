@@ -53,6 +53,7 @@ export function VoiceMessage({ attachment, unlistened = false, onListen }: { att
       return;
     }
     try {
+      if (audio.readyState === HTMLMediaElement.HAVE_NOTHING) audio.load();
       await audio.play();
     } catch {
       setPlaying(false);
@@ -64,7 +65,8 @@ export function VoiceMessage({ attachment, unlistened = false, onListen }: { att
       <audio
         ref={audioRef}
         src={attachment.url || attachment.dataUrl}
-        preload="metadata"
+        preload="auto"
+        playsInline
         onLoadedMetadata={(event) => {
           const actualDuration = event.currentTarget.duration;
           if (Number.isFinite(actualDuration)) setDuration(actualDuration);

@@ -304,6 +304,12 @@ describe('realtime while maintenance state changes', () => {
     expect((await peersForSecond).peers).toEqual([first.user.id]);
     await bothConnected;
 
+    const duplicatePeers = waitForEvent(secondSocket, 'voice:peers', (event) => event.conversationId === conversationId);
+    const noDuplicateJoin = expectNoEvent(firstSocket, 'voice:joined');
+    secondSocket.send(JSON.stringify({ type: 'voice:join', conversationId }));
+    expect((await duplicatePeers).peers).toEqual([first.user.id]);
+    await noDuplicateJoin;
+
     const reconnecting = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.connectionState === 'reconnecting'));
     firstSocket.close();
     const reconnectingSnapshot = await reconnecting;
@@ -316,10 +322,12 @@ describe('realtime while maintenance state changes', () => {
     const restoredSocket = await openSocket(first.token);
     const restoredPeers = waitForEvent(restoredSocket, 'voice:peers', (event) => event.conversationId === conversationId);
     const restored = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.some((participant) => participant.userId === first.user.id && participant.connectionState === 'connected'));
+    const noReconnectJoin = expectNoEvent(secondSocket, 'voice:joined');
     restoredSocket.send(JSON.stringify({ type: 'voice:join', conversationId }));
     expect((await restoredPeers).peers).toEqual([second.user.id]);
     const restoredSnapshot = await restored;
     expect(restoredSnapshot.participants.find((participant) => participant.userId === first.user.id)).toMatchObject({ muted: true, media: { camera: 'camera-stream' } });
+    await noReconnectJoin;
 
     const left = waitForEvent(secondSocket, 'voice:left', (event) => event.conversationId === conversationId && event.userId === first.user.id);
     const afterLeave = waitForEvent(secondSocket, 'voice:snapshot', (event) => event.conversationId === conversationId && event.participants.length === 1);

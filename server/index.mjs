@@ -378,6 +378,18 @@ function safeSocketSend(socket, payload) {
   if (socket.bufferedAmount > 2_000_000) return socket.close(4008, 'Client too slow');
   socket.send(payload);
 }
+function synchronizeSocketGameActivity(userId) {
+  const activeSocket = [...(clients.get(userId) || [])]
+    .filter((socket) => socket.gameActivityName)
+    .sort((left, right) => (right.gameActivityChangedAt || 0) - (left.gameActivityChangedAt || 0))[0];
+  const currentUser = database.getUserById(userId);
+  if (!currentUser) return;
+  const nextName = activeSocket?.gameActivityName || '';
+  if ((currentUser.activity?.name || '') === nextName) return;
+  currentUser.activity = nextName ? { type: 'game', name: nextName, startedAt: new Date().toISOString() } : null;
+  database.updateUser(currentUser);
+  broadcastAll({ type: 'profile:update', user: publicUser(currentUser) });
+}
 function roomUserIds(conversationId) {
   return [...(voiceRooms.get(conversationId)?.keys() || [])];
 }
@@ -696,13 +708,18 @@ async function handleApi(request, response) {
           .slice(0, 240),
         avatarDataUrl,
         bannerDataUrl,
-        activity: data.activity?.name
-          ? {
-              name: String(data.activity.name).trim().slice(0, 80),
-              startedAt: data.activity.startedAt || new Date().toISOString(),
-            }
-          : null,
       });
+      database.updateUser(user);
+      const dto = publicUser(user);
+      broadcastAll({ type: 'profile:update', user: dto }, user.id);
+      return json(response, 200, { user: dto });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/activity') {
+      if (!allowRequest(`activity:${user.id}`, 30, 60_000)) throw Object.assign(new Error('Слишком много обновлений активности'), { statusCode: 429 });
+      const data = await body(request);
+      const name = String(data.name || '').trim().slice(0, 80);
+      if ((user.activity?.name || '') === name) return json(response, 200, { user: publicUser(user) });
+      user.activity = name ? { type: 'game', name, startedAt: new Date().toISOString() } : null;
       database.updateUser(user);
       const dto = publicUser(user);
       broadcastAll({ type: 'profile:update', user: dto }, user.id);
@@ -743,14 +760,23 @@ async function handleApi(request, response) {
       const kind = data.kind === 'direct' ? 'direct' : 'group';
       const title = kind === 'group' ? String(data.title || '').trim() : '';
       if (kind === 'group' && title.length < 2) return json(response, 400, { error: 'Введите название группы' });
+      if (kind === 'group' && title.length > 80) return json(response, 400, { error: 'Название группы должно быть короче 80 символов' });
       if (kind === 'group' && requestedIds.length < 1)
         return json(response, 400, {
           error: 'Добавьте хотя бы одного участника',
         });
+      if (kind === 'group' && requestedIds.length > 199) return json(response, 400, { error: 'В группе может быть до 200 участников' });
+      if (kind === 'group' && requestedIds.some((memberId) => !database.areFriends(user.id, memberId)))
+        return json(response, 403, { error: 'В группу можно добавлять только друзей' });
+      const rawAvatar = kind === 'group' ? String(data.avatarDataUrl || '') : '';
+      if ((rawAvatar && !rawAvatar.startsWith('data:image/') && !rawAvatar.startsWith('/uploads/')) || rawAvatar.length > 8_000_000)
+        return json(response, 400, { error: 'Фото группы слишком большое или имеет неверный формат' });
+      const avatarDataUrl = kind === 'group' ? await database.normalizeConversationImage(rawAvatar, `${user.id}-group-avatar`, user.id) : '';
       const conversation = {
         id: id('cnv'),
         kind,
         title,
+        avatarDataUrl,
         createdBy: user.id,
         createdAt: new Date().toISOString(),
       };
@@ -1111,6 +1137,13 @@ function handleSocket(socket, request) {
             sentAt: Number(event.sentAt) || Date.now(),
           }),
         );
+      if (event.type === 'activity:update') {
+        const name = String(event.name || '').trim().slice(0, 80);
+        if (socket.gameActivityName !== name) socket.gameActivityChangedAt = Date.now();
+        socket.gameActivityName = name;
+        socket.gameActivityDeclared = true;
+        return synchronizeSocketGameActivity(user.id);
+      }
       const conversationId = event.conversationId;
       if (!conversationId || !isMember(user.id, conversationId)) return;
       if (event.type === 'typing') {
@@ -1131,6 +1164,7 @@ function handleSocket(socket, request) {
       if (event.type === 'call:sync') return safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
       if (event.type === 'call:invite') {
         if (!canCallInConversation(conversationId, user.id)) return;
+        const caller = database.getUserById(user.id) || user;
         const createdAt = Date.now();
         activeCalls.set(conversationId, {
           fromUserId: user.id,
@@ -1142,16 +1176,16 @@ function handleSocket(socket, request) {
           if (targetUserId !== user.id)
             void sendPushToUser(targetUserId, {
               kind: 'call',
-              title: `Входящий звонок · ${user.name}`,
+              title: `Входящий звонок · ${caller.name}`,
               body: 'Нажмите, чтобы открыть Mova',
-              icon: user.avatarDataUrl || '/icon-192.png',
+              icon: caller.avatarDataUrl || '/icon-192.png',
               badge: '/icon-192.png',
               tag: `mova-call-${conversationId}`,
               conversationId,
               url: `/app?conversation=${encodeURIComponent(conversationId)}&call=incoming`,
               requireInteraction: true,
             });
-        return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(user), createdAt: new Date(createdAt).toISOString() }, user.id);
+        return broadcastToConversation(conversationId, { type: 'call:invite', conversationId, from: publicUser(caller), createdAt: new Date(createdAt).toISOString() }, user.id);
       }
       if (event.type === 'call:accept') {
         if (!canCallInConversation(conversationId, user.id)) return;
@@ -1199,12 +1233,16 @@ function handleSocket(socket, request) {
         if (!voiceRooms.has(conversationId)) voiceRooms.set(conversationId, new Map());
         const room = voiceRooms.get(conversationId);
         const peers = [...room.keys()].filter((userId) => userId !== user.id);
+        const participantJoined = !room.has(user.id);
         if (!room.has(user.id)) room.set(user.id, new Set());
         clearVoiceReconnect(conversationId, user.id);
         voiceStateFor(conversationId, user.id);
         room.get(user.id).add(socket);
         safeSocketSend(socket, JSON.stringify({ type: 'voice:peers', conversationId, peers }));
-        broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(user) }, user.id);
+        if (participantJoined) {
+          const participant = database.getUserById(user.id) || user;
+          broadcastToConversation(conversationId, { type: 'voice:joined', conversationId, user: publicUser(participant) }, user.id);
+        }
         return broadcastVoiceSnapshot(conversationId);
       }
       if (event.type === 'voice:leave') return leaveVoice(socket);
@@ -1258,15 +1296,17 @@ function handleSocket(socket, request) {
   socket.on('close', () => {
     leaveVoice(socket, true);
     clients.get(user.id)?.delete(socket);
+    if (socket.gameActivityDeclared) synchronizeSocketGameActivity(user.id);
     for (const conversationId of socket.typingConversationIds || []) {
       const stillTyping = [...(clients.get(user.id) || [])].some((otherSocket) => otherSocket.typingConversationIds?.has(conversationId));
       if (!stillTyping) broadcastToConversation(conversationId, { type: 'typing', conversationId, userId: user.id, active: false }, user.id);
     }
     if (clients.get(user.id)?.size === 0) {
       clients.delete(user.id);
-      user.lastActiveAt = new Date().toISOString();
-      database.updateUser(user);
-      broadcastAll({ type: 'presence:update', user: publicUser(user) }, user.id);
+      const lastActiveAt = new Date().toISOString();
+      database.updateLastActiveAt(user.id, lastActiveAt);
+      const currentUser = database.getUserById(user.id);
+      if (currentUser) broadcastAll({ type: 'presence:update', user: publicUser(currentUser) }, user.id);
     }
   });
 }

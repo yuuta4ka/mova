@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, ipcMain, nativeImage, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
 import updater from 'electron-updater';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -7,6 +7,7 @@ import { availableSharePickerTabs, buildSharePickerSources } from './share-picke
 import { desktopCallStatusLabel, resolveDesktopCallStatus, shouldKeepDesktopWindowOpen } from './tray-status.mjs';
 import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, updateStartupDelayMs } from './update-state.mjs';
 import { desktopWindowFrameOptions } from './window-shell.mjs';
+import { detectRunningGame, gameActivityPollIntervalMs } from './game-activity.mjs';
 
 const { autoUpdater } = updater;
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +27,10 @@ let sharePickerSequence = 0;
 let activeSharePicker = null;
 let updateStartupTimer = null;
 let updateIntervalTimer = null;
+let gameActivityTimer = null;
+let gameActivityScanInFlight = false;
+let desktopGameActivity = null;
+let launchHidden = process.argv.includes('--hidden');
 const desktopUpdateState = {
   configured: false,
   phase: 'idle',
@@ -61,11 +66,60 @@ async function readConfiguredUrl() {
   }
 }
 
+async function readDesktopSettings() {
+  try {
+    const settings = JSON.parse(await readFile(settingsPath(), 'utf8'));
+    return settings && typeof settings === 'object' ? settings : {};
+  } catch {
+    return {};
+  }
+}
+
+async function updateDesktopSettings(values) {
+  const settings = { ...(await readDesktopSettings()), ...values };
+  await writeFile(settingsPath(), JSON.stringify(settings, null, 2));
+  return settings;
+}
+
 async function saveConfiguredUrl(value) {
   const normalized = normalizeAppUrl(value, { allowLocal: !app.isPackaged });
   if (!normalized) throw new Error('Укажите корректный HTTPS-адрес Mova.');
-  await writeFile(settingsPath(), JSON.stringify({ appUrl: normalized }, null, 2));
+  await updateDesktopSettings({ appUrl: normalized });
   return normalized;
+}
+
+function supportsAutoLaunch() {
+  return process.platform === 'darwin' || process.platform === 'win32';
+}
+
+function applyAutoLaunch(enabled) {
+  if (!supportsAutoLaunch() || !app.isPackaged) return;
+  if (process.platform === 'win32') {
+    app.setLoginItemSettings({ openAtLogin: enabled, args: enabled ? ['--hidden'] : [] });
+    return;
+  }
+  app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: enabled });
+}
+
+async function initializeAutoLaunch() {
+  const settings = await readDesktopSettings();
+  const enabled = typeof settings.autoLaunch === 'boolean' ? settings.autoLaunch : true;
+  if (typeof settings.autoLaunch !== 'boolean') await updateDesktopSettings({ autoLaunch: true });
+  applyAutoLaunch(enabled);
+  if (process.platform === 'darwin' && app.isPackaged) launchHidden ||= app.getLoginItemSettings().wasOpenedAtLogin === true;
+  return enabled;
+}
+
+async function setAutoLaunch(enabled) {
+  const normalized = enabled === true;
+  await updateDesktopSettings({ autoLaunch: normalized });
+  applyAutoLaunch(normalized);
+  return normalized;
+}
+
+async function configuredAutoLaunch() {
+  const settings = await readDesktopSettings();
+  return typeof settings.autoLaunch === 'boolean' ? settings.autoLaunch : true;
 }
 
 function isTrustedOrigin(origin) {
@@ -154,6 +208,30 @@ function createTray() {
   tray.on('click', revealMainWindow);
   tray.on('double-click', revealMainWindow);
   applyDesktopCallStatus(desktopCallStatus);
+}
+
+function sendGameActivity() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop-activity:game-change', desktopGameActivity);
+}
+
+async function refreshGameActivity() {
+  if (gameActivityScanInFlight) return;
+  gameActivityScanInFlight = true;
+  try {
+    const name = await detectRunningGame();
+    if (name === desktopGameActivity?.name || (!name && !desktopGameActivity)) return;
+    desktopGameActivity = name ? { name, startedAt: new Date().toISOString() } : null;
+    sendGameActivity();
+  } finally {
+    gameActivityScanInFlight = false;
+  }
+}
+
+function startGameActivityDetection() {
+  if (gameActivityTimer || !['darwin', 'win32'].includes(process.platform)) return;
+  void refreshGameActivity();
+  gameActivityTimer = setInterval(() => void refreshGameActivity(), gameActivityPollIntervalMs);
+  gameActivityTimer.unref?.();
 }
 
 async function chooseDesktopSource(sources) {
@@ -290,6 +368,7 @@ function configureWindowShell(window) {
     window.webContents.once('did-finish-load', () => sendMaximizedState(window));
   }
   window.webContents.once('did-finish-load', () => applyDesktopCallStatus(desktopCallStatus));
+  window.webContents.once('did-finish-load', sendGameActivity);
   window.webContents.once('did-finish-load', setUpdateProgressBar);
 }
 
@@ -306,7 +385,10 @@ async function showSetup() {
   mainWindow = createWindow({ preload: setupPreloadPath });
   lockWindowTitle(mainWindow);
   configureWindowShell(mainWindow);
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.once('ready-to-show', () => {
+    if (!launchHidden) mainWindow?.show();
+    launchHidden = false;
+  });
   await mainWindow.loadFile(setupPath);
   createMenu();
 }
@@ -327,7 +409,10 @@ async function showApp() {
     event.preventDefault();
     if (/^https?:/.test(url)) void shell.openExternal(url);
   });
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.once('ready-to-show', () => {
+    if (!launchHidden) mainWindow?.show();
+    launchHidden = false;
+  });
   const userAgent = `${mainWindow.webContents.getUserAgent()} MovaDesktop/${app.getVersion()}`;
   const desktopUrl = new URL(appUrl);
   if (desktopUrl.pathname === '/') desktopUrl.pathname = '/app';
@@ -516,6 +601,19 @@ ipcMain.on('desktop-share-picker:cancel', (event, requestId) => {
   request.finish();
 });
 ipcMain.handle('desktop-window:is-maximized', (event) => controlledMainWindow(event)?.isMaximized() ?? false);
+ipcMain.handle('desktop-settings:get-auto-launch', async (event) => {
+  if (!controlledMainWindow(event)) return false;
+  return configuredAutoLaunch();
+});
+ipcMain.handle('desktop-settings:set-auto-launch', async (event, enabled) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  return setAutoLaunch(enabled === true);
+});
+ipcMain.handle('desktop-activity:get-system-idle-time', (event) => {
+  if (!controlledMainWindow(event)) return 0;
+  return Math.max(0, Math.round(powerMonitor.getSystemIdleTime()));
+});
+ipcMain.handle('desktop-activity:get-game', (event) => (controlledMainWindow(event) ? desktopGameActivity : null));
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -525,10 +623,12 @@ else {
 
   app.whenReady().then(async () => {
     app.setName('Mova');
+    await initializeAutoLaunch();
     createTray();
     appUrl = await readConfiguredUrl();
     configurePermissions();
     await showApp();
+    startGameActivityDetection();
     configureUpdates();
     app.on('activate', () => {
       revealMainWindow();
@@ -540,4 +640,5 @@ app.on('before-quit', () => {
   isQuitting = true;
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
   if (updateIntervalTimer) clearInterval(updateIntervalTimer);
+  if (gameActivityTimer) clearInterval(gameActivityTimer);
 });

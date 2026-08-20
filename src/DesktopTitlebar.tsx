@@ -11,8 +11,18 @@ export type DesktopShellApi = {
   onSharePickerRequest?: (callback: (payload: DesktopSharePickerRequest) => void) => () => void;
   chooseShareSource?: (requestId: string, sourceId: string) => void;
   cancelSharePicker?: (requestId: string) => void;
+  getAutoLaunch?: () => Promise<boolean>;
+  setAutoLaunch?: (enabled: boolean) => Promise<boolean>;
+  getSystemIdleTime?: () => Promise<number>;
+  getGameActivity?: () => Promise<DesktopGameActivity | null>;
+  onGameActivityChange?: (callback: (activity: DesktopGameActivity | null) => void) => () => void;
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
+};
+
+export type DesktopGameActivity = {
+  name: string;
+  startedAt: string;
 };
 
 export type DesktopShareSourceKind = 'window' | 'screen' | 'device';

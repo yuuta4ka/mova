@@ -99,6 +99,7 @@ function rowConversation(row) {
         id: row.id,
         kind: row.kind,
         title: row.title || '',
+        avatarDataUrl: row.avatar_url || '',
         createdBy: row.created_by,
         createdAt: row.created_at,
       }
@@ -148,6 +149,7 @@ export async function openDatabase(paths) {
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
+      avatar_url TEXT NOT NULL DEFAULT '',
       created_by TEXT NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL
     );
@@ -221,6 +223,8 @@ export async function openDatabase(paths) {
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
   if (!messageColumns.some((column) => column.name === 'friend_request_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN friend_request_json TEXT');
+  const conversationColumns = sqlite.prepare('PRAGMA table_info(conversations)').all();
+  if (!conversationColumns.some((column) => column.name === 'avatar_url')) sqlite.exec("ALTER TABLE conversations ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_client ON messages(author_id, client_id) WHERE client_id IS NOT NULL');
   const database = new MovaDatabase(sqlite, paths);
   await database.migrateLegacyJson();
@@ -362,6 +366,19 @@ export class MovaDatabase {
     return (await this.storeDataUrl(value, name, ownerId, 'profile')).url;
   }
 
+  async normalizeConversationImage(value, name, ownerId = null) {
+    if (!value) return '';
+    if (String(value).startsWith('/uploads/')) {
+      const fileName = String(value).slice('/uploads/'.length);
+      const upload = this.sqlite.prepare('SELECT owner_id, purpose FROM uploads WHERE file_name=?').get(fileName);
+      if (!upload || (ownerId && upload.owner_id && upload.owner_id !== ownerId) || !['conversation', 'pending'].includes(upload.purpose)) throw Object.assign(new Error('Изображение группы недоступно'), { statusCode: 403 });
+      this.sqlite.prepare("UPDATE uploads SET purpose='conversation' WHERE file_name=?").run(fileName);
+      return String(value);
+    }
+    if (!String(value).startsWith('data:image/')) throw Object.assign(new Error('Некорректное изображение группы'), { statusCode: 400 });
+    return (await this.storeDataUrl(value, name, ownerId, 'conversation')).url;
+  }
+
   async cleanupOrphanUploads(maxAgeMs = 24 * 60 * 60_000) {
     const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
     const rows = this.sqlite
@@ -369,6 +386,9 @@ export class MovaDatabase {
         (purpose='pending' AND attached_message_id IS NULL) OR
         (purpose='profile' AND NOT EXISTS (
           SELECT 1 FROM users WHERE avatar_url='/uploads/' || uploads.file_name OR banner_url='/uploads/' || uploads.file_name
+        )) OR
+        (purpose='conversation' AND NOT EXISTS (
+          SELECT 1 FROM conversations WHERE avatar_url='/uploads/' || uploads.file_name
         ))
       )`)
       .all(cutoff);
@@ -533,6 +553,10 @@ export class MovaDatabase {
       .run(user.name, user.email, user.handle, user.color, user.presence, user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.id);
   }
 
+  updateLastActiveAt(userId, lastActiveAt) {
+    this.sqlite.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(lastActiveAt, userId);
+  }
+
   isMember(userId, conversationId) {
     return Boolean(this.sqlite.prepare('SELECT 1 FROM memberships WHERE user_id = ? AND conversation_id = ?').get(userId, conversationId));
   }
@@ -546,7 +570,7 @@ export class MovaDatabase {
   }
 
   insertConversation(conversation) {
-    this.sqlite.prepare('INSERT INTO conversations(id,kind,title,created_by,created_at) VALUES(?,?,?,?,?)').run(conversation.id, conversation.kind, conversation.title || '', conversation.createdBy, conversation.createdAt);
+    this.sqlite.prepare('INSERT INTO conversations(id,kind,title,avatar_url,created_by,created_at) VALUES(?,?,?,?,?,?)').run(conversation.id, conversation.kind, conversation.title || '', conversation.avatarDataUrl || '', conversation.createdBy, conversation.createdAt);
   }
 
   insertMembership(membership) {
@@ -562,12 +586,15 @@ export class MovaDatabase {
   }
 
   async deleteConversation(conversationId) {
+    const conversation = this.getConversation(conversationId);
+    const avatarFileName = conversation?.avatarDataUrl?.startsWith('/uploads/') ? conversation.avatarDataUrl.slice('/uploads/'.length) : '';
     const uploads = this.sqlite.prepare('SELECT file_name FROM uploads WHERE attached_message_id IN (SELECT id FROM messages WHERE conversation_id=?)').all(conversationId);
     const deleted = this.transaction(() => {
       this.sqlite.prepare('DELETE FROM uploads WHERE attached_message_id IN (SELECT id FROM messages WHERE conversation_id=?)').run(conversationId);
+      if (avatarFileName) this.sqlite.prepare("DELETE FROM uploads WHERE file_name=? AND purpose='conversation'").run(avatarFileName);
       return this.sqlite.prepare('DELETE FROM conversations WHERE id=?').run(conversationId).changes > 0;
     });
-    if (deleted) await Promise.all(uploads.map((row) => unlink(join(this.paths.uploadsPath, row.file_name)).catch(() => undefined)));
+    if (deleted) await Promise.all([...new Set([...uploads.map((row) => row.file_name), avatarFileName].filter(Boolean))].map((fileName) => unlink(join(this.paths.uploadsPath, fileName)).catch(() => undefined)));
     return deleted;
   }
 

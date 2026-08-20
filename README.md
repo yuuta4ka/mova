@@ -122,6 +122,21 @@ pnpm test:call
 
 Готовые правила для Prometheus/Alertmanager находятся в `ops/prometheus-alerts.yml`: HTTP 5xx, p95 latency, блокировка event loop, ошибки/устаревание backup и всплеск WebSocket rejection. Перед production-включением укажите актуальный receiver и маршрутизацию уведомлений в своей конфигурации Alertmanager.
 
+### Production-мониторинг в Grafana
+
+Основная панель владельца и агентов: [Mova — состояние сервиса](https://chipperpoppy1894.grafana.net/d/mova-production/mova-e28094-sostojanie-servisa). Grafana выполняет внешний запрос к `https://hola-mova.ru/api/ready` из Stockholm каждые 5 минут и продолжает мониторинг независимо от открытой вкладки или запущенного агента.
+
+Быстрая интерпретация панели:
+
+- «Работает», HTTP `200`, ошибки `0%` — сервис отвечает нормально;
+- рост задержки или ошибки доступности — сопоставьте время с deployment и серверными логами;
+- `resolve`, `connect`, `tls`, `processing`, `transfer` показывают, на каком этапе запроса появилась задержка;
+- срок TLS-сертификата позволяет заранее заметить проблему с HTTPS.
+
+Правила `Failed Checks [5m]` и `TLS Certificate` находятся в Grafana Alerting. Без настроенного contact point тревоги видны в Grafana, но не отправляются по email. Панель использует постоянный бесплатный лимит Synthetic Monitoring; не переводите аккаунт на платный план для этой конфигурации.
+
+Воспроизводимая конфигурация хранится в `ops/grafana-dashboard.json`, а расширенные Prometheus-правила — в `ops/prometheus-alerts.yml`. Мониторинг не получает переписку, аудио или видео пользователей.
+
 Во время звонка кнопка копирования рядом с индикатором сети формирует локальный JSON-отчёт для поддержки. В него входят RTT, jitter, packet loss, interval bitrate аудио/видео, codec, FPS, encoded/decoded/dropped frames, freezes и факт TURN-маршрута. Отчёт намеренно не содержит ID чата и пользователей, IP/ICE-адресов, названий устройств или содержимого медиа.
 
 Для локальной проверки production-режима:
