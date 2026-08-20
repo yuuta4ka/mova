@@ -533,6 +533,11 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
 
 function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpdate: (user: AppUser) => void }) {
   const [step, setStep] = useState<'request' | 'verify'>('request');
+  const [verificationChallenge, setVerificationChallenge] = useState<EmailChallenge | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationResendSeconds, setVerificationResendSeconds] = useState(0);
+  const [verificationLoading, setVerificationLoading] = useState(false);
+  const [verificationError, setVerificationError] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
@@ -546,6 +551,46 @@ function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpd
     const timer = window.setTimeout(() => setResendSeconds((value) => Math.max(0, value - 1)), 1_000);
     return () => window.clearTimeout(timer);
   }, [resendSeconds]);
+  useEffect(() => {
+    if (verificationResendSeconds <= 0) return;
+    const timer = window.setTimeout(() => setVerificationResendSeconds((value) => Math.max(0, value - 1)), 1_000);
+    return () => window.clearTimeout(timer);
+  }, [verificationResendSeconds]);
+  const requestVerification = async (resent = false) => {
+    setVerificationLoading(true);
+    setVerificationError('');
+    setSuccess('');
+    try {
+      const result = await api.requestEmailVerification();
+      setVerificationChallenge(result);
+      setVerificationCode('');
+      setVerificationResendSeconds(result.resendAfterSeconds);
+      if (resent) setSuccess('Новый код отправлен.');
+    } catch (requestError) {
+      setVerificationError(requestError instanceof Error ? requestError.message : 'Не удалось отправить код');
+    } finally {
+      setVerificationLoading(false);
+    }
+  };
+  const confirmVerification = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!verificationChallenge) return;
+    setVerificationLoading(true);
+    setVerificationError('');
+    setSuccess('');
+    try {
+      const result = await api.confirmEmailVerification(verificationChallenge.challengeId, verificationCode);
+      onUserUpdate(result.user);
+      setVerificationChallenge(null);
+      setVerificationCode('');
+      setVerificationResendSeconds(0);
+      setSuccess('Почта подтверждена.');
+    } catch (confirmError) {
+      setVerificationError(confirmError instanceof Error ? confirmError.message : 'Не удалось подтвердить почту');
+    } finally {
+      setVerificationLoading(false);
+    }
+  };
   const requestChange = async (event: FormEvent) => {
     event.preventDefault();
     setLoading(true);
@@ -606,7 +651,35 @@ function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpd
     <div className="mova-account-settings">
       <section>
         <h3><AtSign size={18} /> Почта аккаунта</h3>
-        <div className="mova-account-email-current"><span>Текущий адрес</span><strong>{user.email}</strong></div>
+        {!user.emailVerifiedAt && user.email && (
+          <div className="mova-email-verification-notice" role="alert">
+            <Info size={20} aria-hidden="true" />
+            <div>
+              <strong>Подтвердите текущую почту</strong>
+              <p>Мы добавили подтверждение адреса после создания вашего аккаунта. Отправим код на <b>{user.email}</b>.</p>
+              {!verificationChallenge ? (
+                <Button type="button" loading={verificationLoading} onClick={() => void requestVerification()}>Отправить код</Button>
+              ) : (
+                <form onSubmit={confirmVerification}>
+                  <label>
+                    <span>Код из письма</span>
+                    <input className="mova-auth-code" aria-label="Код подтверждения текущей почты" required pattern="[0-9]{6}" inputMode="numeric" maxLength={6} value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/gu, '').slice(0, 6))} placeholder="000000" autoComplete="one-time-code" />
+                  </label>
+                  <div className="mova-account-settings__actions">
+                    <Button type="submit" loading={verificationLoading}>Подтвердить</Button>
+                    <Button type="button" variant="ghost" disabled={verificationLoading || verificationResendSeconds > 0} onClick={() => void requestVerification(true)}>{verificationResendSeconds > 0 ? `Повторить через ${verificationResendSeconds} сек.` : 'Отправить ещё раз'}</Button>
+                  </div>
+                </form>
+              )}
+              {verificationError && <div className="mova-auth-error">{verificationError}</div>}
+            </div>
+          </div>
+        )}
+        <div className="mova-account-email-current">
+          <span>Текущий адрес</span>
+          <strong>{user.email}</strong>
+          <em className={user.emailVerifiedAt ? 'is-verified' : 'is-unverified'}>{user.emailVerifiedAt ? 'Подтверждена' : 'Требуется подтверждение'}</em>
+        </div>
         {step === 'request' ? <form onSubmit={requestChange}>
           <label>
             <span>Новая почта</span>
@@ -783,9 +856,10 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
             <Pencil size={17} />
             Профиль
           </button>
-          <button type="button" className={section === 'account' ? 'is-active' : ''} onClick={() => setSection('account')}>
+          <button type="button" className={`${section === 'account' ? 'is-active' : ''}${!user.emailVerifiedAt && user.email ? ' has-notice' : ''}`} onClick={() => setSection('account')}>
             <AtSign size={17} />
             Аккаунт
+            {!user.emailVerifiedAt && user.email && <i className="mova-settings-notice-dot" aria-hidden="true" />}
           </button>
           <button type="button" className={section === 'appearance' ? 'is-active' : ''} onClick={() => setSection('appearance')}>
             <Palette size={17} />

@@ -19,6 +19,7 @@ const currentUser: AppUser = {
   handle: '@yuuta',
   color: '#74DCCB',
   presence: 'online',
+  emailVerifiedAt: '2026-08-10T00:00:00.000Z',
   createdAt: '2026-08-10T00:00:00.000Z',
 };
 const friend: AppUser = {
@@ -108,6 +109,30 @@ describe('voice processing settings', () => {
     expect(confirmChange).toHaveBeenCalledWith('email-change', '345678');
     expect(sessionStorage.getItem('mova-session')).toBe('renewed-token');
     expect(onUserUpdate).toHaveBeenCalledWith(changedUser);
+  });
+
+  it('notifies an existing user and confirms their current email with a code', async () => {
+    const user = userEvent.setup();
+    const onUserUpdate = vi.fn();
+    const unverifiedUser = { ...currentUser, emailVerifiedAt: undefined };
+    const verifiedUser = { ...currentUser, emailVerifiedAt: '2026-08-20T12:00:00.000Z' };
+    const requestVerification = vi.spyOn(api, 'requestEmailVerification').mockResolvedValue({ challengeId: 'current-email', email: currentUser.email, expiresAt: '2026-08-20T12:10:00.000Z', resendAfterSeconds: 60 });
+    const confirmVerification = vi.spyOn(api, 'confirmEmailVerification').mockResolvedValue({ user: verifiedUser });
+    render(<SettingsModal user={unverifiedUser} open onClose={vi.fn()} onEditProfile={vi.fn()} onUserUpdate={onUserUpdate} />);
+
+    expect(screen.getByRole('button', { name: 'Аккаунт' })).toHaveClass('has-notice');
+    await user.click(screen.getByRole('button', { name: 'Аккаунт' }));
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent('Подтвердите текущую почту');
+    expect(screen.getByText('Требуется подтверждение')).toBeVisible();
+
+    await user.click(within(notice).getByRole('button', { name: 'Отправить код' }));
+    expect(requestVerification).toHaveBeenCalledTimes(1);
+    await user.type(await screen.findByRole('textbox', { name: 'Код подтверждения текущей почты' }), '123456');
+    await user.click(screen.getByRole('button', { name: 'Подтвердить' }));
+
+    expect(confirmVerification).toHaveBeenCalledWith('current-email', '123456');
+    expect(onUserUpdate).toHaveBeenCalledWith(verifiedUser);
   });
 
   it('offers enhanced RNNoise, standard and disabled modes and persists the selection', async () => {

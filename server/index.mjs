@@ -735,6 +735,28 @@ async function handleApi(request, response) {
     }
     if (request.method === 'GET' && url.pathname === '/api/rtc-config') return json(response, 200, { iceServers: rtcIceServers() });
     if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user: userDto(user, user.id) });
+    if (request.method === 'POST' && url.pathname === '/api/email-verification/request') {
+      if (user.emailVerifiedAt) return json(response, 409, { error: 'Почта уже подтверждена' });
+      if (!allowRequest(`email-verification:${user.id}`, 5, 15 * 60_000)) throw Object.assign(new Error('Слишком много запросов. Попробуйте позже'), { statusCode: 429 });
+      if (!allowRequest(`email-verification-address:${user.email}`, 3, 15 * 60_000)) throw Object.assign(new Error('Новый код можно запросить позже'), { statusCode: 429 });
+      const challenge = await issueEmailChallenge({ purpose: 'email_verification', email: user.email, userId: user.id });
+      return json(response, 202, emailChallengeResponse(challenge));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/email-verification/confirm') {
+      if (user.emailVerifiedAt) return json(response, 409, { error: 'Почта уже подтверждена' });
+      if (!allowRequest(`email-verification-confirm:${user.id}`, 20, 15 * 60_000)) throw Object.assign(new Error('Слишком много попыток подтверждения'), { statusCode: 429 });
+      const data = await body(request);
+      const challenge = requireEmailChallenge({ challengeId: data.challengeId, purpose: 'email_verification', code: data.code, userId: user.id });
+      if (challenge.email !== user.email) return json(response, 409, { error: 'Адрес аккаунта изменился. Запросите новый код' });
+      user.emailVerifiedAt = new Date().toISOString();
+      database.transaction(() => {
+        database.updateUser(user);
+        if (!database.consumeEmailChallenge(challenge.id)) throw Object.assign(new Error('Код уже использован'), { statusCode: 409 });
+      });
+      const dto = publicUser(user);
+      broadcastAll({ type: 'profile:update', user: dto }, user.id);
+      return json(response, 200, { user: dto });
+    }
     if (request.method === 'POST' && url.pathname === '/api/email-change/request') {
       if (!allowRequest(`email-change:${user.id}`, 5, 15 * 60_000)) throw Object.assign(new Error('Слишком много запросов. Попробуйте позже'), { statusCode: 429 });
       const data = await body(request);

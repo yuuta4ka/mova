@@ -204,6 +204,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ challengeId, code, password }),
     }),
+  requestEmailVerification: () =>
+    request<EmailChallenge>('/api/email-verification/request', { method: 'POST' }),
+  confirmEmailVerification: (challengeId: string, code: string) =>
+    request<{ user: AppUser }>('/api/email-verification/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ challengeId, code }),
+    }),
   requestEmailChange: (email: string, password: string) =>
     request<EmailChallenge>('/api/email-change/request', {
       method: 'POST',

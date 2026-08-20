@@ -70,7 +70,7 @@ function rowUser(row) {
     activity: jsonParse(row.activity_json),
     lastActiveAt: row.last_active_at,
     passwordHash: row.password_hash,
-    emailVerifiedAt: row.email_verified_at || row.created_at,
+    emailVerifiedAt: row.email_verified_at || undefined,
     sessionVersion: Number(row.session_version || 1),
     createdAt: row.created_at,
   };
@@ -163,7 +163,7 @@ export async function openDatabase(paths) {
       activity_json TEXT,
       last_active_at TEXT,
       password_hash TEXT NOT NULL,
-      email_verified_at TEXT NOT NULL,
+      email_verified_at TEXT,
       session_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL
     );
@@ -268,7 +268,7 @@ export async function openDatabase(paths) {
   const userColumns = sqlite.prepare('PRAGMA table_info(users)').all();
   if (!userColumns.some((column) => column.name === 'email_verified_at')) sqlite.exec('ALTER TABLE users ADD COLUMN email_verified_at TEXT');
   if (!userColumns.some((column) => column.name === 'session_version')) sqlite.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1');
-  sqlite.exec('UPDATE users SET email_verified_at=COALESCE(email_verified_at, created_at), session_version=COALESCE(session_version, 1)');
+  sqlite.exec('UPDATE users SET session_version=COALESCE(session_version, 1)');
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
   if (!messageColumns.some((column) => column.name === 'friend_request_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN friend_request_json TEXT');
@@ -595,13 +595,13 @@ export class MovaDatabase {
     this.sqlite
       .prepare(`INSERT INTO users(id,name,email,handle,color,presence,dnd_until,bio,avatar_url,banner_url,activity_json,last_active_at,password_hash,email_verified_at,session_version,created_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(user.id, user.name, user.email, user.handle, user.color, user.presence || 'online', user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || user.createdAt, Number(user.sessionVersion || 1), user.createdAt);
+      .run(user.id, user.name, user.email, user.handle, user.color, user.presence || 'online', user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || null, Number(user.sessionVersion || 1), user.createdAt);
   }
 
   updateUser(user) {
     this.sqlite
       .prepare(`UPDATE users SET name=?, email=?, handle=?, color=?, presence=?, dnd_until=?, bio=?, avatar_url=?, banner_url=?, activity_json=?, last_active_at=?, password_hash=?, email_verified_at=?, session_version=? WHERE id=?`)
-      .run(user.name, user.email, user.handle, user.color, user.presence, user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || user.createdAt, Number(user.sessionVersion || 1), user.id);
+      .run(user.name, user.email, user.handle, user.color, user.presence, user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || null, Number(user.sessionVersion || 1), user.id);
   }
 
   createEmailChallenge(challenge) {

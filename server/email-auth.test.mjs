@@ -127,6 +127,26 @@ describe('email authentication flows', () => {
     });
     expect(replay.response.status).toBe(400);
 
+    const legacyAccount = new DatabaseSync(databasePath);
+    legacyAccount.prepare('UPDATE users SET email_verified_at=NULL WHERE id=?').run(verified.result.user.id);
+    legacyAccount.close();
+    const beforeExistingVerification = await request('/api/me', { token: verified.result.token });
+    expect(beforeExistingVerification.response.status).toBe(200);
+    expect(beforeExistingVerification.result.user.emailVerifiedAt).toBeUndefined();
+
+    const existingVerification = await request('/api/email-verification/request', { method: 'POST', token: verified.result.token });
+    expect(existingVerification.response.status).toBe(202);
+    expect(existingVerification.result.email).toBe(originalEmail);
+    const existingVerificationCode = await emailCode('email_verification', originalEmail);
+    const existingVerified = await request('/api/email-verification/confirm', {
+      method: 'POST',
+      token: verified.result.token,
+      body: { challengeId: existingVerification.result.challengeId, code: existingVerificationCode },
+    });
+    expect(existingVerified.response.status).toBe(200);
+    expect(existingVerified.result.user.emailVerifiedAt).toBeTruthy();
+    expect((await request('/api/me', { token: verified.result.token })).result.user.emailVerifiedAt).toBeTruthy();
+
     const unknownReset = await request('/api/password-reset/request', { method: 'POST', body: { email: 'missing@mova.test' } });
     expect(unknownReset.response.status).toBe(202);
     expect(unknownReset.result.message).toContain('Если аккаунт');

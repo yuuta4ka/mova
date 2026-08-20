@@ -64,6 +64,11 @@ export function createEmailService({ logger }) {
         title: 'Подтвердите почту',
         description: 'Введите этот код в Mova, чтобы завершить регистрацию.',
       },
+      email_verification: {
+        subject: 'Подтвердите почту Mova',
+        title: 'Подтвердите почту',
+        description: 'Введите этот код в настройках Mova, чтобы подтвердить адрес аккаунта.',
+      },
       password_reset: {
         subject: 'Восстановление пароля Mova',
         title: 'Сброс пароля',
