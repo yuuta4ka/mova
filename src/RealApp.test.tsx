@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatPresenceStatus, loadConversationDrafts, mergeMessageHistory, PendingCallStage, presenceUpdateForSystemIdle, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage, updateConversationUser } from './RealApp';
+import { AuthScreen, formatPresenceStatus, loadConversationDrafts, mergeMessageHistory, PendingCallStage, presenceUpdateForSystemIdle, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage, updateConversationUser } from './RealApp';
 import { api, realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 import { ToastProvider } from './components/Primitives';
 
@@ -40,7 +40,76 @@ const conversation: AppConversation = {
   createdAt: '2026-08-10T00:00:00.000Z',
 };
 
+describe('email authentication interface', () => {
+  it('requires the emailed code before completing registration', async () => {
+    sessionStorage.clear();
+    const user = userEvent.setup();
+    const onAuth = vi.fn();
+    const challenge = { challengeId: 'registration-challenge', email: 'new@mova.test', expiresAt: '2026-08-20T10:10:00.000Z', resendAfterSeconds: 60 };
+    const register = vi.spyOn(api, 'register').mockResolvedValue(challenge);
+    const verify = vi.spyOn(api, 'verifyRegistration').mockResolvedValue({ token: 'verified-token', user: { ...currentUser, email: challenge.email } });
+    render(<AuthScreen onAuth={onAuth} />);
+
+    await user.click(screen.getByRole('tab', { name: 'Регистрация' }));
+    await user.type(screen.getByRole('textbox', { name: 'Имя' }), 'Новый пользователь');
+    await user.type(screen.getByRole('textbox', { name: 'Почта' }), challenge.email);
+    await user.type(screen.getByLabelText('Пароль'), 'strongpass1');
+    await user.click(screen.getByRole('button', { name: 'Получить код' }));
+
+    expect(register).toHaveBeenCalledWith({ name: 'Новый пользователь', email: challenge.email, password: 'strongpass1' });
+    expect(await screen.findByText(`Код отправлен на ${challenge.email}`)).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: 'Код из письма' }), '123456');
+    await user.click(screen.getByRole('button', { name: 'Подтвердить и войти' }));
+
+    expect(verify).toHaveBeenCalledWith(challenge.challengeId, '123456');
+    expect(sessionStorage.getItem('mova-session')).toBe('verified-token');
+    expect(onAuth).toHaveBeenCalledWith(expect.objectContaining({ email: challenge.email }));
+  });
+
+  it('lets a user request a code and set a new forgotten password', async () => {
+    const user = userEvent.setup();
+    const requestReset = vi.spyOn(api, 'requestPasswordReset').mockResolvedValue({ challengeId: 'reset-challenge', email: currentUser.email, expiresAt: '2026-08-20T10:10:00.000Z', resendAfterSeconds: 60 });
+    const confirmReset = vi.spyOn(api, 'confirmPasswordReset').mockResolvedValue({ ok: true });
+    render(<AuthScreen onAuth={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Забыли пароль?' }));
+    await user.type(screen.getByRole('textbox', { name: 'Почта' }), currentUser.email);
+    await user.click(screen.getByRole('button', { name: 'Отправить код' }));
+    expect(requestReset).toHaveBeenCalledWith(currentUser.email);
+
+    await user.type(await screen.findByRole('textbox', { name: 'Код из письма' }), '654321');
+    await user.type(screen.getByLabelText('Новый пароль'), 'newstrongpass');
+    await user.click(screen.getByRole('button', { name: 'Изменить пароль' }));
+
+    expect(confirmReset).toHaveBeenCalledWith('reset-challenge', '654321', 'newstrongpass');
+    expect(await screen.findByText('Пароль изменён. Теперь можно войти.')).toBeVisible();
+  });
+});
+
 describe('voice processing settings', () => {
+  it('changes the account email only after checking the password and code', async () => {
+    sessionStorage.clear();
+    const user = userEvent.setup();
+    const onUserUpdate = vi.fn();
+    const changedUser = { ...currentUser, email: 'changed@mova.test' };
+    const requestChange = vi.spyOn(api, 'requestEmailChange').mockResolvedValue({ challengeId: 'email-change', email: changedUser.email, expiresAt: '2026-08-20T10:10:00.000Z', resendAfterSeconds: 60 });
+    const confirmChange = vi.spyOn(api, 'confirmEmailChange').mockResolvedValue({ token: 'renewed-token', user: changedUser });
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} onUserUpdate={onUserUpdate} />);
+
+    await user.click(screen.getByRole('button', { name: 'Аккаунт' }));
+    expect(screen.getByText(currentUser.email)).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: 'Новая почта' }), changedUser.email);
+    await user.type(screen.getByLabelText('Текущий пароль'), 'strongpass2');
+    await user.click(screen.getByRole('button', { name: 'Отправить код' }));
+    expect(requestChange).toHaveBeenCalledWith(changedUser.email, 'strongpass2');
+
+    await user.type(await screen.findByRole('textbox', { name: 'Код из письма' }), '345678');
+    await user.click(screen.getByRole('button', { name: 'Подтвердить почту' }));
+    expect(confirmChange).toHaveBeenCalledWith('email-change', '345678');
+    expect(sessionStorage.getItem('mova-session')).toBe('renewed-token');
+    expect(onUserUpdate).toHaveBeenCalledWith(changedUser);
+  });
+
   it('offers enhanced RNNoise, standard and disabled modes and persists the selection', async () => {
     localStorage.clear();
     const user = userEvent.setup();

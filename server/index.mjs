@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes, scrypt, timingSafeEqual, createHmac } from 'node:crypto';
+import { randomBytes, randomInt, scrypt, timingSafeEqual, createHmac } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
@@ -12,6 +12,7 @@ import { openDatabase, resolveDataPaths } from './database.mjs';
 import { backupIfDue, resolveBackupConfig } from './backup.mjs';
 import { MaintenanceStore } from './maintenance.mjs';
 import { MovaMetrics, createLogger, requestId, routeName } from './observability.mjs';
+import { createEmailService } from './email.mjs';
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(serverRoot, '..');
@@ -149,6 +150,8 @@ const id = (prefix) => `${prefix}_${randomBytes(10).toString('hex')}`;
 const instanceId = id('instance');
 const instanceStartedAt = new Date().toISOString();
 const logger = createLogger({ instanceId });
+const emailService = createEmailService({ logger });
+const authTestBypass = process.env.MOVA_AUTH_TEST_BYPASS === '1';
 const secureEqual = (left, right) => {
   const leftBuffer = Buffer.from(String(left || ''));
   const rightBuffer = Buffer.from(String(right || ''));
@@ -156,7 +159,7 @@ const secureEqual = (left, right) => {
 };
 const publicUser = (storedUser) => {
   if (!storedUser) return null;
-  const { passwordHash, ...user } = storedUser;
+  const { passwordHash, sessionVersion, ...user } = storedUser;
   const normalized = user.presence === 'dnd' && user.dndUntil && user.dndUntil !== 'forever' && new Date(user.dndUntil).getTime() <= Date.now() ? { ...user, presence: 'online', dndUntil: null } : user;
   const connected = Boolean(clients.get(user.id)?.size);
   return {
@@ -172,6 +175,7 @@ const normalizeEmail = (email) =>
   String(email || '')
     .trim()
     .toLowerCase();
+const validEmail = (email) => email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email);
 async function hashPassword(password, salt = randomBytes(16).toString('hex')) {
   return `${salt}:${Buffer.from(await hashAsync(password, salt, 64)).toString('hex')}`;
 }
@@ -182,8 +186,8 @@ async function verifyPassword(password, stored) {
   if (actual.length !== expected.length) return false;
   return timingSafeEqual(actual, expected);
 }
-function createToken(userId) {
-  const payload = Buffer.from(JSON.stringify({ userId, exp: Date.now() + 1000 * 60 * 60 * 24 * 30 })).toString('base64url');
+function createToken(user) {
+  const payload = Buffer.from(JSON.stringify({ userId: user.id, sessionVersion: Number(user.sessionVersion || 1), exp: Date.now() + 1000 * 60 * 60 * 24 * 30 })).toString('base64url');
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${signature}`;
 }
@@ -194,10 +198,103 @@ function tokenUser(token) {
     if (!timingSafeEqual(expected, Buffer.from(signature, 'base64url'))) return null;
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
     if (data.exp < Date.now()) return null;
-    return database.getUserById(data.userId);
+    const user = database.getUserById(data.userId);
+    if (!user || Number(data.sessionVersion || 1) !== Number(user.sessionVersion || 1)) return null;
+    return user;
   } catch {
     return null;
   }
+}
+
+const emailChallengeTtlMs = 10 * 60_000;
+const emailChallengeMaxAttempts = 5;
+const emailChallengeHash = (challengeId, code) => createHmac('sha256', secret).update(`${challengeId}:${code}`).digest('hex');
+const createEmailCode = () => String(randomInt(0, 1_000_000)).padStart(6, '0');
+
+function createStoredUser({ name, email, passwordHash }) {
+  const colors = ['#74DCCB', '#9B83F4', '#FF8D72', '#F3C96B', '#68CFA4'];
+  const baseHandle = `@${email.split('@')[0].replace(/[^a-z0-9_.]/gi, '').slice(0, 24) || 'user'}`;
+  let handle = baseHandle;
+  let suffix = 1;
+  while (database.getUserByHandle(handle)) handle = `${baseHandle}${suffix++}`;
+  const createdAt = new Date().toISOString();
+  return {
+    id: id('usr'),
+    name,
+    email,
+    handle,
+    color: colors[database.count('users') % colors.length],
+    presence: 'online',
+    dndUntil: null,
+    bio: '',
+    avatarDataUrl: '',
+    bannerDataUrl: '',
+    activity: null,
+    lastActiveAt: createdAt,
+    passwordHash,
+    emailVerifiedAt: createdAt,
+    sessionVersion: 1,
+    createdAt,
+  };
+}
+
+function emailChallengeResponse(challenge) {
+  return {
+    challengeId: challenge.id,
+    email: challenge.email,
+    expiresAt: challenge.expiresAt,
+    resendAfterSeconds: 60,
+  };
+}
+
+async function issueEmailChallenge({ purpose, email, userId = null, payload = {}, send = true }) {
+  if (!emailService.configured) throw Object.assign(new Error('Отправка писем пока не настроена'), { statusCode: 503 });
+  const previousChallenge = database.latestPendingEmailChallenge(purpose, email);
+  const resendAt = previousChallenge ? new Date(previousChallenge.createdAt).getTime() + 60_000 : 0;
+  if (resendAt > Date.now()) {
+    const waitSeconds = Math.max(1, Math.ceil((resendAt - Date.now()) / 1000));
+    throw Object.assign(new Error(`Новый код можно запросить через ${waitSeconds} сек.`), { statusCode: 429 });
+  }
+  const challengeId = id('eml');
+  const code = createEmailCode();
+  const createdAt = new Date().toISOString();
+  const challenge = {
+    id: challengeId,
+    purpose,
+    userId,
+    email,
+    codeHash: emailChallengeHash(challengeId, code),
+    payload,
+    expiresAt: new Date(Date.now() + emailChallengeTtlMs).toISOString(),
+    createdAt,
+  };
+  database.createEmailChallenge(challenge);
+  if (send) {
+    try {
+      await emailService.sendCode({ to: email, code, purpose });
+    } catch (error) {
+      database.deleteEmailChallenge(challengeId);
+      logger.warn('email.code_delivery_failed', { purpose, error });
+      throw Object.assign(new Error('Не удалось отправить письмо. Попробуйте позже'), { statusCode: Number(error?.statusCode) || 502 });
+    }
+  }
+  return challenge;
+}
+
+function requireEmailChallenge({ challengeId, purpose, code, userId }) {
+  const challenge = database.getEmailChallenge(String(challengeId || ''));
+  const invalid = () => Object.assign(new Error('Неверный или просроченный код'), { statusCode: 400 });
+  if (!challenge || challenge.purpose !== purpose || challenge.consumedAt || (userId && challenge.userId !== userId)) throw invalid();
+  if (new Date(challenge.expiresAt).getTime() <= Date.now() || challenge.attemptCount >= emailChallengeMaxAttempts) {
+    database.consumeEmailChallenge(challenge.id);
+    throw invalid();
+  }
+  const normalizedCode = String(code || '').trim();
+  if (!/^\d{6}$/u.test(normalizedCode) || !secureEqual(emailChallengeHash(challenge.id, normalizedCode), challenge.codeHash)) {
+    database.incrementEmailChallengeAttempts(challenge.id, challenge.attemptCount + 1 >= emailChallengeMaxAttempts);
+    throw invalid();
+  }
+  return challenge;
 }
 
 function json(response, status, body) {
@@ -525,7 +622,7 @@ async function handleApi(request, response) {
       const email = normalizeEmail(data.email);
       const name = String(data.name || '').trim();
       const password = String(data.password || '');
-      if (name.length < 2 || !email.includes('@') || password.length < 8)
+      if (name.length < 2 || name.length > 40 || !validEmail(email) || password.length < 8 || password.length > 200)
         return json(response, 400, {
           error: 'Укажите имя, корректную почту и пароль от 8 символов',
         });
@@ -533,42 +630,37 @@ async function handleApi(request, response) {
         return json(response, 409, {
           error: 'Пользователь с такой почтой уже существует',
         });
-      const colors = ['#74DCCB', '#9B83F4', '#FF8D72', '#F3C96B', '#68CFA4'];
-      const baseHandle = `@${
-        email
-          .split('@')[0]
-          .replace(/[^a-z0-9_.]/gi, '')
-          .slice(0, 24) || 'user'
-      }`;
-      let handle = baseHandle;
-      let suffix = 1;
-      while (database.getUserByHandle(handle)) handle = `${baseHandle}${suffix++}`;
-      const user = {
-        id: id('usr'),
-        name,
-        email,
-        handle,
-        color: colors[database.count('users') % colors.length],
-        presence: 'online',
-        dndUntil: null,
-        bio: '',
-        avatarDataUrl: '',
-        bannerDataUrl: '',
-        activity: null,
-        lastActiveAt: new Date().toISOString(),
-        passwordHash: await hashPassword(password),
-        createdAt: new Date().toISOString(),
-      };
+      const passwordHash = await hashPassword(password);
+      if (authTestBypass) {
+        const user = createStoredUser({ name, email, passwordHash });
+        try {
+          database.insertUser(user);
+        } catch (error) {
+          if (String(error?.code || '').includes('CONSTRAINT')) return json(response, 409, { error: 'Пользователь с такой почтой или юзернеймом уже существует' });
+          throw error;
+        }
+        return json(response, 201, { token: createToken(user), user: publicUser(user) });
+      }
+      if (!allowRequest(`register-email:${email}`, 3, 15 * 60_000)) throw Object.assign(new Error('Новый код можно запросить позже'), { statusCode: 429 });
+      const challenge = await issueEmailChallenge({ purpose: 'registration', email, payload: { name, passwordHash } });
+      return json(response, 202, emailChallengeResponse(challenge));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/register/verify') {
+      if (!allowRequest(`register-verify:${requestIp(request)}`, 20, 15 * 60_000)) throw Object.assign(new Error('Слишком много попыток подтверждения'), { statusCode: 429 });
+      const data = await body(request);
+      const challenge = requireEmailChallenge({ challengeId: data.challengeId, purpose: 'registration', code: data.code });
+      if (database.getUserByEmail(challenge.email)) return json(response, 409, { error: 'Пользователь с такой почтой уже существует' });
+      const user = createStoredUser({ name: String(challenge.payload.name || '').trim(), email: challenge.email, passwordHash: challenge.payload.passwordHash });
       try {
-        database.insertUser(user);
+        database.transaction(() => {
+          database.insertUser(user);
+          if (!database.consumeEmailChallenge(challenge.id)) throw Object.assign(new Error('Код уже использован'), { statusCode: 409 });
+        });
       } catch (error) {
         if (String(error?.code || '').includes('CONSTRAINT')) return json(response, 409, { error: 'Пользователь с такой почтой или юзернеймом уже существует' });
         throw error;
       }
-      return json(response, 201, {
-        token: createToken(user.id),
-        user: publicUser(user),
-      });
+      return json(response, 201, { token: createToken(user), user: publicUser(user) });
     }
     if (request.method === 'POST' && url.pathname === '/api/login') {
       if (!allowRequest(`login:${requestIp(request)}`, 10, 60_000)) throw Object.assign(new Error('Слишком много попыток входа'), { statusCode: 429 });
@@ -576,9 +668,39 @@ async function handleApi(request, response) {
       const user = database.getUserByEmail(normalizeEmail(data.email));
       if (!user || !(await verifyPassword(String(data.password || ''), user.passwordHash))) return json(response, 401, { error: 'Неверная почта или пароль' });
       return json(response, 200, {
-        token: createToken(user.id),
+        token: createToken(user),
         user: publicUser(user),
       });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/password-reset/request') {
+      if (!allowRequest(`password-reset:${requestIp(request)}`, 5, 15 * 60_000)) throw Object.assign(new Error('Слишком много запросов. Попробуйте позже'), { statusCode: 429 });
+      const data = await body(request);
+      const email = normalizeEmail(data.email);
+      if (!validEmail(email)) return json(response, 400, { error: 'Укажите корректную почту' });
+      if (!allowRequest(`password-reset-email:${email}`, 3, 15 * 60_000)) throw Object.assign(new Error('Новый код можно запросить позже'), { statusCode: 429 });
+      const existingUser = database.getUserByEmail(email);
+      const challenge = await issueEmailChallenge({ purpose: 'password_reset', email, userId: existingUser?.id || null, payload: { dummy: !existingUser }, send: Boolean(existingUser) });
+      return json(response, 202, {
+        ...emailChallengeResponse(challenge),
+        message: 'Если аккаунт с такой почтой существует, код уже отправлен',
+      });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/password-reset/confirm') {
+      if (!allowRequest(`password-reset-confirm:${requestIp(request)}`, 20, 15 * 60_000)) throw Object.assign(new Error('Слишком много попыток подтверждения'), { statusCode: 429 });
+      const data = await body(request);
+      const password = String(data.password || '');
+      if (password.length < 8 || password.length > 200) return json(response, 400, { error: 'Пароль должен содержать не менее 8 символов' });
+      const challenge = requireEmailChallenge({ challengeId: data.challengeId, purpose: 'password_reset', code: data.code });
+      const resetUser = challenge.userId ? database.getUserById(challenge.userId) : null;
+      if (!resetUser) return json(response, 400, { error: 'Неверный или просроченный код' });
+      resetUser.passwordHash = await hashPassword(password);
+      resetUser.sessionVersion = Number(resetUser.sessionVersion || 1) + 1;
+      database.transaction(() => {
+        database.updateUser(resetUser);
+        if (!database.consumeEmailChallenge(challenge.id)) throw Object.assign(new Error('Код уже использован'), { statusCode: 409 });
+      });
+      for (const socket of clients.get(resetUser.id) || []) socket.close(4001, 'Session revoked');
+      return json(response, 200, { ok: true });
     }
     const user = auth(request);
     if (!user) return json(response, 401, { error: 'Требуется вход' });
@@ -613,6 +735,41 @@ async function handleApi(request, response) {
     }
     if (request.method === 'GET' && url.pathname === '/api/rtc-config') return json(response, 200, { iceServers: rtcIceServers() });
     if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user: userDto(user, user.id) });
+    if (request.method === 'POST' && url.pathname === '/api/email-change/request') {
+      if (!allowRequest(`email-change:${user.id}`, 5, 15 * 60_000)) throw Object.assign(new Error('Слишком много запросов. Попробуйте позже'), { statusCode: 429 });
+      const data = await body(request);
+      const email = normalizeEmail(data.email);
+      if (!validEmail(email)) return json(response, 400, { error: 'Укажите корректную новую почту' });
+      if (email === user.email) return json(response, 400, { error: 'Это уже текущая почта аккаунта' });
+      if (database.getUserByEmail(email)) return json(response, 409, { error: 'Пользователь с такой почтой уже существует' });
+      if (!(await verifyPassword(String(data.password || ''), user.passwordHash))) return json(response, 401, { error: 'Неверный текущий пароль' });
+      if (!allowRequest(`email-change-address:${email}`, 3, 15 * 60_000)) throw Object.assign(new Error('Новый код можно запросить позже'), { statusCode: 429 });
+      const challenge = await issueEmailChallenge({ purpose: 'email_change', email, userId: user.id });
+      return json(response, 202, emailChallengeResponse(challenge));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/email-change/confirm') {
+      if (!allowRequest(`email-change-confirm:${user.id}`, 20, 15 * 60_000)) throw Object.assign(new Error('Слишком много попыток подтверждения'), { statusCode: 429 });
+      const data = await body(request);
+      const challenge = requireEmailChallenge({ challengeId: data.challengeId, purpose: 'email_change', code: data.code, userId: user.id });
+      const emailOwner = database.getUserByEmail(challenge.email);
+      if (emailOwner && emailOwner.id !== user.id) return json(response, 409, { error: 'Пользователь с такой почтой уже существует' });
+      const previousEmail = user.email;
+      user.email = challenge.email;
+      user.emailVerifiedAt = new Date().toISOString();
+      user.sessionVersion = Number(user.sessionVersion || 1) + 1;
+      database.transaction(() => {
+        database.updateUser(user);
+        if (!database.consumeEmailChallenge(challenge.id)) throw Object.assign(new Error('Код уже использован'), { statusCode: 409 });
+      });
+      const dto = publicUser(user);
+      const token = createToken(user);
+      broadcastAll({ type: 'profile:update', user: dto }, user.id);
+      void emailService.sendEmailChangedNotice({ to: previousEmail, newEmail: user.email });
+      setTimeout(() => {
+        for (const socket of clients.get(user.id) || []) socket.close(4001, 'Session renewed');
+      }, 100);
+      return json(response, 200, { token, user: dto });
+    }
     if (request.method === 'GET' && url.pathname === '/api/users')
       return json(response, 200, {
         users: database.listUsers(user.id).map((otherUser) => userDto(otherUser, user.id)),
@@ -1314,6 +1471,7 @@ function handleSocket(socket, request) {
 database = await openDatabase(dataPaths);
 configureWebPush();
 await database.cleanupOrphanUploads();
+database.cleanupEmailChallenges();
 const backupConfig = resolveBackupConfig(dataPaths);
 const runBackup = () => {
   if (backupInFlight) return backupInFlight;
@@ -1331,7 +1489,10 @@ const runBackup = () => {
   return backupInFlight;
 };
 void runBackup();
-const uploadCleanupTimer = setInterval(() => void database.cleanupOrphanUploads().catch((error) => logger.error('uploads.cleanup_failed', { error })), 6 * 60 * 60_000);
+const uploadCleanupTimer = setInterval(() => {
+  database.cleanupEmailChallenges();
+  void database.cleanupOrphanUploads().catch((error) => logger.error('uploads.cleanup_failed', { error }));
+}, 6 * 60 * 60_000);
 uploadCleanupTimer.unref();
 const backupTimer = setInterval(() => void runBackup(), Math.min(60 * 60_000, backupConfig.intervalMs));
 backupTimer.unref();

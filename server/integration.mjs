@@ -14,6 +14,7 @@ const server = spawn(process.execPath, ['server/index.mjs'], {
     ...process.env,
     MOVA_PORT: String(port),
     MOVA_DATABASE_PATH: join(testDirectory, 'db.json'),
+    MOVA_AUTH_TEST_BYPASS: '1',
     MOVA_BACKUPS_ENABLED: 'false',
     MOVA_TURN_URLS: 'turn:turn.example.test:3478,turns:turn.example.test:443',
     MOVA_TURN_USERNAME: 'integration-user',
@@ -137,10 +138,10 @@ try {
       bio: 'Проверка профиля',
       avatarDataUrl: '',
       bannerDataUrl: '',
-      activity: { name: 'Играет в Mova', startedAt: new Date().toISOString() },
     },
     first.token,
   );
+  const activity = await call('/api/activity', 'POST', { name: 'Mova' }, first.token);
   const presence = await call('/api/presence', 'POST', { presence: 'dnd', dndUntil: new Date(Date.now() + 900_000).toISOString() }, first.token);
   const conversation = await call('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
   const rtcConfig = await call('/api/rtc-config', 'GET', undefined, first.token);
@@ -378,7 +379,7 @@ try {
     JSON.stringify({
       profile: profile.user.handle,
       friendRequestCard: acceptedRequestMessages.messages[0].friendRequest.status,
-      activity: profile.user.activity.name,
+      activity: activity.user.activity.name,
       presence: presence.user.presence,
       livePresence: livePresence.user.presence === 'idle' && presenceEvent.user.id === first.user.id && presenceEvent.user.isOnline === true,
       latestPreview: conversationOverview.conversations[0].lastMessage.content,

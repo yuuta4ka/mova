@@ -9,7 +9,7 @@ const port = 8792;
 const base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ['server/index.mjs'], {
   cwd: new URL('..', import.meta.url),
-  env: { ...process.env, MOVA_PORT: String(port), MOVA_DATABASE_PATH: join(testDirectory, 'db.json') },
+  env: { ...process.env, MOVA_PORT: String(port), MOVA_DATABASE_PATH: join(testDirectory, 'db.json'), MOVA_AUTH_TEST_BYPASS: '1' },
   stdio: ['ignore', 'ignore', 'inherit'],
 });
 

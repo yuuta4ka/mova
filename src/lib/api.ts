@@ -12,6 +12,7 @@ export interface AppUser {
   bannerDataUrl?: string;
   activity?: { type?: 'game'; name: string; startedAt: string } | null;
   lastActiveAt?: string;
+  emailVerifiedAt?: string;
   createdAt: string;
   relationship?: 'self' | 'none' | 'outgoing' | 'incoming' | 'friend' | 'blocked' | 'blocked_by';
 }
@@ -104,6 +105,14 @@ export interface MaintenanceState {
   startedAt?: string;
 }
 
+export interface EmailChallenge {
+  challengeId: string;
+  email: string;
+  expiresAt: string;
+  resendAfterSeconds: number;
+  message?: string;
+}
+
 const tokenKey = 'mova-session';
 const persistentAppSession = () =>
   navigator.userAgent.includes('MovaDesktop/')
@@ -169,14 +178,39 @@ async function uploadAttachment(attachment: MessageAttachment): Promise<MessageA
 
 export const api = {
   register: (data: { name: string; email: string; password: string }) =>
-    request<{ token: string; user: AppUser }>('/api/register', {
+    request<EmailChallenge>('/api/register', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  verifyRegistration: (challengeId: string, code: string) =>
+    request<{ token: string; user: AppUser }>('/api/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({ challengeId, code }),
     }),
   login: (data: { email: string; password: string }) =>
     request<{ token: string; user: AppUser }>('/api/login', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  requestPasswordReset: (email: string) =>
+    request<EmailChallenge>('/api/password-reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  confirmPasswordReset: (challengeId: string, code: string, password: string) =>
+    request<{ ok: true }>('/api/password-reset/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ challengeId, code, password }),
+    }),
+  requestEmailChange: (email: string, password: string) =>
+    request<EmailChallenge>('/api/email-change/request', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  confirmEmailChange: (challengeId: string, code: string) =>
+    request<{ token: string; user: AppUser }>('/api/email-change/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ challengeId, code }),
     }),
   me: () => request<{ user: AppUser }>('/api/me'),
   maintenance: (signal?: AbortSignal) => request<MaintenanceState>('/api/maintenance', { signal }),

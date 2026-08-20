@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronUp, Clock, CloudOff, Copy, FileText, Gamepad2, HeadphoneOff, Headphones, Info, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Plus, Power, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
-import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type MessageAttachment, type RealtimeEvent } from './lib/api';
+import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
 import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, useToast } from './components/Primitives';
@@ -531,8 +531,113 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
   );
 }
 
-export function SettingsModal({ user, open, onClose, onEditProfile }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void }) {
-  const [section, setSection] = useState<'profile' | 'appearance' | 'audio' | 'screen' | 'application'>('audio');
+function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpdate: (user: AppUser) => void }) {
+  const [step, setStep] = useState<'request' | 'verify'>('request');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [challenge, setChallenge] = useState<EmailChallenge | null>(null);
+  const [resendSeconds, setResendSeconds] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  useEffect(() => {
+    if (resendSeconds <= 0) return;
+    const timer = window.setTimeout(() => setResendSeconds((value) => Math.max(0, value - 1)), 1_000);
+    return () => window.clearTimeout(timer);
+  }, [resendSeconds]);
+  const requestChange = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await api.requestEmailChange(email, password);
+      setChallenge(result);
+      setStep('verify');
+      setCode('');
+      setResendSeconds(result.resendAfterSeconds);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Не удалось отправить код');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const confirmChange = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!challenge) return;
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await api.confirmEmailChange(challenge.challengeId, code);
+      session.set(result.token);
+      onUserUpdate(result.user);
+      setStep('request');
+      setEmail('');
+      setPassword('');
+      setCode('');
+      setChallenge(null);
+      setResendSeconds(0);
+      setSuccess('Почта аккаунта изменена.');
+    } catch (confirmError) {
+      setError(confirmError instanceof Error ? confirmError.message : 'Не удалось подтвердить почту');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const resend = async () => {
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await api.requestEmailChange(email, password);
+      setChallenge(result);
+      setCode('');
+      setResendSeconds(result.resendAfterSeconds);
+      setSuccess('Новый код отправлен.');
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : 'Не удалось отправить новый код');
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="mova-account-settings">
+      <section>
+        <h3><AtSign size={18} /> Почта аккаунта</h3>
+        <div className="mova-account-email-current"><span>Текущий адрес</span><strong>{user.email}</strong></div>
+        {step === 'request' ? <form onSubmit={requestChange}>
+          <label>
+            <span>Новая почта</span>
+            <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="new@example.com" autoComplete="email" />
+          </label>
+          <label>
+            <span>Текущий пароль</span>
+            <input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Подтвердите, что это вы" autoComplete="current-password" />
+          </label>
+          <Button type="submit" loading={loading}>Отправить код</Button>
+        </form> : <form onSubmit={confirmChange}>
+          <p>Мы отправили шестизначный код на <strong>{challenge?.email}</strong>. Он действует 10 минут.</p>
+          <label>
+            <span>Код из письма</span>
+            <input className="mova-auth-code" required pattern="[0-9]{6}" inputMode="numeric" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/gu, '').slice(0, 6))} placeholder="000000" autoComplete="one-time-code" />
+          </label>
+          <div className="mova-account-settings__actions">
+            <Button type="submit" loading={loading}>Подтвердить почту</Button>
+            <Button type="button" variant="ghost" disabled={loading || resendSeconds > 0} onClick={() => void resend()}>{resendSeconds > 0 ? `Повторить через ${resendSeconds} сек.` : 'Отправить ещё раз'}</Button>
+            <Button type="button" variant="ghost" onClick={() => { setStep('request'); setCode(''); setChallenge(null); setResendSeconds(0); setError(''); setSuccess(''); }}>Назад</Button>
+          </div>
+        </form>}
+        {error && <div className="mova-auth-error">{error}</div>}
+        {success && <div className="mova-auth-success">{success}</div>}
+      </section>
+    </div>
+  );
+}
+
+export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate = () => undefined }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void; onUserUpdate?: (user: AppUser) => void }) {
+  const [section, setSection] = useState<'profile' | 'account' | 'appearance' | 'audio' | 'screen' | 'application'>('audio');
   const [settings, setSettings] = useState<AudioSettings>(defaultAudioSettings);
   const [screenSettings, setScreenSettings] = useState<ScreenShareSettings>(defaultScreenShareSettings);
   const [backgroundColor, setBackgroundColor] = useState(defaultBackgroundColor);
@@ -678,6 +783,10 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
             <Pencil size={17} />
             Профиль
           </button>
+          <button type="button" className={section === 'account' ? 'is-active' : ''} onClick={() => setSection('account')}>
+            <AtSign size={17} />
+            Аккаунт
+          </button>
           <button type="button" className={section === 'appearance' ? 'is-active' : ''} onClick={() => setSection('appearance')}>
             <Palette size={17} />
             Оформление
@@ -700,8 +809,8 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
         <main>
           <header>
             <div>
-              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : section === 'application' ? 'Приложение' : 'Голос и звук'}</h2>
-              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : section === 'application' ? 'Запуск Mova и desktop-возможности' : 'Устройства и обработка голоса'}</p>
+              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'account' ? 'Аккаунт' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : section === 'application' ? 'Приложение' : 'Голос и звук'}</h2>
+              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'account' ? 'Почта и безопасность входа' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : section === 'application' ? 'Запуск Mova и desktop-возможности' : 'Устройства и обработка голоса'}</p>
             </div>
             <IconButton data-dialog-close label="Закрыть настройки" onClick={onClose}>
               <X size={18} />
@@ -724,6 +833,8 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
                 Настроить профиль
               </Button>
             </div>
+          ) : section === 'account' ? (
+            <AccountEmailSettings user={user} onUserUpdate={onUserUpdate} />
           ) : section === 'appearance' ? (
             <BackgroundDefaults color={backgroundColor} onChange={setBackgroundColor} accentColor={accentColor} onAccentChange={setAccentColor} />
           ) : section === 'screen' ? (
@@ -841,9 +952,9 @@ export function SettingsModal({ user, open, onClose, onEditProfile }: { user: Ap
           )}
           <footer>
             <Button variant="ghost" onClick={onClose}>
-              Отмена
+              {section === 'account' ? 'Закрыть' : 'Отмена'}
             </Button>
-            <Button onClick={() => void save()}>Сохранить настройки</Button>
+            {section !== 'account' && <Button onClick={() => void save()}>Сохранить настройки</Button>}
           </footer>
         </main>
     </DialogSurface>
@@ -1053,25 +1164,95 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
   );
 }
 
-function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
-  const [mode, setMode] = useState<'register' | 'login'>('login');
+export function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
+  const [flow, setFlow] = useState<'login' | 'register' | 'register-code' | 'forgot' | 'reset-code'>('login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [challenge, setChallenge] = useState<EmailChallenge | null>(null);
+  const [code, setCode] = useState('');
+  const [resendSeconds, setResendSeconds] = useState(0);
+  const [newPassword, setNewPassword] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (resendSeconds <= 0) return;
+    const timer = window.setTimeout(() => setResendSeconds((value) => Math.max(0, value - 1)), 1_000);
+    return () => window.clearTimeout(timer);
+  }, [resendSeconds]);
+  const registrationFlow = flow === 'register' || flow === 'register-code';
+  const switchFlow = (next: 'login' | 'register' | 'forgot') => {
+    setFlow(next);
+    setChallenge(null);
+    setResendSeconds(0);
+    setCode('');
+    setNewPassword('');
+    setError('');
+    setSuccess('');
+  };
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setLoading(true);
     setError('');
+    setSuccess('');
     try {
-      const result = mode === 'register' ? await api.register(form) : await api.login(form);
-      session.set(result.token);
-      onAuth(result.user);
+      if (flow === 'login') {
+        const result = await api.login(form);
+        session.set(result.token);
+        onAuth(result.user);
+      } else if (flow === 'register') {
+        const result = await api.register(form);
+        setChallenge(result);
+        setResendSeconds(result.resendAfterSeconds);
+        setFlow('register-code');
+      } else if (flow === 'register-code' && challenge) {
+        const result = await api.verifyRegistration(challenge.challengeId, code);
+        session.set(result.token);
+        onAuth(result.user);
+      } else if (flow === 'forgot') {
+        const result = await api.requestPasswordReset(form.email);
+        setChallenge(result);
+        setResendSeconds(result.resendAfterSeconds);
+        setFlow('reset-code');
+      } else if (flow === 'reset-code' && challenge) {
+        await api.confirmPasswordReset(challenge.challengeId, code, newPassword);
+        setFlow('login');
+        setForm({ ...form, password: '' });
+        setChallenge(null);
+        setResendSeconds(0);
+        setCode('');
+        setNewPassword('');
+        setSuccess('Пароль изменён. Теперь можно войти.');
+      }
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : 'Не удалось войти');
     } finally {
       setLoading(false);
     }
   };
+  const resend = async () => {
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const result = flow === 'register-code' ? await api.register(form) : await api.requestPasswordReset(form.email);
+      setChallenge(result);
+      setCode('');
+      setResendSeconds(result.resendAfterSeconds);
+      setSuccess('Новый код отправлен.');
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : 'Не удалось отправить новый код');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const title = flow === 'register-code' ? 'Подтвердите почту' : flow === 'forgot' ? 'Восстановление пароля' : flow === 'reset-code' ? 'Новый пароль' : 'Mova';
+  const subtitle = flow === 'register-code' || flow === 'reset-code'
+    ? `Код отправлен на ${challenge?.email || form.email}`
+    : flow === 'forgot'
+      ? 'Отправим код на почту аккаунта'
+      : flow === 'register'
+        ? 'Создайте аккаунт'
+        : 'Войдите в свой аккаунт';
   return (
     <main className="mova-auth">
       <div className="mova-auth__aurora" />
@@ -1079,32 +1260,44 @@ function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
         <div className="mova-glass-card mova-auth-card">
           <header>
             <img className="mova-auth-logo" src="/mova-logo.png" alt="" />
-            <h1>Mova</h1>
-            <p>{mode === 'register' ? 'Создайте аккаунт' : 'Войдите в свой аккаунт'}</p>
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
           </header>
-          <div className="mova-auth-tabs" role="tablist" aria-label="Вход или регистрация">
-            <button type="button" role="tab" aria-selected={mode === 'login'} className={mode === 'login' ? 'is-active' : ''} onClick={() => { setMode('login'); setError(''); }}>Вход</button>
-            <button type="button" role="tab" aria-selected={mode === 'register'} className={mode === 'register' ? 'is-active' : ''} onClick={() => { setMode('register'); setError(''); }}>Регистрация</button>
-          </div>
+          {!['register-code', 'forgot', 'reset-code'].includes(flow) && <div className="mova-auth-tabs" role="tablist" aria-label="Вход или регистрация">
+            <button type="button" role="tab" aria-selected={flow === 'login'} className={flow === 'login' ? 'is-active' : ''} onClick={() => switchFlow('login')}>Вход</button>
+            <button type="button" role="tab" aria-selected={flow === 'register'} className={flow === 'register' ? 'is-active' : ''} onClick={() => switchFlow('register')}>Регистрация</button>
+          </div>}
           <form onSubmit={submit}>
-            {mode === 'register' && (
+            {flow === 'register' && (
               <label>
                 <span>Имя</span>
                 <input required minLength={2} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ваше имя" autoComplete="name" />
               </label>
             )}
-            <label>
+            {['login', 'register', 'forgot'].includes(flow) && <label>
               <span>Почта</span>
               <input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="you@example.com" autoComplete="email" />
-            </label>
-            <label>
+            </label>}
+            {['login', 'register'].includes(flow) && <label>
               <span>Пароль</span>
-              <input required minLength={8} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Не менее 8 символов" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} />
-            </label>
+              <input required minLength={8} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Не менее 8 символов" autoComplete={flow === 'register' ? 'new-password' : 'current-password'} />
+            </label>}
+            {['register-code', 'reset-code'].includes(flow) && <label>
+              <span>Код из письма</span>
+              <input className="mova-auth-code" required pattern="[0-9]{6}" inputMode="numeric" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/gu, '').slice(0, 6))} placeholder="000000" autoComplete="one-time-code" />
+            </label>}
+            {flow === 'reset-code' && <label>
+              <span>Новый пароль</span>
+              <input required minLength={8} type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="Не менее 8 символов" autoComplete="new-password" />
+            </label>}
             {error && <div className="mova-auth-error">{error}</div>}
+            {success && <div className="mova-auth-success">{success}</div>}
             <Button type="submit" size="lg" loading={loading}>
-              {mode === 'register' ? 'Создать аккаунт' : 'Войти'}
+              {flow === 'register' ? 'Получить код' : flow === 'register-code' ? 'Подтвердить и войти' : flow === 'forgot' ? 'Отправить код' : flow === 'reset-code' ? 'Изменить пароль' : 'Войти'}
             </Button>
+            {flow === 'login' && <button type="button" className="mova-auth-link" onClick={() => switchFlow('forgot')}>Забыли пароль?</button>}
+            {['register-code', 'reset-code'].includes(flow) && <button type="button" className="mova-auth-link" disabled={loading || resendSeconds > 0} onClick={() => void resend()}>{resendSeconds > 0 ? `Новый код через ${resendSeconds} сек.` : 'Отправить код ещё раз'}</button>}
+            {['register-code', 'forgot', 'reset-code'].includes(flow) && <button type="button" className="mova-auth-link" onClick={() => switchFlow(registrationFlow ? 'register' : 'login')}>Назад</button>}
           </form>
           <footer>Продолжая, вы соглашаетесь с правилами сервиса.</footer>
         </div>
@@ -5257,7 +5450,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           selectConversation(conversation.id);
         }}
       />
-      <SettingsModal user={currentUser} open={settingsOpen} onClose={() => setSettingsOpen(false)} onEditProfile={() => setProfileOpen(true)} />
+      <SettingsModal user={currentUser} open={settingsOpen} onClose={() => setSettingsOpen(false)} onEditProfile={() => setProfileOpen(true)} onUserUpdate={onUserUpdate} />
       <ProfileEditor user={currentUser} open={profileOpen} onClose={() => setProfileOpen(false)} onSaved={onUserUpdate} />
       <NotificationPermissionDialog
         open={notificationPromptOpen}

@@ -70,6 +70,24 @@ function rowUser(row) {
     activity: jsonParse(row.activity_json),
     lastActiveAt: row.last_active_at,
     passwordHash: row.password_hash,
+    emailVerifiedAt: row.email_verified_at || row.created_at,
+    sessionVersion: Number(row.session_version || 1),
+    createdAt: row.created_at,
+  };
+}
+
+function rowEmailChallenge(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    purpose: row.purpose,
+    userId: row.user_id || null,
+    email: row.email,
+    codeHash: row.code_hash,
+    payload: jsonParse(row.payload_json, {}),
+    expiresAt: row.expires_at,
+    attemptCount: Number(row.attempt_count || 0),
+    consumedAt: row.consumed_at || null,
     createdAt: row.created_at,
   };
 }
@@ -143,6 +161,20 @@ export async function openDatabase(paths) {
       activity_json TEXT,
       last_active_at TEXT,
       password_hash TEXT NOT NULL,
+      email_verified_at TEXT NOT NULL,
+      session_version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS email_challenges (
+      id TEXT PRIMARY KEY,
+      purpose TEXT NOT NULL,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      payload_json TEXT,
+      expires_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      consumed_at TEXT,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS conversations (
@@ -219,7 +251,13 @@ export async function openDatabase(paths) {
     CREATE INDEX IF NOT EXISTS idx_friendships_requested_by ON friendships(requested_by, status);
     CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id, blocker_id);
     CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_email_challenges_lookup ON email_challenges(purpose, email, created_at);
+    CREATE INDEX IF NOT EXISTS idx_email_challenges_cleanup ON email_challenges(expires_at, consumed_at);
   `);
+  const userColumns = sqlite.prepare('PRAGMA table_info(users)').all();
+  if (!userColumns.some((column) => column.name === 'email_verified_at')) sqlite.exec('ALTER TABLE users ADD COLUMN email_verified_at TEXT');
+  if (!userColumns.some((column) => column.name === 'session_version')) sqlite.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1');
+  sqlite.exec('UPDATE users SET email_verified_at=COALESCE(email_verified_at, created_at), session_version=COALESCE(session_version, 1)');
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
   if (!messageColumns.some((column) => column.name === 'friend_request_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN friend_request_json TEXT');
@@ -542,15 +580,50 @@ export class MovaDatabase {
 
   insertUser(user) {
     this.sqlite
-      .prepare(`INSERT INTO users(id,name,email,handle,color,presence,dnd_until,bio,avatar_url,banner_url,activity_json,last_active_at,password_hash,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(user.id, user.name, user.email, user.handle, user.color, user.presence || 'online', user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.createdAt);
+      .prepare(`INSERT INTO users(id,name,email,handle,color,presence,dnd_until,bio,avatar_url,banner_url,activity_json,last_active_at,password_hash,email_verified_at,session_version,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(user.id, user.name, user.email, user.handle, user.color, user.presence || 'online', user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || user.createdAt, Number(user.sessionVersion || 1), user.createdAt);
   }
 
   updateUser(user) {
     this.sqlite
-      .prepare(`UPDATE users SET name=?, email=?, handle=?, color=?, presence=?, dnd_until=?, bio=?, avatar_url=?, banner_url=?, activity_json=?, last_active_at=?, password_hash=? WHERE id=?`)
-      .run(user.name, user.email, user.handle, user.color, user.presence, user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.id);
+      .prepare(`UPDATE users SET name=?, email=?, handle=?, color=?, presence=?, dnd_until=?, bio=?, avatar_url=?, banner_url=?, activity_json=?, last_active_at=?, password_hash=?, email_verified_at=?, session_version=? WHERE id=?`)
+      .run(user.name, user.email, user.handle, user.color, user.presence, user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || user.createdAt, Number(user.sessionVersion || 1), user.id);
+  }
+
+  createEmailChallenge(challenge) {
+    this.transaction(() => {
+      this.sqlite.prepare(`DELETE FROM email_challenges WHERE purpose=? AND consumed_at IS NULL AND (email=? OR (? IS NOT NULL AND user_id=?))`).run(challenge.purpose, challenge.email, challenge.userId || null, challenge.userId || null);
+      this.sqlite.prepare(`INSERT INTO email_challenges(id,purpose,user_id,email,code_hash,payload_json,expires_at,attempt_count,consumed_at,created_at)
+        VALUES(?,?,?,?,?,?,?,0,NULL,?)`).run(challenge.id, challenge.purpose, challenge.userId || null, challenge.email, challenge.codeHash, challenge.payload ? JSON.stringify(challenge.payload) : null, challenge.expiresAt, challenge.createdAt);
+    });
+    return challenge;
+  }
+
+  getEmailChallenge(challengeId) {
+    return rowEmailChallenge(this.sqlite.prepare('SELECT * FROM email_challenges WHERE id=?').get(challengeId));
+  }
+
+  latestPendingEmailChallenge(purpose, email) {
+    return rowEmailChallenge(this.sqlite.prepare('SELECT * FROM email_challenges WHERE purpose=? AND email=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(purpose, email));
+  }
+
+  incrementEmailChallengeAttempts(challengeId, consume = false) {
+    this.sqlite.prepare(`UPDATE email_challenges SET attempt_count=attempt_count+1${consume ? ', consumed_at=COALESCE(consumed_at, ?)' : ''} WHERE id=?`).run(...(consume ? [new Date().toISOString(), challengeId] : [challengeId]));
+  }
+
+  consumeEmailChallenge(challengeId, consumedAt = new Date().toISOString()) {
+    return this.sqlite.prepare('UPDATE email_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL').run(consumedAt, challengeId).changes > 0;
+  }
+
+  deleteEmailChallenge(challengeId) {
+    this.sqlite.prepare('DELETE FROM email_challenges WHERE id=?').run(challengeId);
+  }
+
+  cleanupEmailChallenges(nowMs = Date.now()) {
+    const now = new Date(nowMs).toISOString();
+    const consumedCutoff = new Date(nowMs - 24 * 60 * 60_000).toISOString();
+    return this.sqlite.prepare('DELETE FROM email_challenges WHERE expires_at<? OR (consumed_at IS NOT NULL AND consumed_at<?)').run(now, consumedCutoff).changes;
   }
 
   updateLastActiveAt(userId, lastActiveAt) {

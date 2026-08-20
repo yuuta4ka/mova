@@ -101,6 +101,7 @@ beforeAll(async () => {
       MOVA_PORT: String(port),
       MOVA_DATABASE_PATH: join(testDirectory, 'db.sqlite'),
       MOVA_SESSION_SECRET: 'realtime-maintenance-session-secret',
+      MOVA_AUTH_TEST_BYPASS: '1',
       MOVA_DEPLOY_HOOK_SECRET: hookSecret,
       MOVA_VOICE_RECONNECT_GRACE_MS: '1500',
     },

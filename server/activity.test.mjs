@@ -76,6 +76,7 @@ beforeAll(async () => {
       MOVA_PORT: String(port),
       MOVA_DATABASE_PATH: join(testDirectory, 'db.sqlite'),
       MOVA_SESSION_SECRET: 'activity-test-secret',
+      MOVA_AUTH_TEST_BYPASS: '1',
     },
     stdio: 'ignore',
   });
