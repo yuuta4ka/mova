@@ -380,7 +380,7 @@ export function LandingPage() {
         <div className="mova-landing-video-modal__panel">
           <header><div><span>Ваша награда</span><h2 id="video-modal-title">Секретное видео</h2></div><button type="button" onClick={closeSecretVideo} aria-label="Закрыть видео"><X size={20} /></button></header>
           <video ref={secretVideoRef} controls playsInline preload="metadata" poster="/mova-secret-poster.png">
-            <source src="/mova-secret-mobile.m4v" type="video/mp4" />
+              <source src="/mova-secret-mobile-v2.mp4" type="video/mp4" />
             <source src="/mova-secret.mp4" type="video/mp4" />
             Ваш браузер не поддерживает видео. <a href="/mova-secret.mp4">Открыть файл</a>.
           </video>

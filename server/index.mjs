@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, randomInt, scrypt, timingSafeEqual, createHmac } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
@@ -1258,7 +1258,9 @@ const contentTypes = {
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
+  '.m4v': 'video/mp4',
   '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
@@ -1312,25 +1314,62 @@ async function serveFrontend(request, response) {
   if (requestedPath !== publicRoot && !requestedPath.startsWith(`${publicRoot}${sep}`)) return json(response, 403, { error: 'Нет доступа' });
 
   let filePath = requestedPath;
-  let contents;
+  let info;
   try {
-    contents = await readFile(filePath);
+    info = await stat(filePath);
+    if (!info.isFile()) throw new Error('Not a file');
   } catch {
     if (extname(pathname)) return json(response, 404, { error: 'Файл не найден' });
     filePath = resolve(publicRoot, 'index.html');
     try {
-      contents = await readFile(filePath);
+      info = await stat(filePath);
+      if (!info.isFile()) throw new Error('Not a file');
     } catch {
       return json(response, 503, { error: 'Frontend не собран' });
     }
   }
 
-  response.writeHead(200, {
-    'content-type': contentTypes[extname(filePath).toLowerCase()] || 'application/octet-stream',
+  const extension = extname(filePath).toLowerCase();
+  const video = ['.m4v', '.mp4'].includes(extension);
+  const baseHeaders = {
+    'content-type': contentTypes[extension] || 'application/octet-stream',
     'cache-control': filePath.endsWith('index.html') || filePath.endsWith('mova-sw.js') ? 'no-cache' : 'public, max-age=31536000, immutable',
     ...(filePath.endsWith('mova-sw.js') ? { 'service-worker-allowed': '/' } : {}),
+    ...(video ? { 'accept-ranges': 'bytes' } : {}),
+  };
+
+  let start = 0;
+  let end = info.size - 1;
+  let status = 200;
+  if (video && request.headers.range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range).trim());
+    if (match) {
+      if (!match[1]) {
+        const suffixLength = Number(match[2]);
+        start = Number.isSafeInteger(suffixLength) && suffixLength > 0 ? Math.max(0, info.size - suffixLength) : info.size;
+      } else {
+        start = Number(match[1]);
+      }
+      end = match[2] && match[1] ? Math.min(Number(match[2]), info.size - 1) : info.size - 1;
+    } else {
+      start = info.size;
+    }
+
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= info.size || end < start) {
+      response.writeHead(416, { ...baseHeaders, 'content-range': `bytes */${info.size}`, 'content-length': 0 });
+      return response.end();
+    }
+    status = 206;
+  }
+
+  const contentLength = Math.max(0, end - start + 1);
+  response.writeHead(status, {
+    ...baseHeaders,
+    'content-length': contentLength,
+    ...(status === 206 ? { 'content-range': `bytes ${start}-${end}/${info.size}` } : {}),
   });
-  response.end(request.method === 'HEAD' ? undefined : contents);
+  if (request.method === 'HEAD') return response.end();
+  createReadStream(filePath, { start, end }).on('error', () => response.destroy()).pipe(response);
 }
 
 function handleRequest(request, response) {

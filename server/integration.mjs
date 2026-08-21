@@ -120,6 +120,14 @@ try {
   const metricsResponse = await fetch(`${base}/metrics`);
   const metricsText = await metricsResponse.text();
   if (!metricsResponse.ok || !metricsText.includes('mova_http_request_duration_ms_bucket') || !metricsText.includes('mova_process_uptime_seconds')) throw new Error('Production metrics were not exposed');
+  const videoHead = await fetch(`${base}/mova-secret-mobile-v2.mp4`, { method: 'HEAD' });
+  if (!videoHead.ok || videoHead.headers.get('content-type') !== 'video/mp4' || videoHead.headers.get('accept-ranges') !== 'bytes' || Number(videoHead.headers.get('content-length')) <= 0) {
+    throw new Error('Landing video metadata was not exposed for mobile browsers');
+  }
+  const videoRange = await fetch(`${base}/mova-secret-mobile-v2.mp4`, { headers: { range: 'bytes=0-1023' } });
+  if (videoRange.status !== 206 || videoRange.headers.get('content-range') !== `bytes 0-1023/${videoHead.headers.get('content-length')}` || (await videoRange.arrayBuffer()).byteLength !== 1024) {
+    throw new Error('Landing video byte ranges were not served correctly');
+  }
   const suffix = Date.now();
   const first = await call('/api/register', 'POST', {
     name: 'Первый',

@@ -45,7 +45,7 @@ describe('Mova landing page', () => {
     expect(play).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('dialog', { name: /Секретное видео/i })).toBeVisible();
     expect(Array.from(document.querySelectorAll('video source')).map((source) => source.getAttribute('src'))).toEqual([
-      '/mova-secret-mobile.m4v',
+      '/mova-secret-mobile-v2.mp4',
       '/mova-secret.mp4',
     ]);
 
