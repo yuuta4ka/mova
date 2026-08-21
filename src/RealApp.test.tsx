@@ -2008,6 +2008,124 @@ describe('RealMessages popover menus', () => {
   });
 });
 
+describe('RealMessages group management', () => {
+  const teammate: AppUser = { ...friend, id: 'group-teammate', name: 'Участник', handle: '@teammate' };
+  const candidate: AppUser = { ...friend, id: 'group-candidate', name: 'Новый друг', handle: '@candidate' };
+  const groupConversation: AppConversation = {
+    ...conversation,
+    id: 'managed-group',
+    kind: 'group',
+    title: 'Команда',
+    createdBy: currentUser.id,
+    members: [currentUser, teammate],
+    memberRoles: { [currentUser.id]: 'owner', [teammate.id]: 'member' },
+  };
+
+  it('shows the full member list without a duplicate owner card and edits the group in the side panel', async () => {
+    const user = userEvent.setup();
+    const renamed = { ...groupConversation, title: 'Новая команда' };
+    const updateConversation = vi.spyOn(api, 'updateConversation').mockResolvedValue({ conversation: renamed });
+    const onConversationChange = vi.fn();
+    render(<RealMessages conversation={groupConversation} currentUser={currentUser} messages={[]} availableUsers={[candidate]} onConversationChange={onConversationChange} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${groupConversation.title}` }));
+    const info = screen.getByRole('complementary', { name: `Информация о ${groupConversation.title}` });
+    expect(within(info).queryByText('Владелец группы')).not.toBeInTheDocument();
+    expect(within(info).getByRole('region', { name: 'Участники группы' })).toHaveTextContent(currentUser.name);
+    expect(within(info).getByRole('region', { name: 'Участники группы' })).toHaveTextContent(teammate.name);
+    expect(within(info).getByRole('button', { name: `Открыть информацию о ${currentUser.name}` })).toHaveTextContent('Владелец');
+
+    await user.click(within(info).getByRole('button', { name: 'Изменить группу' }));
+    const editor = screen.getByRole('complementary', { name: `Редактирование группы ${groupConversation.title}` });
+    expect(screen.queryByRole('dialog', { name: 'Изменить' })).not.toBeInTheDocument();
+    const title = within(editor).getByRole('textbox', { name: 'Название группы' });
+    await user.clear(title);
+    await user.type(title, renamed.title);
+    await user.click(within(editor).getByRole('button', { name: 'Готово' }));
+
+    await waitFor(() => expect(updateConversation).toHaveBeenCalledWith(groupConversation.id, { title: renamed.title }));
+    expect(onConversationChange).toHaveBeenCalledWith(renamed);
+  });
+
+  it('does not show the edit action to an ordinary member', async () => {
+    const user = userEvent.setup();
+    const memberView = { ...groupConversation, memberRoles: { [currentUser.id]: 'member', [teammate.id]: 'owner' } as AppConversation['memberRoles'], createdBy: teammate.id };
+    render(<RealMessages conversation={memberView} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${memberView.title}` }));
+    const info = screen.getByRole('complementary', { name: `Информация о ${memberView.title}` });
+    expect(within(info).queryByRole('button', { name: 'Изменить группу' })).not.toBeInTheDocument();
+    expect(within(info).queryByText('Владелец группы')).not.toBeInTheDocument();
+    expect(within(info).getByRole('button', { name: `Открыть информацию о ${teammate.name}` })).toHaveTextContent('Владелец');
+  });
+
+  it('opens a participant profile in the same panel and exposes message and call actions', async () => {
+    const user = userEvent.setup();
+    const onOpenDirectConversation = vi.fn();
+    const onStartDirectCall = vi.fn();
+    render(<RealMessages conversation={groupConversation} currentUser={currentUser} messages={[]} onOpenDirectConversation={onOpenDirectConversation} onStartDirectCall={onStartDirectCall} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${groupConversation.title}` }));
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${teammate.name}` }));
+
+    const memberInfo = screen.getByRole('complementary', { name: `Информация о ${teammate.name}` });
+    expect(within(memberInfo).getByRole('button', { name: 'Назад к информации о группе' })).toBeVisible();
+    expect(within(memberInfo).getByText(teammate.handle.replace(/^@/, ''))).toBeVisible();
+
+    await user.click(within(memberInfo).getByRole('button', { name: 'Написать' }));
+    expect(onOpenDirectConversation).toHaveBeenCalledWith(teammate);
+
+    await user.click(within(memberInfo).getByRole('button', { name: `Действия с ${teammate.name}` }));
+    await user.click(within(memberInfo).getByRole('menuitem', { name: 'Позвонить' }));
+    expect(onStartDirectCall).toHaveBeenCalledWith(teammate, false);
+
+    await user.click(within(memberInfo).getByRole('button', { name: `Действия с ${teammate.name}` }));
+    await user.click(within(memberInfo).getByRole('menuitem', { name: 'Видеозвонок' }));
+    expect(onStartDirectCall).toHaveBeenCalledWith(teammate, true);
+
+    await user.click(within(memberInfo).getByRole('button', { name: 'Назад к информации о группе' }));
+    expect(screen.getByRole('complementary', { name: `Информация о ${groupConversation.title}` })).toBeVisible();
+  });
+
+  it('shows the edit action to a promoted administrator', async () => {
+    const user = userEvent.setup();
+    const adminView = { ...groupConversation, memberRoles: { [currentUser.id]: 'admin', [teammate.id]: 'owner' } as AppConversation['memberRoles'], createdBy: teammate.id };
+    render(<RealMessages conversation={adminView} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${adminView.title}` }));
+    const info = screen.getByRole('complementary', { name: `Информация о ${adminView.title}` });
+    expect(within(info).getByRole('button', { name: 'Изменить группу' })).toBeVisible();
+  });
+
+  it('lets the owner promote administrators and add or remove members from the editor', async () => {
+    const user = userEvent.setup();
+    const promoted = { ...groupConversation, memberRoles: { ...groupConversation.memberRoles, [teammate.id]: 'admin' as const } };
+    const withCandidate = { ...promoted, members: [...promoted.members, candidate], memberRoles: { ...promoted.memberRoles, [candidate.id]: 'member' as const } };
+    const withoutTeammate = { ...withCandidate, members: withCandidate.members.filter((member) => member.id !== teammate.id) };
+    const setRole = vi.spyOn(api, 'setConversationMemberRole').mockResolvedValue({ conversation: promoted });
+    const addMember = vi.spyOn(api, 'addConversationMembers').mockResolvedValue({ conversation: withCandidate });
+    const removeMember = vi.spyOn(api, 'removeConversationMember').mockResolvedValue({ conversation: withoutTeammate, removedUserId: teammate.id });
+    render(<RealMessages conversation={groupConversation} currentUser={currentUser} messages={[]} availableUsers={[candidate]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${groupConversation.title}` }));
+    await user.click(screen.getByRole('button', { name: 'Изменить группу' }));
+    await user.click(screen.getByRole('button', { name: /Администраторы/ }));
+    await user.click(screen.getByRole('button', { name: 'Назначить' }));
+    await waitFor(() => expect(setRole).toHaveBeenCalledWith(groupConversation.id, teammate.id, 'admin'));
+
+    await user.click(screen.getByRole('button', { name: 'Назад' }));
+    await user.click(screen.getByRole('button', { name: /Участники/ }));
+    await user.click(screen.getByRole('button', { name: /Добавить участников/ }));
+    await user.click(screen.getByRole('button', { name: 'Добавить' }));
+    await waitFor(() => expect(addMember).toHaveBeenCalledWith(groupConversation.id, [candidate.id]));
+
+    await user.click(screen.getByRole('button', { name: 'Назад' }));
+    await user.click(screen.getByRole('button', { name: `Удалить ${teammate.name} из группы` }));
+    await user.click(screen.getByRole('button', { name: 'Удалить из группы' }));
+    await waitFor(() => expect(removeMember).toHaveBeenCalledWith(groupConversation.id, teammate.id));
+  });
+});
+
 describe('RealMessages context actions and selection', () => {
   const incoming: AppMessage = {
     id: 'quick-incoming',

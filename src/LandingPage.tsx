@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
+  CheckCircle2,
   Download,
   Code2,
   Globe2,
@@ -7,11 +9,12 @@ import {
   Laptop,
   MessageCircleMore,
   MonitorDown,
-  PhoneCall,
+  Play,
   Radio,
   ScreenShare,
   Sparkles,
   Video,
+  X,
 } from 'lucide-react';
 
 const version = '0.1.9';
@@ -58,6 +61,29 @@ const featureGroups = [
   },
 ];
 
+const projectTimeline = [
+  {
+    icon: MessageCircleMore,
+    title: 'Сначала — чат',
+    description: 'Запасное место для переписки со своей компанией.',
+  },
+  {
+    icon: Video,
+    title: 'Потом — звонки',
+    description: 'Голос и видео появились, когда одного текста стало мало.',
+  },
+  {
+    icon: ScreenShare,
+    title: 'Следом — экран',
+    description: 'Демонстрация экрана превратила чат в место для совместных дел.',
+  },
+  {
+    icon: Laptop,
+    title: 'И desktop-клиент',
+    description: 'В итоге Mova вышла из вкладки браузера в отдельное приложение.',
+  },
+];
+
 function Brand() {
   return (
     <a className="mova-landing-brand" href="/" aria-label="Mova — главная">
@@ -68,8 +94,51 @@ function Brand() {
 }
 
 export function LandingPage() {
+  const [isVideoOpen, setIsVideoOpen] = useState(false);
+  const landingRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const root = landingRef.current;
+    if (!root) return;
+    const targets = [...root.querySelectorAll<HTMLElement>([
+      '.mova-landing-showcase>header',
+      '.mova-landing-showcase figure',
+      '.mova-landing-why>*',
+      '.mova-landing-timeline>.mova-landing-section-heading',
+      '.mova-landing-timeline li',
+      '.mova-landing-features>.mova-landing-section-heading',
+      '.mova-landing-features article',
+      '.mova-landing-ai-scene>*',
+      '.mova-landing-download>header',
+      '.mova-landing-download__layout>*',
+      '.mova-landing-support>article',
+      '.mova-landing-finale>*',
+    ].join(','))];
+    targets.forEach((target, index) => {
+      target.classList.add('mova-landing-reveal');
+      target.style.setProperty('--mova-reveal-delay', `${(index % 4) * 55}ms`);
+    });
+
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    if (reducedMotion || !('IntersectionObserver' in window)) {
+      targets.forEach((target) => target.classList.add('is-revealed'));
+      return;
+    }
+
+    root.classList.add('is-reveal-ready');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('is-revealed');
+        observer.unobserve(entry.target);
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+    targets.forEach((target) => observer.observe(target));
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div className="mova-landing">
+    <div className="mova-landing" ref={landingRef}>
       <header className="mova-landing-header">
         <nav className="mova-landing-nav" aria-label="Основная навигация">
           <Brand />
@@ -95,13 +164,16 @@ export function LandingPage() {
             </div>
           </div>
 
-          <aside className="mova-landing-hero__aside" aria-label="Коротко о Mova">
-            <span>В Mova уже есть</span>
-            <div><MessageCircleMore size={19} /><strong>Чаты</strong><small>личные и групповые</small></div>
-            <div><PhoneCall size={19} /><strong>Звонки</strong><small>голос и видео</small></div>
-            <div><ScreenShare size={19} /><strong>Экран</strong><small>можно показать другим</small></div>
-            <p>Работает в браузере и как desktop-приложение.</p>
-          </aside>
+          <figure className="mova-landing-hero__product">
+            <div className="mova-landing-hero__product-bar">
+              <span><i /><i /><i /> mova · диалог</span>
+              <small><Radio size={12} /> Настоящий интерфейс</small>
+            </div>
+            <div className="mova-landing-hero__product-image">
+              <img src="/mova-interface.png" alt="Фрагмент настоящего интерфейса Mova в первом экране" />
+            </div>
+            <figcaption><MessageCircleMore size={17} /><span><strong>Переписка без лишнего шума</strong><small>Сообщения, изображения, ссылки и emoji</small></span></figcaption>
+          </figure>
         </section>
 
         <section className="mova-landing-showcase" aria-labelledby="showcase-title">
@@ -134,6 +206,24 @@ export function LandingPage() {
           <blockquote>«Сделаю небольшой запасной чат для своих». Несколько недель спустя у него появились видеозвонки и desktop-клиент.</blockquote>
         </section>
 
+        <section className="mova-landing-timeline" aria-labelledby="timeline-title">
+          <div className="mova-landing-section-heading">
+            <span>Как всё разрослось</span>
+            <h2 id="timeline-title">От маленького чата до полноценной Mova</h2>
+            <p>Без большого плана и презентаций для инвесторов. Просто одна полезная вещь постепенно потянула за собой следующую.</p>
+          </div>
+          <ol>
+            {projectTimeline.map(({ icon: Icon, title, description }, index) => (
+              <li key={title}>
+                <i><Icon size={19} /></i>
+                <span>0{index + 1}</span>
+                <h3>{title}</h3>
+                <p>{description}</p>
+              </li>
+            ))}
+          </ol>
+        </section>
+
         <section className="mova-landing-features" id="features" aria-labelledby="features-title">
           <div className="mova-landing-section-heading">
             <span>Что уже работает</span>
@@ -152,15 +242,20 @@ export function LandingPage() {
           </div>
         </section>
 
-        <section className="mova-landing-ai" aria-labelledby="ai-title">
-          <div className="mova-landing-ai__icon"><Sparkles size={24} /></div>
-          <div>
-            <span>Да, в основном через vibecoding</span>
-            <h2 id="ai-title">Сделано с AI. Серьёзно.</h2>
-            <p>Я описывал нейросетям, что хочу получить, запускал код, находил странности и переделывал интерфейс. Несколько недель вечерней возни с AI и Codex каким-то образом превратились в backend, realtime-чаты, звонки, screen sharing и desktop-клиент.</p>
-            <p>Не технологический переворот. Просто забавно, что этой штукой теперь реально можно пользоваться.</p>
+        <section className="mova-landing-ai-scene" aria-labelledby="ai-title">
+          <div className="mova-landing-ai-scene__character">
+            <img src="/mova-character-peek.png" alt="Мая выглядывает из-за блока о создании Mova" />
           </div>
-          <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={17} /> Посмотреть код</a>
+          <div className="mova-landing-ai">
+            <div className="mova-landing-ai__icon"><Sparkles size={24} /></div>
+            <div>
+              <span>Да, в основном через vibecoding</span>
+              <h2 id="ai-title">Сделано с AI. Серьёзно.</h2>
+              <p>Я описывал нейросетям, что хочу получить, запускал код, находил странности и переделывал интерфейс. Несколько недель вечерней возни с AI и Codex каким-то образом превратились в backend, realtime-чаты, звонки, screen sharing и desktop-клиент.</p>
+              <p>Не технологический переворот. Просто забавно, что этой штукой теперь реально можно пользоваться.</p>
+            </div>
+            <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={17} /> Посмотреть код</a>
+          </div>
         </section>
 
         <section className="mova-landing-download" id="download" aria-labelledby="download-title">
@@ -217,13 +312,59 @@ export function LandingPage() {
             </div>
           </article>
         </section>
+
+        <section className="mova-landing-finale" aria-labelledby="finale-title">
+          <div className="mova-landing-finale__copy">
+            <span><CheckCircle2 size={15} /> Финишная прямая пройдена</span>
+            <h2 id="finale-title">Поздравляем — вы пролистали сайт до самого конца.</h2>
+            <p>За такое полагается маленькая награда. Нажмите на карточку, чтобы посмотреть секретное видео.</p>
+          </div>
+          <button className="mova-landing-finale__video" type="button" onClick={() => setIsVideoOpen(true)} aria-label="Открыть секретное видео">
+            <img src="/mova-secret-poster.png" alt="Кадр из секретного видео с котом" />
+            <span className="mova-landing-finale__play"><Play size={24} fill="currentColor" /></span>
+            <span className="mova-landing-finale__caption"><strong>Посмотреть видео</strong><small>12 секунд заслуженного отдыха</small></span>
+          </button>
+        </section>
       </main>
 
       <footer className="mova-landing-footer">
-        <Brand />
-        <p>Небольшой независимый мессенджер. Сделан по вечерам.</p>
-        <div><a href={githubUrl} target="_blank" rel="noreferrer">GitHub</a><a href="/app">Web-версия</a><span>© 2026 Mova</span></div>
+        <div className="mova-landing-footer__top">
+          <div className="mova-landing-footer__about">
+            <Brand />
+            <p>Небольшой независимый мессенджер. Сделан по вечерам.</p>
+          </div>
+          <nav className="mova-landing-footer__links" aria-label="Навигация в подвале">
+            <div><strong>Продукт</strong><a href="/app">Web-версия</a><a href="#download">Скачать</a><a href="#features">Возможности</a></div>
+            <div><strong>Проект</strong><a href="#story">О проекте</a><a href={githubUrl} target="_blank" rel="noreferrer">GitHub</a><a href={donationUrl} target="_blank" rel="noreferrer">Поддержать</a></div>
+            <div><strong>Связаться</strong><span>@yuuta4ka</span><a href={githubUrl} target="_blank" rel="noreferrer">Сообщить о баге</a></div>
+          </nav>
+        </div>
+        <div className="mova-landing-footer__meta"><span>© 2026 Mova</span><span>Общайтесь, созванивайтесь, оставайтесь на связи.</span></div>
+        <div className="mova-landing-footer__word" aria-hidden="true">Mova</div>
       </footer>
+
+      {isVideoOpen ? (
+        <div
+          className="mova-landing-video-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="video-modal-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setIsVideoOpen(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setIsVideoOpen(false);
+          }}
+        >
+          <div className="mova-landing-video-modal__panel">
+            <header><div><span>Ваша награда</span><h2 id="video-modal-title">Секретное видео</h2></div><button type="button" autoFocus onClick={() => setIsVideoOpen(false)} aria-label="Закрыть видео"><X size={20} /></button></header>
+            <video controls autoPlay playsInline poster="/mova-secret-poster.png">
+              <source src="/mova-secret.mp4" type="video/mp4" />
+              Ваш браузер не поддерживает видео. <a href="/mova-secret.mp4">Открыть файл</a>.
+            </video>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

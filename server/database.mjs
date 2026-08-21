@@ -190,6 +190,7 @@ export async function openDatabase(paths) {
     CREATE TABLE IF NOT EXISTS memberships (
       conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',
       joined_at TEXT NOT NULL,
       last_read_message_id TEXT,
       last_read_at TEXT,
@@ -268,6 +269,13 @@ export async function openDatabase(paths) {
   const userColumns = sqlite.prepare('PRAGMA table_info(users)').all();
   if (!userColumns.some((column) => column.name === 'email_verified_at')) sqlite.exec('ALTER TABLE users ADD COLUMN email_verified_at TEXT');
   if (!userColumns.some((column) => column.name === 'session_version')) sqlite.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1');
+  const membershipColumns = sqlite.prepare('PRAGMA table_info(memberships)').all();
+  if (!membershipColumns.some((column) => column.name === 'role')) sqlite.exec("ALTER TABLE memberships ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
+  sqlite.exec(`UPDATE memberships SET role='owner'
+    WHERE role!='owner' AND EXISTS (
+      SELECT 1 FROM conversations c
+      WHERE c.id=memberships.conversation_id AND c.kind='group' AND c.created_by=memberships.user_id
+    )`);
   const legacyEmailResetKey = 'legacy_email_verification_reset_2026_08_20';
   const emailVerificationLaunchAt = '2026-08-20T18:50:12.460Z';
   if (!sqlite.prepare('SELECT 1 FROM metadata WHERE key=?').get(legacyEmailResetKey)) {
@@ -666,8 +674,20 @@ export class MovaDatabase {
     return this.sqlite.prepare('SELECT user_id FROM memberships WHERE conversation_id = ?').all(conversationId).map((row) => row.user_id);
   }
 
+  memberRoles(conversationId) {
+    return Object.fromEntries(this.sqlite.prepare('SELECT user_id, role FROM memberships WHERE conversation_id = ?').all(conversationId).map((row) => [row.user_id, row.role || 'member']));
+  }
+
+  membershipRole(userId, conversationId) {
+    return this.sqlite.prepare('SELECT role FROM memberships WHERE user_id = ? AND conversation_id = ?').get(userId, conversationId)?.role || null;
+  }
+
+  isGroupAdmin(userId, conversationId) {
+    return ['owner', 'admin'].includes(this.membershipRole(userId, conversationId));
+  }
+
   members(conversationId) {
-    return this.sqlite.prepare('SELECT u.* FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.conversation_id=? ORDER BY m.joined_at').all(conversationId).map(rowUser);
+    return this.sqlite.prepare("SELECT u.* FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.conversation_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, m.joined_at").all(conversationId).map(rowUser);
   }
 
   insertConversation(conversation) {
@@ -675,15 +695,43 @@ export class MovaDatabase {
   }
 
   insertMembership(membership) {
-    this.sqlite.prepare('INSERT OR IGNORE INTO memberships(conversation_id,user_id,joined_at) VALUES(?,?,?)').run(membership.conversationId, membership.userId, membership.joinedAt);
+    this.sqlite.prepare('INSERT OR IGNORE INTO memberships(conversation_id,user_id,role,joined_at) VALUES(?,?,?,?)').run(membership.conversationId, membership.userId, membership.role || 'member', membership.joinedAt);
   }
 
   createConversation(conversation, userIds) {
     this.transaction(() => {
       this.insertConversation(conversation);
       const joinedAt = new Date().toISOString();
-      for (const userId of userIds) this.insertMembership({ conversationId: conversation.id, userId, joinedAt });
+      for (const userId of userIds) this.insertMembership({ conversationId: conversation.id, userId, role: conversation.kind === 'group' && userId === conversation.createdBy ? 'owner' : 'member', joinedAt });
     });
+  }
+
+  addMembers(conversationId, userIds) {
+    const joinedAt = new Date().toISOString();
+    this.transaction(() => {
+      for (const userId of userIds) this.insertMembership({ conversationId, userId, role: 'member', joinedAt });
+    });
+  }
+
+  removeMember(conversationId, userId) {
+    return this.sqlite.prepare('DELETE FROM memberships WHERE conversation_id=? AND user_id=?').run(conversationId, userId).changes > 0;
+  }
+
+  setMemberRole(conversationId, userId, role) {
+    return this.sqlite.prepare("UPDATE memberships SET role=? WHERE conversation_id=? AND user_id=? AND role!='owner'").run(role, conversationId, userId).changes > 0;
+  }
+
+  async setConversationDetails(conversationId, title, avatarDataUrl) {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return null;
+    this.sqlite.prepare('UPDATE conversations SET title=?, avatar_url=? WHERE id=?').run(title, avatarDataUrl, conversationId);
+    const previousFileName = conversation.avatarDataUrl?.startsWith('/uploads/') ? conversation.avatarDataUrl.slice('/uploads/'.length) : '';
+    const nextFileName = avatarDataUrl?.startsWith('/uploads/') ? avatarDataUrl.slice('/uploads/'.length) : '';
+    if (previousFileName && previousFileName !== nextFileName) {
+      this.sqlite.prepare("DELETE FROM uploads WHERE file_name=? AND purpose='conversation'").run(previousFileName);
+      await unlink(join(this.paths.uploadsPath, previousFileName)).catch(() => undefined);
+    }
+    return this.getConversation(conversationId);
   }
 
   async deleteConversation(conversationId) {

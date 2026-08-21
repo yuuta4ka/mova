@@ -45,6 +45,14 @@ const call = async (path, method = 'GET', data, token) => {
   if (!response.ok) throw new Error(JSON.stringify(result));
   return result;
 };
+const callStatus = async (path, method = 'GET', data, token) => {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: data ? JSON.stringify(data) : undefined,
+  });
+  return { status: response.status, result: await response.json() };
+};
 const upload = async (name, type, contents, token) => {
   const response = await fetch(`${base}/api/uploads`, {
     method: 'POST',
@@ -129,6 +137,13 @@ try {
   await call(`/api/friends/${first.user.id}`, 'PATCH', undefined, second.token);
   const acceptedRequestMessages = await call(`/api/conversations/${requestConversation.conversations[0].id}/messages`, 'GET', undefined, first.token);
   if (acceptedRequestMessages.messages[0]?.friendRequest?.status !== 'accepted') throw new Error('Friend request system message was not finalized');
+  const third = await call('/api/register', 'POST', {
+    name: 'Третий',
+    email: `third.${suffix}@mova.test`,
+    password: 'strongpass3',
+  });
+  await call(`/api/friends/${third.user.id}`, 'POST', undefined, first.token);
+  await call(`/api/friends/${first.user.id}`, 'PATCH', undefined, third.token);
   const profile = await call(
     '/api/profile',
     'PATCH',
@@ -271,6 +286,23 @@ try {
   const targetConversationPromise = waitFor(secondSocket, 'conversation:new');
   const forwardTarget = await call('/api/conversations', 'POST', { kind: 'group', title: 'Пересылка', memberIds: [second.user.id] }, first.token);
   await targetConversationPromise;
+  if (forwardTarget.conversation.memberRoles?.[first.user.id] !== 'owner' || forwardTarget.conversation.memberRoles?.[second.user.id] !== 'member') throw new Error('Group ownership was not returned');
+  const ordinaryEdit = await callStatus(`/api/conversations/${forwardTarget.conversation.id}`, 'PATCH', { title: 'Чужое название' }, second.token);
+  if (ordinaryEdit.status !== 403) throw new Error('Ordinary group member could edit the group');
+  const renamedGroup = await call(`/api/conversations/${forwardTarget.conversation.id}`, 'PATCH', { title: 'Команда интеграции' }, first.token);
+  if (renamedGroup.conversation.title !== 'Команда интеграции') throw new Error('Group owner could not rename the group');
+  const groupWithThird = await call(`/api/conversations/${forwardTarget.conversation.id}/members`, 'POST', { userIds: [third.user.id] }, first.token);
+  if (!groupWithThird.conversation.members.some((member) => member.id === third.user.id)) throw new Error('Group owner could not add a member');
+  const promotedAdmin = await call(`/api/conversations/${forwardTarget.conversation.id}/members/${second.user.id}`, 'PATCH', { role: 'admin' }, first.token);
+  if (promotedAdmin.conversation.memberRoles?.[second.user.id] !== 'admin') throw new Error('Group owner could not promote an administrator');
+  const adminEdit = await call(`/api/conversations/${forwardTarget.conversation.id}`, 'PATCH', { title: 'Команда администратора' }, second.token);
+  if (adminEdit.conversation.title !== 'Команда администратора') throw new Error('Group administrator could not edit the group');
+  const removeOwner = await callStatus(`/api/conversations/${forwardTarget.conversation.id}/members/${first.user.id}`, 'DELETE', undefined, second.token);
+  if (removeOwner.status !== 403) throw new Error('Group owner could be removed');
+  const removedThird = await call(`/api/conversations/${forwardTarget.conversation.id}/members/${third.user.id}`, 'DELETE', undefined, second.token);
+  if (removedThird.conversation.members.some((member) => member.id === third.user.id)) throw new Error('Group administrator could not remove a member');
+  const demotedAdmin = await call(`/api/conversations/${forwardTarget.conversation.id}/members/${second.user.id}`, 'PATCH', { role: 'member' }, first.token);
+  if (demotedAdmin.conversation.memberRoles?.[second.user.id] !== 'member') throw new Error('Group owner could not demote an administrator');
   const forwardPromise = waitFor(secondSocket, 'message:new');
   const forwardedMessage = await call(`/api/conversations/${conversation.conversation.id}/messages/${replyMessage.message.id}/forward`, 'POST', { conversationId: forwardTarget.conversation.id }, first.token);
   const forwardEvent = await forwardPromise;

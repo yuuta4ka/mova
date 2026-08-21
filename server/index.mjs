@@ -389,6 +389,7 @@ function conversationDto(conversation, userId) {
   return {
     ...conversation,
     members,
+    memberRoles: conversation.kind === 'group' ? database.memberRoles(conversation.id) : undefined,
     title: conversation.kind === 'direct' ? members.find((member) => member.id !== userId)?.name || 'Сохранённое' : conversation.title,
     lastMessage,
     unreadCount: database.unreadCount(conversation.id, userId),
@@ -964,10 +965,83 @@ async function handleApi(request, response) {
       if (kind === 'group') broadcastToConversation(conversation.id, { type: 'conversation:new', conversationId: conversation.id });
       return json(response, 201, { conversation: dto });
     }
+    const conversationDetailsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
+    if (conversationDetailsMatch && request.method === 'PATCH') {
+      const conversationId = conversationDetailsMatch[1];
+      const conversation = database.getConversation(conversationId);
+      if (!conversation || conversation.kind !== 'group') return json(response, 404, { error: 'Группа не найдена' });
+      if (!database.isGroupAdmin(user.id, conversationId)) return json(response, 403, { error: 'Изменять группу могут только администраторы' });
+      const data = await body(request);
+      const hasTitle = Object.prototype.hasOwnProperty.call(data, 'title');
+      const hasAvatar = Object.prototype.hasOwnProperty.call(data, 'avatarDataUrl');
+      if (!hasTitle && !hasAvatar) return json(response, 400, { error: 'Нет изменений для сохранения' });
+      const title = hasTitle ? String(data.title || '').trim() : conversation.title;
+      if (title.length < 2) return json(response, 400, { error: 'Введите название группы' });
+      if (title.length > 80) return json(response, 400, { error: 'Название группы должно быть короче 80 символов' });
+      const rawAvatar = hasAvatar ? String(data.avatarDataUrl || '') : conversation.avatarDataUrl;
+      if (hasAvatar && ((rawAvatar && !rawAvatar.startsWith('data:image/') && !rawAvatar.startsWith('/uploads/')) || rawAvatar.length > 8_000_000))
+        return json(response, 400, { error: 'Фото группы слишком большое или имеет неверный формат' });
+      const avatarDataUrl = hasAvatar ? await database.normalizeConversationImage(rawAvatar, `${user.id}-group-avatar`, user.id) : conversation.avatarDataUrl;
+      const updated = await database.setConversationDetails(conversationId, title, avatarDataUrl);
+      const dto = conversationDto(updated, user.id);
+      broadcastToConversation(conversationId, { type: 'conversation:new', conversationId });
+      return json(response, 200, { conversation: dto });
+    }
+    const conversationMembersMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/members$/);
+    if (conversationMembersMatch && request.method === 'POST') {
+      const conversationId = conversationMembersMatch[1];
+      const conversation = database.getConversation(conversationId);
+      if (!conversation || conversation.kind !== 'group') return json(response, 404, { error: 'Группа не найдена' });
+      if (!database.isGroupAdmin(user.id, conversationId)) return json(response, 403, { error: 'Добавлять участников могут только администраторы' });
+      const data = await body(request);
+      const requestedIds = [...new Set((Array.isArray(data.userIds) ? data.userIds : [data.userId]).filter((memberId) => database.getUserById(memberId) && !database.isMember(memberId, conversationId)))];
+      if (!requestedIds.length) return json(response, 400, { error: 'Выберите новых участников' });
+      if (database.memberIds(conversationId).length + requestedIds.length > 200) return json(response, 400, { error: 'В группе может быть до 200 участников' });
+      if (requestedIds.some((memberId) => !database.areFriends(user.id, memberId))) return json(response, 403, { error: 'В группу можно добавлять только друзей' });
+      database.addMembers(conversationId, requestedIds);
+      const dto = conversationDto(conversation, user.id);
+      broadcastToConversation(conversationId, { type: 'conversation:new', conversationId });
+      return json(response, 200, { conversation: dto });
+    }
+    const conversationMemberMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/members\/([^/]+)$/);
+    if (conversationMemberMatch && request.method === 'DELETE') {
+      const [, conversationId, memberId] = conversationMemberMatch;
+      const conversation = database.getConversation(conversationId);
+      if (!conversation || conversation.kind !== 'group') return json(response, 404, { error: 'Группа не найдена' });
+      const actorRole = database.membershipRole(user.id, conversationId);
+      const targetRole = database.membershipRole(memberId, conversationId);
+      if (!['owner', 'admin'].includes(actorRole)) return json(response, 403, { error: 'Удалять участников могут только администраторы' });
+      if (!targetRole) return json(response, 404, { error: 'Участник не найден' });
+      if (targetRole === 'owner') return json(response, 403, { error: 'Владельца нельзя удалить из группы' });
+      if (targetRole === 'admin' && actorRole !== 'owner') return json(response, 403, { error: 'Только владелец может удалить администратора' });
+      if (activeCalls.has(conversationId) || voiceRooms.has(conversationId)) return json(response, 409, { error: 'Нельзя удалять участников во время звонка' });
+      database.removeMember(conversationId, memberId);
+      sendToUser(memberId, { type: 'conversation:delete', conversationId });
+      broadcastToConversation(conversationId, { type: 'conversation:new', conversationId });
+      return json(response, 200, { conversation: conversationDto(conversation, user.id), removedUserId: memberId });
+    }
+    if (conversationMemberMatch && request.method === 'PATCH') {
+      const [, conversationId, memberId] = conversationMemberMatch;
+      const conversation = database.getConversation(conversationId);
+      if (!conversation || conversation.kind !== 'group') return json(response, 404, { error: 'Группа не найдена' });
+      if (database.membershipRole(user.id, conversationId) !== 'owner') return json(response, 403, { error: 'Назначать администраторов может только владелец' });
+      const targetRole = database.membershipRole(memberId, conversationId);
+      if (!targetRole) return json(response, 404, { error: 'Участник не найден' });
+      if (targetRole === 'owner') return json(response, 403, { error: 'Нельзя изменить роль владельца' });
+      const data = await body(request);
+      const role = data.role === 'admin' ? 'admin' : data.role === 'member' ? 'member' : '';
+      if (!role) return json(response, 400, { error: 'Неизвестная роль' });
+      database.setMemberRole(conversationId, memberId, role);
+      const dto = conversationDto(conversation, user.id);
+      broadcastToConversation(conversationId, { type: 'conversation:new', conversationId });
+      return json(response, 200, { conversation: dto });
+    }
     const deleteConversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
     if (deleteConversationMatch && request.method === 'DELETE') {
       const conversationId = deleteConversationMatch[1];
       if (!isMember(user.id, conversationId)) return json(response, 403, { error: 'Нет доступа к чату' });
+      const conversation = database.getConversation(conversationId);
+      if (conversation?.kind === 'group' && database.membershipRole(user.id, conversationId) !== 'owner') return json(response, 403, { error: 'Удалить группу может только владелец' });
       if (activeCalls.has(conversationId) || voiceRooms.has(conversationId)) return json(response, 409, { error: 'Нельзя удалить чат во время звонка' });
       const memberIds = database.memberIds(conversationId);
       const otherUserId = directOtherUserId(conversationId, user.id);

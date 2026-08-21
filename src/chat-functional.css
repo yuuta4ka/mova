@@ -119,6 +119,74 @@
 .mova-group-create-next:disabled{opacity:.4;cursor:not-allowed}
 .mova-group-create-next>b{position:absolute;top:-4px;right:-4px;display:grid;place-items:center;min-width:22px;height:22px;padding:0 5px;color:#fff;background:#3c3c42;border:2px solid #171717;border-radius:12px;box-sizing:border-box;font-size:11px}
 @media(max-width:520px){.mova-dialog-surface.mova-group-create-modal{width:100%;height:100dvh;max-height:none;border:0;border-radius:0}.mova-modal-backdrop:has(.mova-group-create-modal){padding:0;background:#171717}.mova-group-create-modal>header{padding-top:env(safe-area-inset-top);height:calc(62px + env(safe-area-inset-top));min-height:calc(62px + env(safe-area-inset-top))}.mova-group-create-next{right:max(18px,env(safe-area-inset-right));bottom:max(18px,env(safe-area-inset-bottom))}.mova-group-create-error{bottom:max(20px,env(safe-area-inset-bottom))}}
+
+/* Group information and administrator controls. */
+.mova-contact-info.is-group{overflow-y:auto;overscroll-behavior:contain}
+.mova-contact-info.is-group.is-editor{overflow:hidden}
+.mova-contact-info.is-group>header{position:sticky;z-index:3;top:0;min-height:62px;background:#181818}
+.mova-contact-info.is-group>header h2{max-width:calc(100% - 120px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mova-contact-info.is-group>header>.mova-icon-button:last-child{margin-left:auto}
+.mova-contact-info.is-group .mova-contact-info__profile{padding-block:24px 21px}
+.mova-contact-info.is-group .mova-contact-info__card{flex:0 0 auto}
+.mova-group-info-members{display:grid;gap:2px;margin:0 12px 18px;padding:8px 8px 10px;background:#222;border-radius:24px}
+.mova-group-info-members>h3{display:flex;align-items:center;gap:6px;margin:0;padding:8px 10px 6px;color:var(--mova-accent-color,#8774e1);font-size:14px;font-weight:650}
+.mova-group-info-members>h3>span{color:#8f9095;font-weight:500}
+.mova-group-info-members>button{display:flex;align-items:center;gap:12px;width:100%;min-height:60px;padding:5px 9px;color:inherit;background:transparent;border:0;border-radius:15px;font:inherit;text-align:left;cursor:pointer}
+.mova-group-info-members>button:hover,.mova-group-info-members>button:focus-visible{background:rgba(255,255,255,.05);outline:0}
+.mova-group-info-members .mova-avatar{width:44px;height:44px;flex:0 0 44px;border-radius:50%}
+.mova-group-info-members>button>span{display:grid;min-width:0;flex:1;gap:2px}
+.mova-group-info-members strong,.mova-group-info-members small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mova-group-info-members strong{color:#f2f2f4;font-size:15px;font-weight:540}
+.mova-group-info-members small{color:#999;font-size:12px}
+.mova-group-info-members>button>b{max-width:96px;color:#aaa;font-size:10px;font-weight:560;text-align:right}
+
+.mova-group-editor{position:relative;display:flex;min-height:0;flex:1;flex-direction:column;color:#f4f4f5;background:#171717;overflow:hidden}
+.mova-group-editor>header{position:relative;display:flex;align-items:center;height:64px;min-height:64px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.045)}
+.mova-group-editor>header .mova-icon-button{width:42px;height:42px;color:#aaa;border-radius:50%}
+.mova-group-editor>header h2{position:absolute;left:50%;max-width:calc(100% - 160px);margin:0;overflow:hidden;font-size:20px;font-weight:650;letter-spacing:-.02em;text-overflow:ellipsis;white-space:nowrap;transform:translateX(-50%)}
+.mova-group-edit-save{display:grid;place-items:center;min-width:66px;min-height:38px;margin-left:auto;padding:0 10px;color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 45%,white);background:transparent;border:0;border-radius:12px;font:inherit;font-size:14px;font-weight:650;cursor:pointer}
+.mova-group-edit-save:hover:not(:disabled){background:rgba(255,255,255,.05)}
+.mova-group-edit-save:disabled{color:#666;cursor:not-allowed}
+.mova-group-edit-body,.mova-group-manage-body{min-height:0;flex:1;padding:16px 14px 76px;overflow-y:auto}
+.mova-group-edit-profile{display:grid;justify-items:center;gap:25px;padding:8px 12px 18px;background:#212121;border-radius:24px}
+.mova-group-edit-photo{position:relative;display:grid;place-items:center;width:122px;height:122px;border-radius:50%;cursor:pointer;overflow:hidden}
+.mova-group-edit-photo>.mova-avatar{width:122px;height:122px;flex:0 0 122px;border:0;font-size:30px}
+.mova-group-edit-photo>span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;background:rgba(0,0,0,.32)}
+.mova-group-edit-photo>span>svg+svg{margin:31px 0 0 -8px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.28))}
+.mova-group-edit-photo>input{display:none}
+.mova-group-edit-actions{display:grid;margin-top:16px;padding:7px 0;background:#212121;border-radius:24px}
+.mova-group-edit-actions>button{display:flex;align-items:center;gap:16px;min-height:70px;padding:8px 17px;color:#aaa;background:transparent;border:0;text-align:left;cursor:pointer}
+.mova-group-edit-actions>button:hover{background:rgba(255,255,255,.035)}
+.mova-group-edit-actions>button>span{display:grid;min-width:0;flex:1;gap:2px}
+.mova-group-edit-actions strong{color:#f2f2f4;font-size:16px;font-weight:500}
+.mova-group-edit-actions small{color:#999;font-size:13px}
+.mova-group-edit-hint,.mova-group-manage-note{margin:12px 10px;color:#999;font-size:12px;line-height:1.45}
+.mova-group-manage-body{display:flex;flex-direction:column;padding-top:3px}
+.mova-group-manage-body>.mova-group-create-search{flex:0 0 50px}
+.mova-group-add-members{display:flex;align-items:center;gap:12px;min-height:58px;margin:0 0 8px;padding:7px 12px;color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 45%,white);background:#212121;border:0;border-radius:17px;text-align:left;cursor:pointer}
+.mova-group-add-members>span{flex:1;font-size:15px;font-weight:550}
+.mova-group-manage-list{display:grid;align-content:start;min-height:0;padding:5px 0}
+.mova-group-manage-member{display:flex;align-items:center;gap:11px;min-height:62px;padding:6px 8px;border-radius:16px}
+.mova-group-manage-member:hover{background:rgba(255,255,255,.04)}
+.mova-group-manage-member>.mova-avatar{width:44px;height:44px;flex:0 0 44px;border-radius:50%}
+.mova-group-manage-member>span{display:grid;min-width:0;flex:1;gap:2px}
+.mova-group-manage-member strong,.mova-group-manage-member small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mova-group-manage-member strong{font-size:15px;font-weight:530}
+.mova-group-manage-member small{color:#999;font-size:12px}
+.mova-group-manage-member>button:not(.mova-icon-button),.mova-group-manage-member>b{padding:8px 10px;color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 43%,white);background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 15%,transparent);border:0;border-radius:11px;font:inherit;font-size:11px;font-weight:650;cursor:pointer}
+.mova-group-manage-member>b{color:#aaa;background:transparent;cursor:default}
+.mova-group-manage-member>.mova-icon-button{width:38px;height:38px;flex:0 0 38px;color:#ff8d97;border-radius:50%}
+.mova-group-manage-member button:disabled{opacity:.46;cursor:not-allowed}
+.mova-group-edit-error{position:absolute;z-index:2;right:16px;bottom:18px;left:16px;padding:10px 12px;color:#ffd3d7;background:#4e262c;border:1px solid rgba(255,111,123,.25);border-radius:12px;font-size:12px}
+.mova-group-member-profile-actions{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:17px}
+.mova-group-member-profile-actions>.mova-button{width:auto;min-height:40px;padding-inline:15px}
+.mova-group-member-more{position:relative}
+.mova-group-member-more>.mova-icon-button{width:40px;height:40px;color:#d7d7da;background:#29292d;border-radius:50%}
+.mova-popover-surface.mova-group-member-menu{position:absolute;z-index:10;top:calc(100% + 7px);right:0;display:grid;width:190px;padding:6px;color:#f3f3f5;background:#2a2a30;border-radius:15px}
+.mova-group-member-menu>button{display:flex;align-items:center;gap:11px;width:100%;min-height:42px;padding:0 10px;color:inherit;background:transparent;border:0;border-radius:10px;font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.mova-group-member-menu>button:hover,.mova-group-member-menu>button:focus-visible{background:rgba(255,255,255,.065);outline:0}
+.mova-group-member-menu>button:disabled{opacity:.42;cursor:not-allowed}
+@media(max-width:520px){.mova-contact-info.is-group{width:100%;border-left:0;border-radius:0}.mova-group-editor>header{padding-top:env(safe-area-inset-top);height:calc(62px + env(safe-area-inset-top));min-height:calc(62px + env(safe-area-inset-top))}.mova-group-edit-body,.mova-group-manage-body{padding-bottom:max(76px,calc(58px + env(safe-area-inset-bottom)))}.mova-group-edit-error{bottom:max(18px,env(safe-area-inset-bottom))}}
 .mova-tg-app.is-account-menu-open .mova-sidebar-resizer{pointer-events:none;visibility:hidden}
 .mova-icon-button.is-active{color:color-mix(in srgb,var(--mova-accent-color,#8774e1) 35%,white)!important;background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 14%,transparent)!important}
 

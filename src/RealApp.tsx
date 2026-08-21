@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, Smile, Sparkles, Trash2, Upload, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
@@ -1517,6 +1517,11 @@ function ConversationAvatar({ conversation, currentUser }: { conversation: AppCo
   return <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} status={avatarStatus(person.presence, person.isOnline)} size="lg" />;
 }
 
+const groupMemberRole = (conversation: AppConversation, userId: string): 'owner' | 'admin' | 'member' =>
+  conversation.memberRoles?.[userId] || (conversation.createdBy === userId ? 'owner' : 'member');
+
+const groupRoleLabel = (role: 'owner' | 'admin' | 'member') => role === 'owner' ? 'Владелец' : role === 'admin' ? 'Администратор' : '';
+
 export function CreateGroup({ open, users, onClose, onCreated }: { open: boolean; users: AppUser[]; onClose: () => void; onCreated: (conversation: AppConversation) => void }) {
   const [step, setStep] = useState<'members' | 'details'>('members');
   const [title, setTitle] = useState('');
@@ -1663,6 +1668,182 @@ export function CreateGroup({ open, users, onClose, onCreated }: { open: boolean
         {selected.length > 0 && step === 'members' && <b>{selected.length}</b>}
       </button>
     </DialogSurface>
+  );
+}
+
+type GroupEditorView = 'details' | 'members' | 'admins' | 'add';
+
+function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: { conversation: AppConversation; currentUser: AppUser; users: AppUser[]; onClose: () => void; onUpdated: (conversation: AppConversation) => void }) {
+  const [view, setView] = useState<GroupEditorView>('details');
+  const [localConversation, setLocalConversation] = useState(conversation);
+  const [title, setTitle] = useState(conversation.title);
+  const [avatarDataUrl, setAvatarDataUrl] = useState(conversation.avatarDataUrl || '');
+  const [avatarChanged, setAvatarChanged] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [removingUser, setRemovingUser] = useState<AppUser | null>(null);
+  useEffect(() => {
+    setLocalConversation(conversation);
+    setTitle(conversation.title);
+    setAvatarDataUrl(conversation.avatarDataUrl || '');
+    setAvatarChanged(false);
+  }, [conversation]);
+  useEffect(() => {
+    setView('details');
+    setQuery('');
+    setError('');
+    setRemovingUser(null);
+  }, [conversation.id]);
+  const currentRole = groupMemberRole(localConversation, currentUser.id);
+  const isOwner = currentRole === 'owner';
+  const adminCount = localConversation.members.filter((member) => ['owner', 'admin'].includes(groupMemberRole(localConversation, member.id))).length;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleMembers = localConversation.members.filter((member) => !normalizedQuery || `${member.name} ${member.handle}`.toLocaleLowerCase().includes(normalizedQuery));
+  const addableMembers = users.filter((member) => member.relationship === 'friend' && !localConversation.members.some((existing) => existing.id === member.id) && (!normalizedQuery || `${member.name} ${member.handle}`.toLocaleLowerCase().includes(normalizedQuery)));
+  const applyConversation = (updated: AppConversation) => {
+    setLocalConversation(updated);
+    setTitle(updated.title);
+    setAvatarDataUrl(updated.avatarDataUrl || '');
+    setAvatarChanged(false);
+    onUpdated(updated);
+  };
+  const selectGroupImage = async (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Выберите изображение для группы');
+      return;
+    }
+    setImageLoading(true);
+    setError('');
+    try {
+      const prepared = await prepareImageDataUrl(file, { maxDimension: 1024, maxBytes: 650_000, quality: 0.94, skipBelowBytes: 120_000 });
+      setAvatarDataUrl(prepared.dataUrl);
+      setAvatarChanged(true);
+    } catch (imageError) {
+      setError(imageError instanceof Error ? imageError.message : 'Не удалось подготовить изображение');
+    } finally {
+      setImageLoading(false);
+    }
+  };
+  const saveDetails = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.updateConversation(localConversation.id, { title, ...(avatarChanged ? { avatarDataUrl } : {}) });
+      applyConversation(result.conversation);
+      onClose();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить группу');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const addMember = async (member: AppUser) => {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.addConversationMembers(localConversation.id, [member.id]);
+      applyConversation(result.conversation);
+    } catch (addError) {
+      setError(addError instanceof Error ? addError.message : 'Не удалось добавить участника');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const changeRole = async (member: AppUser, role: 'admin' | 'member') => {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.setConversationMemberRole(localConversation.id, member.id, role);
+      applyConversation(result.conversation);
+    } catch (roleError) {
+      setError(roleError instanceof Error ? roleError.message : 'Не удалось изменить роль');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const removeMember = async () => {
+    if (!removingUser) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.removeConversationMember(localConversation.id, removingUser.id);
+      applyConversation(result.conversation);
+      setRemovingUser(null);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : 'Не удалось удалить участника');
+      setRemovingUser(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const titleByView = view === 'details' ? 'Изменить' : view === 'members' ? 'Участники' : view === 'admins' ? 'Администраторы' : 'Добавить участников';
+  const goBack = () => {
+    setError('');
+    setQuery('');
+    if (view === 'add') setView('members');
+    else if (view !== 'details') setView('details');
+    else onClose();
+  };
+  const renderMember = (member: AppUser, mode: 'members' | 'admins' | 'add') => {
+    const role = groupMemberRole(localConversation, member.id);
+    const canRemove = mode === 'members' && role !== 'owner' && (isOwner || role === 'member');
+    const isAdmin = role === 'admin';
+    return (
+      <div className="mova-group-manage-member" key={member.id}>
+        <Avatar name={member.name} src={member.avatarDataUrl} color={member.color} status={avatarStatus(member.presence, member.isOnline)} size="md" />
+        <span><strong><AppleEmoji text={member.name} /></strong><small>{groupRoleLabel(role) || formatPresenceStatus(member)}</small></span>
+        {mode === 'add' && <button type="button" disabled={busy} onClick={() => void addMember(member)}>Добавить</button>}
+        {mode === 'members' && canRemove && <IconButton label={`Удалить ${member.name} из группы`} disabled={busy} onClick={() => setRemovingUser(member)}><UserMinus size={19} /></IconButton>}
+        {mode === 'admins' && role === 'owner' && <b>Владелец</b>}
+        {mode === 'admins' && role !== 'owner' && isOwner && <button type="button" disabled={busy} onClick={() => void changeRole(member, isAdmin ? 'member' : 'admin')}>{isAdmin ? 'Снять' : 'Назначить'}</button>}
+      </div>
+    );
+  };
+  return (
+    <>
+      <div className="mova-group-editor">
+        <header>
+          <IconButton label="Назад" onClick={goBack}><ArrowLeft size={23} /></IconButton>
+          <h2 id="group-edit-title">{titleByView}</h2>
+          {view === 'details' && <button type="button" className="mova-group-edit-save" disabled={busy || imageLoading || title.trim().length < 2 || (title.trim() === localConversation.title && !avatarChanged)} onClick={() => void saveDetails()}>{busy ? <LoaderCircle className="mova-spin" size={19} /> : 'Готово'}</button>}
+        </header>
+        {view === 'details' ? (
+          <div className="mova-group-edit-body">
+            <section className="mova-group-edit-profile">
+              <label className="mova-group-edit-photo" aria-label="Изменить фото группы">
+                <Avatar name={localConversation.title} src={avatarDataUrl} color="#ff9638" size="xl" />
+                <span>{imageLoading ? <LoaderCircle className="mova-spin" size={24} /> : <><Camera size={31} /><Plus size={17} /></>}</span>
+                <input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void selectGroupImage(file); }} />
+              </label>
+              <label className="mova-group-title-field"><span>Название группы</span><input value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} aria-label="Название группы" /></label>
+            </section>
+            <section className="mova-group-edit-actions">
+              <button type="button" onClick={() => setView('admins')}><ShieldCheck size={24} /><span><strong>Администраторы</strong><small>{adminCount}</small></span><ChevronRight size={19} /></button>
+              <button type="button" onClick={() => setView('members')}><Users size={24} /><span><strong>Участники</strong><small>{localConversation.members.length}</small></span><ChevronRight size={19} /></button>
+            </section>
+            {!isOwner && <p className="mova-group-edit-hint">Назначать администраторов может только владелец группы.</p>}
+          </div>
+        ) : (
+          <div className="mova-group-manage-body">
+            {(view === 'members' || view === 'add') && <label className="mova-group-create-search"><Search size={20} /><input data-dialog-initial autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск" aria-label={view === 'add' ? 'Поиск новых участников' : 'Поиск участников'} />{query && <button type="button" aria-label="Очистить поиск" onClick={() => setQuery('')}><X size={16} /></button>}</label>}
+            {view === 'members' && <button type="button" className="mova-group-add-members" onClick={() => { setView('add'); setQuery(''); }}><UserPlus size={21} /><span>Добавить участников</span><ChevronRight size={18} /></button>}
+            {view === 'admins' && !isOwner && <p className="mova-group-manage-note">Список администраторов. Изменять роли может только владелец.</p>}
+            <section className="mova-group-manage-list" aria-label={titleByView}>
+              {view === 'add'
+                ? (addableMembers.length ? addableMembers.map((member) => renderMember(member, 'add')) : <div className="mova-group-create-empty"><UserPlus size={28} /><strong>Некого добавлять</strong><span>Здесь появятся друзья, которых ещё нет в группе.</span></div>)
+                : view === 'admins'
+                  ? localConversation.members.filter((member) => ['owner', 'admin'].includes(groupMemberRole(localConversation, member.id)) || isOwner).map((member) => renderMember(member, 'admins'))
+                  : visibleMembers.map((member) => renderMember(member, 'members'))}
+            </section>
+          </div>
+        )}
+        {error && <div className="mova-group-edit-error" role="alert">{error}</div>}
+      </div>
+      <ConfirmDialog open={Boolean(removingUser)} title="Удалить участника?" description={removingUser ? `${removingUser.name} больше не сможет читать и отправлять сообщения в этой группе.` : ''} confirmLabel="Удалить из группы" onCancel={() => !busy && setRemovingUser(null)} onConfirm={() => void removeMember()} />
+    </>
   );
 }
 
@@ -2711,6 +2892,10 @@ interface RealMessagesProps {
   onForwardMessage?: (messageId: string, conversationId: string) => Promise<void>;
   onDeleteMessage?: (messageId: string, scope?: 'self' | 'everyone') => Promise<void>;
   onDeleteConversation?: () => void;
+  availableUsers?: AppUser[];
+  onConversationChange?: (conversation: AppConversation) => void;
+  onOpenDirectConversation?: (user: AppUser) => void | Promise<void>;
+  onStartDirectCall?: (user: AppUser, video: boolean) => void | Promise<void>;
   onRelationshipChange?: (user: AppUser) => void;
   onMarkRead?: (throughMessageId: string) => Promise<void>;
   onVoiceListen?: (messageId: string) => Promise<void>;
@@ -2727,7 +2912,7 @@ interface RealMessagesViewProps extends RealMessagesProps {
   onStartCall: (video: boolean) => void;
 }
 
-function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, availableConversations = [], onPinMessage, onForwardMessage, onDeleteMessage, onDeleteConversation = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange }: RealMessagesViewProps) {
+function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, availableConversations = [], onPinMessage, onForwardMessage, onDeleteMessage, onDeleteConversation = () => undefined, availableUsers = [], onConversationChange = () => undefined, onOpenDirectConversation = () => undefined, onStartDirectCall = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange }: RealMessagesViewProps) {
   const toast = useToast();
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
@@ -2738,6 +2923,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [profileInfoOpen, setProfileInfoOpen] = useState(false);
+  const [groupEditorOpen, setGroupEditorOpen] = useState(false);
+  const [selectedGroupMember, setSelectedGroupMember] = useState<AppUser | null>(null);
+  const [groupMemberMenuOpen, setGroupMemberMenuOpen] = useState(false);
   const [, setPresenceTick] = useState(0);
   const [muted, setMuted] = useState(() => localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
   const [relationshipOverride, setRelationshipOverride] = useState<AppUser | null>(null);
@@ -2797,6 +2985,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const relationship = other?.relationship || 'none';
   const blocked = relationship === 'blocked' || relationship === 'blocked_by';
   const canCall = conversation.kind !== 'direct' || relationship === 'friend';
+  const currentGroupRole = conversation.kind === 'group' ? groupMemberRole(conversation, currentUser.id) : 'member';
+  const canEditGroup = conversation.kind === 'group' && ['owner', 'admin'].includes(currentGroupRole);
   const messageStructure = useMemo(() => getMessageStructure(messages), [messages]);
   const mediaGallery = useMemo(() => buildMediaGallery(messages), [messages]);
   const pinnedMessages = useMemo(() => [...messages].filter((message) => message.pinnedAt).sort((left, right) => String(right.pinnedAt).localeCompare(String(left.pinnedAt))), [messages]);
@@ -2819,6 +3009,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setSearchQuery('');
     setDetailsOpen(false);
     setProfileInfoOpen(false);
+    setGroupEditorOpen(false);
+    setSelectedGroupMember(null);
+    setGroupMemberMenuOpen(false);
     setEmojiOpen(false);
     setMessageMenu(null);
     setForwardingMessages(null);
@@ -3326,6 +3519,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   }, [callChatOpen]);
   useEffect(() => {
     setProfileInfoOpen(false);
+    setGroupEditorOpen(false);
+    setSelectedGroupMember(null);
+    setGroupMemberMenuOpen(false);
     setDetailsOpen(false);
     setSearchOpen(false);
     setSearchQuery('');
@@ -3605,66 +3801,76 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       </header>
       <div ref={setCallBannerHost} className="mova-active-call-host" />
       {profileInfoOpen && (
-        <aside className="mova-contact-info" aria-label={`Информация о ${conversation.title}`}>
-          <header>
-            <IconButton label="Закрыть информацию" onClick={() => setProfileInfoOpen(false)}>
-              <X size={25} />
-            </IconButton>
-            <h2>Информация</h2>
-          </header>
-          <section className="mova-contact-info__profile">
-            <ConversationAvatar conversation={conversation} currentUser={currentUser} />
-            <h3><AppleEmoji text={conversation.title} /></h3>
-            <p>{status}</p>
-            {conversation.kind === 'direct' && other && (
-              <div className="mova-contact-info__relationship-actions">
-                {relationship !== 'blocked' && relationship !== 'blocked_by' && (
-                  <Button variant="secondary" size="sm" leadingIcon={relationship === 'incoming' ? <Check size={17} /> : <UserPlus size={17} />} loading={relationshipBusy} onClick={() => void changeFriendship()}>
-                    {friendshipActionLabel}
-                  </Button>
+        <aside
+          className={`mova-contact-info${conversation.kind === 'group' ? ' is-group' : ''}${groupEditorOpen ? ' is-editor' : ''}${selectedGroupMember ? ' is-member-profile' : ''}`}
+          aria-label={groupEditorOpen ? `Редактирование группы ${conversation.title}` : selectedGroupMember ? `Информация о ${selectedGroupMember.name}` : `Информация о ${conversation.title}`}
+        >
+          {conversation.kind === 'group' && groupEditorOpen ? (
+            <GroupEditor conversation={conversation} currentUser={currentUser} users={availableUsers} onClose={() => setGroupEditorOpen(false)} onUpdated={onConversationChange} />
+          ) : conversation.kind === 'group' && selectedGroupMember ? (
+            <>
+              <header>
+                <IconButton label="Назад к информации о группе" onClick={() => { setSelectedGroupMember(null); setGroupMemberMenuOpen(false); }}><ArrowLeft size={23} /></IconButton>
+                <h2>Информация</h2>
+              </header>
+              <section className="mova-contact-info__profile">
+                <Avatar name={selectedGroupMember.name} src={selectedGroupMember.avatarDataUrl} color={selectedGroupMember.color} status={avatarStatus(selectedGroupMember.presence, selectedGroupMember.isOnline)} size="xl" />
+                <h3><AppleEmoji text={selectedGroupMember.name} /></h3>
+                <p>{formatPresenceStatus(selectedGroupMember)}</p>
+                {selectedGroupMember.id !== currentUser.id && (
+                  <div className="mova-group-member-profile-actions">
+                    <Button variant="secondary" size="sm" leadingIcon={<MessageCircle size={18} />} onClick={() => void onOpenDirectConversation(selectedGroupMember)}>Написать</Button>
+                    <div className="mova-group-member-more" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGroupMemberMenuOpen(false); }}>
+                      <IconButton label={`Действия с ${selectedGroupMember.name}`} aria-expanded={groupMemberMenuOpen} onClick={() => setGroupMemberMenuOpen((open) => !open)}><MoreHorizontal size={21} /></IconButton>
+                      <PopoverSurface open={groupMemberMenuOpen} className="mova-group-member-menu" ariaLabel={`Действия с ${selectedGroupMember.name}`}>
+                        <button type="button" role="menuitem" disabled={selectedGroupMember.relationship !== 'friend'} onClick={() => { setGroupMemberMenuOpen(false); void onStartDirectCall(selectedGroupMember, false); }}><Phone size={19} /><span>Позвонить</span></button>
+                        <button type="button" role="menuitem" disabled={selectedGroupMember.relationship !== 'friend'} onClick={() => { setGroupMemberMenuOpen(false); void onStartDirectCall(selectedGroupMember, true); }}><Video size={19} /><span>Видеозвонок</span></button>
+                      </PopoverSurface>
+                    </div>
+                  </div>
                 )}
-                <Button variant="ghost" size="sm" leadingIcon={<Ban size={17} />} disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>
-                  {relationship === 'blocked' ? 'Разблокировать' : relationship === 'blocked_by' ? 'Вы заблокированы' : 'Заблокировать'}
-                </Button>
-              </div>
-            )}
-          </section>
-          <section className="mova-contact-info__card">
-            {conversation.kind === 'direct' && other?.activity && (other.isOnline ?? other.presence === 'online') && (
-              <div>
-                <Gamepad2 size={25} />
-                <span>
-                  <strong>{other.activity.name}</strong>
-                  <small>Играет уже {activityTime(other.activity.startedAt)}</small>
-                </span>
-              </div>
-            )}
-            {conversation.kind === 'direct' && (
-              <div className="mova-message-body">
-                <AtSign size={25} />
-                <span>
-                  <strong>{other?.handle?.replace(/^@/, '') || 'не указан'}</strong>
-                  <small>Имя пользователя</small>
-                </span>
-              </div>
-            )}
-            <div>
-              <Info size={25} />
-              <span>
-                <strong>{conversation.kind === 'direct' ? other?.bio || 'Информация о себе не указана' : `${conversation.members.length} участников`}</strong>
-                <small>{conversation.kind === 'direct' ? 'О себе' : 'Участники'}</small>
-              </span>
-            </div>
-            <label>
-              <Bell size={25} />
-              <span>
-                <strong>Уведомления</strong>
-                <small>{muted ? 'Выключены' : 'Включены'}</small>
-              </span>
-              <input type="checkbox" checked={!muted} onChange={toggleMuted} aria-label="Уведомления" />
-              <i />
-            </label>
-          </section>
+              </section>
+              <section className="mova-contact-info__card">
+                {selectedGroupMember.activity && (selectedGroupMember.isOnline ?? selectedGroupMember.presence === 'online') && <div><Gamepad2 size={25} /><span><strong>{selectedGroupMember.activity.name}</strong><small>Играет уже {activityTime(selectedGroupMember.activity.startedAt)}</small></span></div>}
+                <div><AtSign size={25} /><span><strong>{selectedGroupMember.handle?.replace(/^@/, '') || 'не указан'}</strong><small>Имя пользователя</small></span></div>
+                <div><Info size={25} /><span><strong>{selectedGroupMember.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div>
+              </section>
+            </>
+          ) : (
+            <>
+              <header>
+                <IconButton label="Закрыть информацию" onClick={() => setProfileInfoOpen(false)}><X size={25} /></IconButton>
+                <h2>{conversation.kind === 'group' ? 'Информация о группе' : 'Информация'}</h2>
+                {canEditGroup && <IconButton label="Изменить группу" onClick={() => setGroupEditorOpen(true)}><Pencil size={21} /></IconButton>}
+              </header>
+              <section className="mova-contact-info__profile">
+                <ConversationAvatar conversation={conversation} currentUser={currentUser} />
+                <h3><AppleEmoji text={conversation.title} /></h3>
+                <p>{status}</p>
+                {conversation.kind === 'direct' && other && (
+                  <div className="mova-contact-info__relationship-actions">
+                    {relationship !== 'blocked' && relationship !== 'blocked_by' && <Button variant="secondary" size="sm" leadingIcon={relationship === 'incoming' ? <Check size={17} /> : <UserPlus size={17} />} loading={relationshipBusy} onClick={() => void changeFriendship()}>{friendshipActionLabel}</Button>}
+                    <Button variant="ghost" size="sm" leadingIcon={<Ban size={17} />} disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>{relationship === 'blocked' ? 'Разблокировать' : relationship === 'blocked_by' ? 'Вы заблокированы' : 'Заблокировать'}</Button>
+                  </div>
+                )}
+              </section>
+              <section className="mova-contact-info__card">
+                {conversation.kind === 'direct' && other?.activity && (other.isOnline ?? other.presence === 'online') && <div><Gamepad2 size={25} /><span><strong>{other.activity.name}</strong><small>Играет уже {activityTime(other.activity.startedAt)}</small></span></div>}
+                {conversation.kind === 'direct' && <div className="mova-message-body"><AtSign size={25} /><span><strong>{other?.handle?.replace(/^@/, '') || 'не указан'}</strong><small>Имя пользователя</small></span></div>}
+                {conversation.kind === 'direct' ? <div><Info size={25} /><span><strong>{other?.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div> : <div><Users size={25} /><span><strong>{conversation.members.length} {russianCount(conversation.members.length, 'участник', 'участника', 'участников')}</strong><small>Участники</small></span></div>}
+                <label><Bell size={25} /><span><strong>Уведомления</strong><small>{muted ? 'Выключены' : 'Включены'}</small></span><input type="checkbox" checked={!muted} onChange={toggleMuted} aria-label="Уведомления" /><i /></label>
+              </section>
+              {conversation.kind === 'group' && (
+                <section className="mova-group-info-members" aria-label="Участники группы">
+                  <h3>Участники <span>{conversation.members.length}</span></h3>
+                  {conversation.members.map((member) => {
+                    const role = groupMemberRole(conversation, member.id);
+                    return <button type="button" key={member.id} aria-label={`Открыть информацию о ${member.name}`} onClick={() => { setSelectedGroupMember(member); setGroupMemberMenuOpen(false); }}><Avatar name={member.name} src={member.avatarDataUrl} color={member.color} status={avatarStatus(member.presence, member.isOnline)} size="md" /><span><strong><AppleEmoji text={member.name} /></strong><small>{formatPresenceStatus(member)}</small></span>{role !== 'member' && <b>{groupRoleLabel(role)}</b>}</button>;
+                  })}
+                </section>
+              )}
+            </>
+          )}
         </aside>
       )}
       <div ref={setCallStageHost} className="mova-call-host" />
@@ -3773,11 +3979,11 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             <span>Выбрать сообщения</span>
           </button>
           <div />
-          <button type="button" role="menuitem" disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>
+          {conversation.kind === 'direct' && <button type="button" role="menuitem" disabled={relationshipBusy || relationship === 'blocked_by'} onClick={() => void toggleBlocked()}>
             <Ban size={22} />
             <span>{relationship === 'blocked' ? 'Разблокировать' : relationship === 'blocked_by' ? 'Вы заблокированы' : 'Заблокировать'}</span>
-          </button>
-          <button
+          </button>}
+          {(conversation.kind === 'direct' || currentGroupRole === 'owner') && <button
             type="button"
             role="menuitem"
             className="is-danger"
@@ -3787,13 +3993,13 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             }}
           >
             <Trash2 size={22} />
-            <span>Удалить чат</span>
-          </button>
+            <span>{conversation.kind === 'group' ? 'Удалить группу' : 'Удалить чат'}</span>
+          </button>}
       </PopoverSurface>
       <ConfirmDialog
         open={deleteConfirmOpen}
-        title="Удалить чат?"
-        description={`Чат «${conversation.title}» исчезнет из списка. Это действие нельзя отменить.`}
+        title={conversation.kind === 'group' ? 'Удалить группу?' : 'Удалить чат?'}
+        description={conversation.kind === 'group' ? `Группа «${conversation.title}» и вся её история будут удалены у всех участников. Это действие нельзя отменить.` : `Чат «${conversation.title}» исчезнет из списка. Это действие нельзя отменить.`}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={() => {
           setDeleteConfirmOpen(false);
@@ -4796,6 +5002,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return next;
     });
   }, []);
+  const applyConversationUpdate = useCallback((updatedConversation: AppConversation) => {
+    setConversations((items) => {
+      const next = sortConversationsByActivity(items.map((conversation) => conversation.id === updatedConversation.id ? { ...conversation, ...updatedConversation } : conversation));
+      conversationCache.set(currentUserRef.current.id, { value: next, updatedAt: Date.now() });
+      return next;
+    });
+  }, []);
   const removeConversationFromClient = useCallback((conversationId: string) => {
     messageCache.delete(messageCacheKey(currentUserRef.current.id, conversationId));
     void deletePersistentConversation(currentUserRef.current.id, conversationId).catch(() => undefined);
@@ -5753,27 +5966,34 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     closeGlobalSearch();
     selectConversation(conversationId);
   }, [closeGlobalSearch, selectConversation]);
-  const openDirectConversation = useCallback(async (person: AppUser) => {
-    const existing = conversations.find((conversation) =>
+  const ensureDirectConversation = useCallback(async (person: AppUser) => {
+    const existing = conversationsRef.current.find((conversation) =>
       conversation.kind === 'direct' && conversation.members.some((member) => member.id === person.id),
     );
-    if (existing) {
-      openSearchConversation(existing.id);
-      return;
-    }
+    if (existing) return existing;
     try {
       const result = await api.createConversation({ kind: 'direct', memberIds: [person.id] });
-      setConversations((items) => {
-        const draftConversation = { ...result.conversation, isDraft: !result.conversation.lastMessage };
-        const next = sortConversationsByActivity([draftConversation, ...items.filter((item) => item.id !== result.conversation.id)]);
-        conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
-        return next;
-      });
-      openSearchConversation(result.conversation.id);
+      const draftConversation = { ...result.conversation, isDraft: !result.conversation.lastMessage };
+      const next = sortConversationsByActivity([draftConversation, ...conversationsRef.current.filter((item) => item.id !== result.conversation.id)]);
+      conversationsRef.current = next;
+      conversationCache.set(currentUser.id, { value: next, updatedAt: Date.now() });
+      setConversations(next);
+      return draftConversation;
     } catch (error) {
       toast.push(error instanceof Error ? error.message : 'Не удалось открыть личный чат', 'danger');
+      return null;
     }
-  }, [conversations, currentUser.id, openSearchConversation, toast]);
+  }, [currentUser.id, toast]);
+  const openDirectConversation = useCallback(async (person: AppUser) => {
+    const directConversation = await ensureDirectConversation(person);
+    if (directConversation) openSearchConversation(directConversation.id);
+  }, [ensureDirectConversation, openSearchConversation]);
+  const startDirectCall = useCallback(async (person: AppUser, video: boolean) => {
+    const directConversation = await ensureDirectConversation(person);
+    if (!directConversation) return;
+    selectConversation(directConversation.id);
+    requestCall(directConversation.id, video);
+  }, [ensureDirectConversation, requestCall, selectConversation]);
   const mobileNavigationClass = mobileNavigation ? ` is-mobile-navigation is-mobile-${mobileView}` : '';
   return (
     <main className={`mova-real-app mova-tg-app${sidebarCompact ? ' is-sidebar-compact' : ''}${accountOpen ? ' is-account-menu-open' : ''}${voiceDockVisible ? ' has-voice-dock' : ''}${mobileNavigationClass}`} style={{ '--mova-sidebar-width': `${sidebarWidth}px`, '--mova-background-color': backgroundColor, '--mova-accent-color': accentColor } as CSSProperties} data-mobile-view={mobileNavigation ? mobileView : undefined}>
@@ -5960,6 +6180,10 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           onPinMessage={setMessagePinned}
           onForwardMessage={forwardMessage}
           onDeleteMessage={deleteMessage}
+          availableUsers={users}
+          onConversationChange={applyConversationUpdate}
+          onOpenDirectConversation={openDirectConversation}
+          onStartDirectCall={startDirectCall}
           onRelationshipChange={applyRelationshipUser}
           onMarkRead={(throughMessageId) => markConversationRead(selected.id, throughMessageId)}
           onVoiceListen={(messageId) => markVoiceListened(selected.id, messageId)}

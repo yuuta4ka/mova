@@ -82,6 +82,7 @@ export interface AppConversation {
   unreadCount?: number;
   createdAt: string;
   createdBy?: string;
+  memberRoles?: Record<string, 'owner' | 'admin' | 'member'>;
   isDraft?: boolean;
 }
 export interface RtcConfig {
@@ -251,6 +252,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  updateConversation: (conversationId: string, data: { title?: string; avatarDataUrl?: string }) =>
+    request<{ conversation: AppConversation }>(`/api/conversations/${conversationId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  addConversationMembers: (conversationId: string, userIds: string[]) =>
+    request<{ conversation: AppConversation }>(`/api/conversations/${conversationId}/members`, { method: 'POST', body: JSON.stringify({ userIds }) }),
+  removeConversationMember: (conversationId: string, userId: string) =>
+    request<{ conversation: AppConversation; removedUserId: string }>(`/api/conversations/${conversationId}/members/${userId}`, { method: 'DELETE' }),
+  setConversationMemberRole: (conversationId: string, userId: string, role: 'admin' | 'member') =>
+    request<{ conversation: AppConversation }>(`/api/conversations/${conversationId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) }),
   deleteConversation: (conversationId: string) => request<{ conversationId: string }>(`/api/conversations/${conversationId}`, { method: 'DELETE' }),
   messages: (conversationId: string, options: { before?: string; limit?: number } = {}) => {
     const search = new URLSearchParams();

@@ -21,7 +21,8 @@ export function routeName(pathname) {
   return pathname
     .replace(/\/api\/conversations\/[^/]+\/messages\/[^/]+\/(pin|forward|listened)$/, '/api/conversations/:conversationId/messages/:messageId/$1')
     .replace(/\/api\/conversations\/[^/]+\/messages\/[^/]+$/, '/api/conversations/:conversationId/messages/:messageId')
-    .replace(/\/api\/conversations\/[^/]+\/(messages|read)$/, '/api/conversations/:conversationId/$1')
+    .replace(/\/api\/conversations\/[^/]+\/members\/[^/]+$/, '/api/conversations/:conversationId/members/:userId')
+    .replace(/\/api\/conversations\/[^/]+\/(messages|read|members)$/, '/api/conversations/:conversationId/$1')
     .replace(/\/api\/conversations\/[^/]+$/, '/api/conversations/:conversationId')
     .replace(/\/api\/(friends|blocks)\/[^/]+(\/reject)?$/, '/api/$1/:userId$2');
 }
