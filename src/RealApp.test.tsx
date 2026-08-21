@@ -59,6 +59,7 @@ describe('email authentication interface', () => {
 
     expect(register).toHaveBeenCalledWith({ name: 'Новый пользователь', email: challenge.email, password: 'strongpass1' });
     expect(await screen.findByText(`Код отправлен на ${challenge.email}`)).toBeVisible();
+    expect(screen.getByText(/Письмо с кодом может попасть в «Спам»/)).toBeVisible();
     await user.type(screen.getByRole('textbox', { name: 'Код из письма' }), '123456');
     await user.click(screen.getByRole('button', { name: 'Подтвердить и войти' }));
 
@@ -77,6 +78,7 @@ describe('email authentication interface', () => {
     await user.type(screen.getByRole('textbox', { name: 'Почта' }), currentUser.email);
     await user.click(screen.getByRole('button', { name: 'Отправить код' }));
     expect(requestReset).toHaveBeenCalledWith(currentUser.email);
+    expect(await screen.findByText(/Письмо с кодом может попасть в «Спам»/)).toBeVisible();
 
     await user.type(await screen.findByRole('textbox', { name: 'Код из письма' }), '654321');
     await user.type(screen.getByLabelText('Новый пароль'), 'newstrongpass');
@@ -103,6 +105,7 @@ describe('voice processing settings', () => {
     await user.type(screen.getByLabelText('Текущий пароль'), 'strongpass2');
     await user.click(screen.getByRole('button', { name: 'Отправить код' }));
     expect(requestChange).toHaveBeenCalledWith(changedUser.email, 'strongpass2');
+    expect(await screen.findByText(/Письмо с кодом может попасть в «Спам»/)).toBeVisible();
 
     await user.type(await screen.findByRole('textbox', { name: 'Код из письма' }), '345678');
     await user.click(screen.getByRole('button', { name: 'Подтвердить почту' }));
@@ -128,6 +131,7 @@ describe('voice processing settings', () => {
 
     await user.click(within(notice).getByRole('button', { name: 'Отправить код' }));
     expect(requestVerification).toHaveBeenCalledTimes(1);
+    expect(within(notice).getByText(/Письмо с кодом может попасть в «Спам»/)).toBeVisible();
     await user.type(await screen.findByRole('textbox', { name: 'Код подтверждения текущей почты' }), '123456');
     await user.click(screen.getByRole('button', { name: 'Подтвердить' }));
 

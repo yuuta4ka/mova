@@ -531,6 +531,8 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
   );
 }
 
+const emailDeliveryHint = 'Письмо с кодом может попасть в «Спам» или «Промоакции». Если кода нет, проверьте эти папки.';
+
 function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpdate: (user: AppUser) => void }) {
   const [step, setStep] = useState<'request' | 'verify'>('request');
   const [verificationChallenge, setVerificationChallenge] = useState<EmailChallenge | null>(null);
@@ -661,6 +663,7 @@ function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpd
                 <Button type="button" loading={verificationLoading} onClick={() => void requestVerification()}>Отправить код</Button>
               ) : (
                 <form onSubmit={confirmVerification}>
+                  <p className="mova-email-delivery-hint">{emailDeliveryHint}</p>
                   <label>
                     <span>Код из письма</span>
                     <input className="mova-auth-code" aria-label="Код подтверждения текущей почты" required pattern="[0-9]{6}" inputMode="numeric" maxLength={6} value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/gu, '').slice(0, 6))} placeholder="000000" autoComplete="one-time-code" />
@@ -692,6 +695,7 @@ function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpd
           <Button type="submit" loading={loading}>Отправить код</Button>
         </form> : <form onSubmit={confirmChange}>
           <p>Мы отправили шестизначный код на <strong>{challenge?.email}</strong>. Он действует 10 минут.</p>
+          <p className="mova-email-delivery-hint">{emailDeliveryHint}</p>
           <label>
             <span>Код из письма</span>
             <input className="mova-auth-code" required pattern="[0-9]{6}" inputMode="numeric" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/gu, '').slice(0, 6))} placeholder="000000" autoComplete="one-time-code" />
@@ -1342,6 +1346,7 @@ export function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
             <button type="button" role="tab" aria-selected={flow === 'register'} className={flow === 'register' ? 'is-active' : ''} onClick={() => switchFlow('register')}>Регистрация</button>
           </div>}
           <form onSubmit={submit}>
+            {['register-code', 'reset-code'].includes(flow) && <p className="mova-email-delivery-hint">{emailDeliveryHint}</p>}
             {flow === 'register' && (
               <label>
                 <span>Имя</span>
