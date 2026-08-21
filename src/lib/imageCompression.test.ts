@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { compressImageFile, fileToDataUrl } from './imageCompression';
+import { compressImageFile, cropImageFile, fileToDataUrl } from './imageCompression';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -32,6 +32,30 @@ describe('image compression', () => {
     expect(result.name).toBe('holiday.webp');
     expect(result.size).toBeLessThan(source.size);
     expect(close).toHaveBeenCalled();
+  });
+
+  it('keeps an original that already fits when re-encoding would make it too large', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 1800, height: 1200, close: vi.fn() }));
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, type) => callback(new Blob([new Uint8Array(500_000)], { type })));
+    const source = new File([new Uint8Array(300_000)], 'compact.png', { type: 'image/png' });
+
+    await expect(compressImageFile(source, { maxBytes: 400_000, skipBelowBytes: 100_000 })).resolves.toBe(source);
+  });
+
+  it('renders the selected square crop and exports it as WebP', async () => {
+    const bitmap = { width: 1200, height: 800, close: vi.fn() };
+    const drawImage = vi.fn();
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(bitmap));
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, type) => callback(new Blob([new Uint8Array(60_000)], { type })));
+    const source = new File([new Uint8Array(200_000)], 'portrait.png', { type: 'image/png' });
+
+    const result = await cropImageFile(source, { x: 1, y: -1, zoom: 2 });
+
+    expect(drawImage).toHaveBeenCalledWith(bitmap, 0, 400, 400, 400, 0, 0, 1024, 1024);
+    expect(result).toMatchObject({ name: 'portrait.webp', type: 'image/webp', size: 60_000 });
+    expect(bitmap.close).toHaveBeenCalled();
   });
 
   it('creates a data URL for upload and previews', async () => {

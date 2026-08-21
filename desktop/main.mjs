@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
 import updater from 'electron-updater';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { availableSharePickerTabs, buildSharePickerSources } from './share-picker-model.mjs';
@@ -8,18 +8,16 @@ import { desktopCallStatusLabel, resolveDesktopCallStatus, shouldKeepDesktopWind
 import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, updateStartupDelayMs } from './update-state.mjs';
 import { desktopWindowFrameOptions } from './window-shell.mjs';
 import { detectRunningGame, gameActivityPollIntervalMs } from './game-activity.mjs';
+import { desktopAppPageUrl, desktopAppUrlCandidates, isTrustedDesktopOrigin } from './app-server.mjs';
 
 const { autoUpdater } = updater;
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
 const settingsPath = () => join(app.getPath('userData'), 'desktop.json');
-const setupPath = join(desktopRoot, 'setup.html');
-const setupPreloadPath = join(desktopRoot, 'setup-preload.cjs');
 const appPreloadPath = join(desktopRoot, 'app-preload.cjs');
 const iconPath = join(desktopRoot, 'assets', 'icon.png');
-const developmentUrl = 'http://127.0.0.1:5173';
 
 let mainWindow = null;
-let appUrl = null;
+let appUrlCandidates = [];
 let tray = null;
 let isQuitting = false;
 let desktopCallStatus = 'idle';
@@ -40,32 +38,6 @@ const desktopUpdateState = {
   promptOpen: false,
 };
 
-function normalizeAppUrl(value, { allowLocal = false } = {}) {
-  try {
-    const url = new URL(String(value || '').trim());
-    const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
-    if (url.protocol !== 'https:' && !(allowLocal && local && url.protocol === 'http:')) return null;
-    url.pathname = url.pathname.replace(/\/$/, '');
-    url.search = '';
-    url.hash = '';
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return null;
-  }
-}
-
-async function readConfiguredUrl() {
-  const environmentUrl = normalizeAppUrl(process.env.MOVA_DESKTOP_URL, { allowLocal: true });
-  if (environmentUrl) return environmentUrl;
-  if (!app.isPackaged) return developmentUrl;
-  try {
-    const settings = JSON.parse(await readFile(settingsPath(), 'utf8'));
-    return normalizeAppUrl(settings.appUrl);
-  } catch {
-    return null;
-  }
-}
-
 async function readDesktopSettings() {
   try {
     const settings = JSON.parse(await readFile(settingsPath(), 'utf8'));
@@ -79,13 +51,6 @@ async function updateDesktopSettings(values) {
   const settings = { ...(await readDesktopSettings()), ...values };
   await writeFile(settingsPath(), JSON.stringify(settings, null, 2));
   return settings;
-}
-
-async function saveConfiguredUrl(value) {
-  const normalized = normalizeAppUrl(value, { allowLocal: !app.isPackaged });
-  if (!normalized) throw new Error('Укажите корректный HTTPS-адрес Mova.');
-  await updateDesktopSettings({ appUrl: normalized });
-  return normalized;
 }
 
 function supportsAutoLaunch() {
@@ -123,12 +88,7 @@ async function configuredAutoLaunch() {
 }
 
 function isTrustedOrigin(origin) {
-  if (!appUrl) return false;
-  try {
-    return new URL(origin).origin === new URL(appUrl).origin;
-  } catch {
-    return false;
-  }
+  return isTrustedDesktopOrigin(origin, appUrlCandidates);
 }
 
 function statusImage(status, badge = false) {
@@ -280,7 +240,10 @@ function configurePermissions() {
           fetchWindowIcons: true,
         });
         const source = await chooseDesktopSource(sources);
-        callback(source ? { video: source, audio: 'loopback' } : {});
+        // Electron's loopback source is the complete system mix on Windows,
+        // including Mova's own call output. Sending it would make every voice
+        // return to participants a second time.
+        callback(source ? { video: source } : {});
       } catch {
         callback({});
       }
@@ -301,15 +264,6 @@ function createMenu() {
         { role: 'about' },
         { type: 'separator' },
         desktopUpdateMenuItem(),
-        { type: 'separator' },
-        {
-          label: 'Изменить адрес сервера…',
-          click: async () => {
-            await rm(settingsPath(), { force: true });
-            appUrl = null;
-            await showSetup();
-          },
-        },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -342,6 +296,7 @@ function createWindow(webPreferences = {}) {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      backgroundThrottling: false,
       ...webPreferences,
     },
   });
@@ -379,22 +334,7 @@ function lockWindowTitle(window) {
   });
 }
 
-async function showSetup() {
-  applyDesktopCallStatus('idle');
-  mainWindow?.destroy();
-  mainWindow = createWindow({ preload: setupPreloadPath });
-  lockWindowTitle(mainWindow);
-  configureWindowShell(mainWindow);
-  mainWindow.once('ready-to-show', () => {
-    if (!launchHidden) mainWindow?.show();
-    launchHidden = false;
-  });
-  await mainWindow.loadFile(setupPath);
-  createMenu();
-}
-
 async function showApp() {
-  if (!appUrl) return showSetup();
   mainWindow?.destroy();
   mainWindow = createWindow({ preload: appPreloadPath });
   lockWindowTitle(mainWindow);
@@ -414,10 +354,31 @@ async function showApp() {
     launchHidden = false;
   });
   const userAgent = `${mainWindow.webContents.getUserAgent()} MovaDesktop/${app.getVersion()}`;
-  const desktopUrl = new URL(appUrl);
-  if (desktopUrl.pathname === '/') desktopUrl.pathname = '/app';
-  await mainWindow.loadURL(desktopUrl.toString(), { userAgent });
+  let loadError = null;
+  for (const candidate of appUrlCandidates) {
+    try {
+      await mainWindow.loadURL(desktopAppPageUrl(candidate), { userAgent });
+      loadError = null;
+      break;
+    } catch (error) {
+      loadError = error;
+    }
+  }
   createMenu();
+  if (!loadError) return;
+  if (!mainWindow.isVisible()) mainWindow.show();
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'error',
+    title: 'Mova недоступна',
+    message: 'Не удалось подключиться к Mova.',
+    detail: 'Проверены основной адрес hola-mova.ru и резервный сервер Amvera. Проверьте интернет-соединение и попробуйте снова.',
+    buttons: ['Повторить', 'Закрыть'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (result.response === 0) return showApp();
+  app.quit();
 }
 
 function updaterDialog(options) {
@@ -550,14 +511,6 @@ function configureUpdates() {
   updateIntervalTimer.unref?.();
 }
 
-ipcMain.handle('desktop:save-url', async (event, value) => {
-  if (event.sender.getURL() !== new URL(`file://${setupPath}`).toString()) throw new Error('Недоверенный источник.');
-  appUrl = await saveConfiguredUrl(value);
-  configurePermissions();
-  await showApp();
-  return appUrl;
-});
-
 ipcMain.on('desktop-window:minimize', (event) => controlledMainWindow(event)?.minimize());
 ipcMain.on('desktop-window:toggle-maximize', (event) => {
   const window = controlledMainWindow(event);
@@ -625,7 +578,10 @@ else {
     app.setName('Mova');
     await initializeAutoLaunch();
     createTray();
-    appUrl = await readConfiguredUrl();
+    appUrlCandidates = desktopAppUrlCandidates({
+      packaged: app.isPackaged,
+      environmentUrl: process.env.MOVA_DESKTOP_URL,
+    });
     configurePermissions();
     await showApp();
     startGameActivityDetection();

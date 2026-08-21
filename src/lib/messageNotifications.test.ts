@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, type AppConversation, type AppMessage, type AppUser } from './api';
-import { enableMessageNotifications, messageNotificationCopy, showIncomingCallNotification } from './messageNotifications';
+import { enableMessageNotifications, messageNotificationCopy, shouldPlayMessageSoundInPage, showIncomingCallNotification } from './messageNotifications';
 
 afterEach(() => {
   delete window.movaDesktopShell;
@@ -27,6 +27,12 @@ const message: AppMessage = {
 };
 
 describe('message notification copy', () => {
+  it('uses the in-page sound in front or as a fallback without native notifications', () => {
+    expect(shouldPlayMessageSoundInPage(true, true, true)).toBe(true);
+    expect(shouldPlayMessageSoundInPage(false, false, true)).toBe(false);
+    expect(shouldPlayMessageSoundInPage(false, false, false)).toBe(true);
+  });
+
   it('uses the sender name in a direct chat', () => {
     expect(messageNotificationCopy(message)).toEqual({ title: 'Аня', body: 'Увидимся вечером?' });
   });

@@ -19,6 +19,8 @@ export function messageNotificationCopy(message: AppMessage, conversation?: AppC
 }
 
 const desktopShell = () => Boolean(window.movaDesktopShell);
+export const shouldPlayMessageSoundInPage = (pageVisible: boolean, pageFocused: boolean, nativeNotificationSoundAvailable: boolean) =>
+  (pageVisible && pageFocused) || !nativeNotificationSoundAvailable;
 const pushSupported = () => !desktopShell() && 'serviceWorker' in navigator && 'PushManager' in window;
 const base64Key = (value: string) => {
   const padding = '='.repeat((4 - value.length % 4) % 4);
@@ -112,7 +114,6 @@ export function showMessageNotification(message: AppMessage, conversation: AppCo
     body: copy.body,
     icon: message.author.avatarDataUrl || '/icon-192.png',
     tag: `mova-conversation-${message.conversationId}`,
-    silent: true,
   }, onClick);
 }
 

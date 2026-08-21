@@ -14,11 +14,12 @@ import { createMicrophonePipeline, type MicrophonePipeline } from './lib/microph
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
 import { backgroundPresets, defaultBackgroundColor, loadBackgroundColor, saveBackgroundColor } from './lib/backgroundSettings';
 import { accentPresets, defaultAccentColor, loadAccentColor, saveAccentColor } from './lib/accentSettings';
-import { enableMessageNotifications, restoreMessageNotifications, shouldPromptForNotifications, showIncomingCallNotification, showMessageNotification, unregisterMessageNotifications } from './lib/messageNotifications';
-import { fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
+import { enableMessageNotifications, restoreMessageNotifications, shouldPlayMessageSoundInPage, shouldPromptForNotifications, showIncomingCallNotification, showMessageNotification, unregisterMessageNotifications } from './lib/messageNotifications';
+import { cropImageFile, fileToDataUrl, prepareImageDataUrl } from './lib/imageCompression';
 import { getMessageStructure } from './lib/messageGrouping';
 import { clearPersistentUserData, deletePersistentConversation, loadPersistentClientState, persistConversations, persistMessages, persistOutbox, persistUsers, removeOutbox, type OutboxEntry } from './lib/persistentClientStore';
 import { buildCallDiagnosticReport, copyDiagnosticReport } from './lib/callDiagnostics';
+import { startUnreadTitleBlink } from './lib/documentTitle';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
@@ -385,6 +386,108 @@ const readableProfileError = (message: string) => {
   return message;
 };
 
+type AvatarCropDraft = { file: File; previewUrl: string };
+type AvatarCropPosition = { x: number; y: number };
+const clampCropPosition = (value: number) => Math.min(1, Math.max(-1, value));
+
+function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: AvatarCropDraft; onCancel: () => void; onApply: (dataUrl: string) => void; showError: (message: string) => void }) {
+  const [position, setPosition] = useState<AvatarCropPosition>({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [imageSize, setImageSize] = useState({ width: 1, height: 1 });
+  const [processing, setProcessing] = useState(false);
+  const cropStage = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ pointerId: number; clientX: number; clientY: number; position: AvatarCropPosition } | null>(null);
+  useEffect(() => cropStage.current?.focus(), []);
+  const aspect = imageSize.width / imageSize.height;
+  const renderedWidth = zoom * (aspect >= 1 ? aspect : 1);
+  const renderedHeight = zoom * (aspect >= 1 ? 1 : 1 / aspect);
+  const horizontalOverflow = Math.max(0, renderedWidth - 1);
+  const verticalOverflow = Math.max(0, renderedHeight - 1);
+  const nudge = (x: number, y: number) => setPosition((current) => ({ x: clampCropPosition(current.x + x), y: clampCropPosition(current.y + y) }));
+  const applyCrop = async () => {
+    setProcessing(true);
+    try {
+      const cropped = await cropImageFile(draft.file, { ...position, zoom }, { outputSize: 1024, maxBytes: 650_000, quality: 0.94 });
+      onApply(await fileToDataUrl(cropped));
+    } catch (cropError) {
+      showError(cropError instanceof Error ? cropError.message : 'Не удалось кадрировать фотографию');
+    } finally {
+      setProcessing(false);
+    }
+  };
+  return (
+    <>
+      <header>
+        <div>
+          <h2 id="avatar-crop-title">Кадрирование аватара</h2>
+          <p id="avatar-crop-help">Перетащите фотографию и настройте масштаб</p>
+        </div>
+        <IconButton data-dialog-close label="Закрыть кадрирование" onClick={onCancel}>
+          <X size={18} />
+        </IconButton>
+      </header>
+      <div className="mova-avatar-crop__body">
+        <div
+          ref={cropStage}
+          className="mova-avatar-crop__stage"
+          role="group"
+          aria-label="Область кадрирования аватара"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            const step = event.shiftKey ? 0.1 : 0.025;
+            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+            event.preventDefault();
+            nudge(event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0);
+          }}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            drag.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, position };
+          }}
+          onPointerMove={(event) => {
+            if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const maxX = bounds.width * horizontalOverflow / 2;
+            const maxY = bounds.height * verticalOverflow / 2;
+            setPosition({
+              x: maxX ? clampCropPosition(drag.current.position.x + (event.clientX - drag.current.clientX) / maxX) : 0,
+              y: maxY ? clampCropPosition(drag.current.position.y + (event.clientY - drag.current.clientY) / maxY) : 0,
+            });
+          }}
+          onPointerUp={(event) => {
+            if (drag.current?.pointerId === event.pointerId) drag.current = null;
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+          }}
+          onPointerCancel={() => { drag.current = null; }}
+        >
+          <img
+            src={draft.previewUrl}
+            alt="Предпросмотр аватара"
+            draggable={false}
+            onLoad={(event) => setImageSize({ width: Math.max(1, event.currentTarget.naturalWidth), height: Math.max(1, event.currentTarget.naturalHeight) })}
+            style={{
+              width: `${renderedWidth * 100}%`,
+              height: `${renderedHeight * 100}%`,
+              left: `${50 + position.x * horizontalOverflow * 50}%`,
+              top: `${50 + position.y * verticalOverflow * 50}%`,
+            }}
+          />
+          <i aria-hidden="true" />
+        </div>
+        <label className="mova-avatar-crop__zoom">
+          <span>Масштаб</span>
+          <input aria-label="Масштаб аватара" type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
+          <output>{Math.round(zoom * 100)}%</output>
+        </label>
+      </div>
+      <footer>
+        <Button data-dialog-cancel variant="ghost" onClick={onCancel}>Отмена</Button>
+        <Button loading={processing} onClick={() => void applyCrop()}>Применить</Button>
+      </footer>
+    </>
+  );
+}
+
 export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser; open: boolean; onClose: () => void; onSaved: (user: AppUser) => void }) {
   const [form, setForm] = useState({
     name: user.name,
@@ -394,6 +497,7 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
     bannerDataUrl: user.bannerDataUrl || '',
   });
   const [loading, setLoading] = useState(false);
+  const [avatarCrop, setAvatarCrop] = useState<AvatarCropDraft | null>(null);
   const bioRef = useRef<HTMLTextAreaElement>(null);
   const toast = useToast();
   const showError = (message: string) => toast.push(readableProfileError(message), 'danger');
@@ -420,13 +524,17 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
     if (!file) return;
     if (file.size > 30_000_000) return showError('Фотография должна быть меньше 30 МБ');
     try {
-      const options = field === 'avatarDataUrl' ? { maxDimension: 1024, maxBytes: 650_000, quality: 0.94, skipBelowBytes: 120_000 } : { maxDimension: 2560, maxBytes: 1_600_000, quality: 0.94, skipBelowBytes: 180_000 };
-      const prepared = await prepareImageDataUrl(file, options);
+      if (field === 'avatarDataUrl') {
+        setAvatarCrop({ file, previewUrl: await fileToDataUrl(file) });
+        return;
+      }
+      const prepared = await prepareImageDataUrl(file, { maxDimension: 2560, maxBytes: 1_600_000, quality: 0.94, skipBelowBytes: 180_000 });
       setForm((current) => ({ ...current, [field]: prepared.dataUrl }));
     } catch (imageError) {
       showError(imageError instanceof Error ? imageError.message : 'Не удалось обработать фотографию');
     }
   };
+  const closeEditor = () => avatarCrop ? setAvatarCrop(null) : onClose();
   const save = async () => {
     setLoading(true);
     try {
@@ -447,7 +555,18 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
     }
   };
   return (
-    <DialogSurface open={open} onClose={onClose} className="mova-glass-card mova-profile-editor" labelledBy="profile-title">
+    <DialogSurface open={open} onClose={closeEditor} className={`mova-glass-card ${avatarCrop ? 'mova-profile-avatar-crop' : 'mova-profile-editor'}`} labelledBy={avatarCrop ? 'avatar-crop-title' : 'profile-title'} describedBy={avatarCrop ? 'avatar-crop-help' : undefined}>
+      {avatarCrop ? (
+        <AvatarCropEditor
+          draft={avatarCrop}
+          onCancel={() => setAvatarCrop(null)}
+          onApply={(avatarDataUrl) => {
+            setForm((current) => ({ ...current, avatarDataUrl }));
+            setAvatarCrop(null);
+          }}
+          showError={showError}
+        />
+      ) : <>
         <header>
           <div>
             <h2 id="profile-title">Редактировать профиль</h2>
@@ -465,7 +584,10 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
               <input
                 type="file"
                 accept="image/*"
-                onChange={(event) => void selectProfileImage(event.target.files?.[0], 'bannerDataUrl')}
+                onChange={(event) => {
+                  void selectProfileImage(event.target.files?.[0], 'bannerDataUrl');
+                  event.currentTarget.value = '';
+                }}
               />
             </label>
           </div>
@@ -476,7 +598,10 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
               <input
                 type="file"
                 accept="image/*"
-                onChange={(event) => void selectProfileImage(event.target.files?.[0], 'avatarDataUrl')}
+                onChange={(event) => {
+                  void selectProfileImage(event.target.files?.[0], 'avatarDataUrl');
+                  event.currentTarget.value = '';
+                }}
               />
             </label>
           </div>
@@ -527,6 +652,7 @@ export function ProfileEditor({ user, open, onClose, onSaved }: { user: AppUser;
             Сохранить профиль
           </Button>
         </footer>
+      </>}
     </DialogSurface>
   );
 }
@@ -1788,7 +1914,8 @@ function ResizableSelfView({ children }: { children: ReactNode }) {
 }
 
 const screenAudioWarningPrefix = 'Экран демонстрируется без звука.';
-const screenAudioToastText = 'Демонстрация без звука. Включите «Поделиться аудио» при выборе экрана.';
+const browserScreenAudioToastText = 'Демонстрация без звука. Включите «Поделиться аудио» при выборе экрана.';
+const desktopScreenAudioToastText = 'Системный звук отключён, чтобы голоса звонка не дублировались.';
 const isScreenAudioWarning = (error: string) => error.startsWith(screenAudioWarningPrefix);
 type VoiceCallController = ReturnType<typeof useVoiceCall>;
 
@@ -1857,7 +1984,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     }
     if (!isScreenAudioWarning(call.error) || screenAudioToastShown.current) return;
     screenAudioToastShown.current = true;
-    setScreenAudioToast(screenAudioToastText);
+    setScreenAudioToast(window.movaDesktopShell ? desktopScreenAudioToastText : browserScreenAudioToastText);
     setScreenAudioToastVisible(true);
     screenAudioToastHideTimer.current = window.setTimeout(() => {
       setScreenAudioToastVisible(false);
@@ -4376,6 +4503,11 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     return Number.isFinite(saved) ? (saved < 220 ? 76 : Math.min(560, Math.max(260, saved))) : 360;
   });
   const sidebarCompact = sidebarWidth === SIDEBAR_COMPACT_WIDTH;
+  const totalUnreadCount = conversations.reduce((total, conversation) => total + (conversation.unreadCount || 0), 0);
+  useEffect(
+    () => startUnreadTitleBlink(window.movaDesktopShell ? 0 : totalUnreadCount),
+    [totalUnreadCount],
+  );
   const updateConversationDraft = useCallback((conversationId: string, text: string) => {
     setDrafts((current) => {
       const next = { ...current };
@@ -4763,7 +4895,14 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           if (!shouldNotify) return;
           const conversation = conversationsRef.current.find((item) => item.id === event.message.conversationId);
           const senderRelationship = conversation?.members.find((member) => member.id === event.message.authorId)?.relationship;
-          if ((!event.message.kind || event.message.kind === 'user') && senderRelationship === 'friend') {
+          const nativeNotificationSoundAvailable = Boolean(window.movaDesktopShell)
+            || ('Notification' in window && window.Notification.permission === 'granted');
+          const shouldPlayInPage = shouldPlayMessageSoundInPage(
+            document.visibilityState === 'visible',
+            document.hasFocus(),
+            nativeNotificationSoundAvailable,
+          );
+          if ((!event.message.kind || event.message.kind === 'user') && senderRelationship === 'friend' && shouldPlayInPage) {
             const settings = loadAudioSettings();
             const audio = new Audio(messageSoundUrl);
             audio.volume = settings.systemVolume / 100;

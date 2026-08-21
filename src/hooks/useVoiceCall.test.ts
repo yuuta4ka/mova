@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, realtime, type RealtimeEvent } from '../lib/api';
 import { defaultAudioSettings, saveAudioSettings, withNoiseSuppressionMode } from '../lib/audioSettings';
-import { isJoinedCallState, isOutgoingVoiceTransmitted, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackVolume, shouldPlaySelfConnectSound, useVoiceCall, type CallState } from './useVoiceCall';
+import { isJoinedCallState, isOutgoingVoiceTransmitted, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackRoute, resolveRemotePlaybackVolume, shouldPlaySelfConnectSound, useVoiceCall, type CallState } from './useVoiceCall';
 
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
@@ -52,6 +52,11 @@ describe('voice call state model', () => {
     expect(resolveRemotePlaybackVolume('voice', true, 0.8)).toBe(0);
     expect(resolveRemotePlaybackVolume('screen', true, 0.8)).toBe(0.8);
     expect(resolveRemotePlaybackVolume('voice', false, 0.8)).toBe(0.8);
+  });
+
+  it('routes remote audio through the media element while the tab is in the background', () => {
+    expect(resolveRemotePlaybackRoute(0.8, true, false)).toEqual({ elementMuted: true, elementVolume: 0.8, gainVolume: 0.8 });
+    expect(resolveRemotePlaybackRoute(0.8, true, true)).toEqual({ elementMuted: false, elementVolume: 0.8, gainVolume: 0 });
   });
 
   it('replaces only microphone senders without renegotiating unrelated media', async () => {

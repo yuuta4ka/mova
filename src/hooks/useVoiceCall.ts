@@ -3,6 +3,7 @@ import { api, realtime, type AppUser, type RealtimeEvent, type VoiceRoomParticip
 import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
 import { createMicrophonePipeline, type MicrophonePipeline } from '../lib/microphoneProcessing';
 import { configureScreenShareSender, screenShareContentHint } from '../lib/screenShareEncoding';
+import { removeUnsafeScreenAudio, screenCaptureOptions } from '../lib/screenCapture';
 
 export type CallState = 'idle' | 'ringing' | 'incoming' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'available';
 export type LegacyCallState = CallState | 'active' | 'error';
@@ -62,6 +63,15 @@ export interface PeerCallDiagnostics {
 type RemoteMediaKind = 'voice' | 'screen';
 export const resolveRemotePlaybackVolume = (mediaKind: RemoteMediaKind, deafened: boolean, volume: number) =>
   deafened && mediaKind === 'voice' ? 0 : volume;
+
+export const resolveRemotePlaybackRoute = (playbackVolume: number, hasGain: boolean, background: boolean) => {
+  const useMediaElement = !hasGain || background;
+  return {
+    elementMuted: !useMediaElement,
+    elementVolume: Math.min(1, playbackVolume),
+    gainVolume: useMediaElement ? 0 : playbackVolume,
+  };
+};
 
 type MicrophonePeer = Pick<RTCPeerConnection, 'getSenders'>;
 export async function replaceMicrophoneTrack(peers: Iterable<MicrophonePeer>, previousTrack: MediaStreamTrack, nextTrack: MediaStreamTrack) {
@@ -154,9 +164,14 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
     audio.loop = true;
     audio.volume = 0;
     const targetVolume = (settings.systemVolume / 100) * ringtoneVolumeScale;
+    audio.volume = document.visibilityState === 'visible' ? 0 : targetVolume;
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
     const fadeIn = () => {
+      if (document.visibilityState !== 'visible') {
+        audio.volume = targetVolume;
+        return;
+      }
       const startedAt = performance.now();
       const updateVolume = (now: number) => {
         if (!active) return;
@@ -167,12 +182,20 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
       };
       fadeFrame = window.requestAnimationFrame(updateVolume);
     };
+    const finishFadeInBackground = () => {
+      if (document.visibilityState === 'visible') return;
+      if (fadeFrame !== null) window.cancelAnimationFrame(fadeFrame);
+      fadeFrame = null;
+      audio.volume = targetVolume;
+    };
+    document.addEventListener('visibilitychange', finishFadeInBackground);
     const play = () => void audio.play().then(fadeIn).catch(() => undefined);
     if (setSinkId) void setSinkId.call(audio, sinkId).then(play).catch(play);
     else play();
     return () => {
       if (!active) return;
       active = false;
+      document.removeEventListener('visibilitychange', finishFadeInBackground);
       if (fadeFrame !== null) window.cancelAnimationFrame(fadeFrame);
       audio.pause();
       audio.currentTime = 0;
@@ -390,12 +413,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     const scoped = entry.mediaKind === 'screen' ? (screenVolumesRef.current[entry.userId] ?? 100) : (participantVolumesRef.current[entry.userId] ?? 100);
     const volume = Math.max(0, Math.min(4, ((settings.outputVolume / 100) * scoped) / 100));
     const playbackVolume = resolveRemotePlaybackVolume(entry.mediaKind, deafenedRef.current, volume);
-    if (entry.gain) {
-      entry.gain.gain.value = playbackVolume;
-      entry.element.muted = true;
-    } else {
-      entry.element.volume = Math.min(1, playbackVolume);
-    }
+    const route = resolveRemotePlaybackRoute(playbackVolume, Boolean(entry.gain), document.visibilityState !== 'visible');
+    if (entry.gain) entry.gain.gain.value = route.gainVolume;
+    entry.element.muted = route.elementMuted;
+    entry.element.volume = route.elementVolume;
     const sinkId = settings.outputDeviceId === 'default' ? '' : settings.outputDeviceId;
     const setSinkId = (
       entry.element as HTMLAudioElement & {
@@ -1404,6 +1425,22 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     return () => window.removeEventListener('mova-audio-settings', apply);
   }, [applyRemoteVolume, rebuildMicrophonePipeline, switchMicrophone]);
 
+  useEffect(() => {
+    const refreshBackgroundPlayback = () => {
+      if (document.visibilityState === 'visible') void localAudioContext.current?.resume().catch(() => undefined);
+      remoteAudio.current.forEach((entry) => {
+        applyRemoteVolume(entry);
+        void entry.element.play().catch(() => undefined);
+      });
+    };
+    document.addEventListener('visibilitychange', refreshBackgroundPlayback);
+    window.addEventListener('pageshow', refreshBackgroundPlayback);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshBackgroundPlayback);
+      window.removeEventListener('pageshow', refreshBackgroundPlayback);
+    };
+  }, [applyRemoteVolume]);
+
   const call = () => {
     if (!conversationId || stateRef.current !== 'idle') return;
     unlockAudio();
@@ -1589,16 +1626,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   ) => {
     if (!conversationId || !isJoinedCallState(stateRef.current)) return;
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: width },
-          height: { ideal: height },
-          frameRate: { ideal: frameRate, max: frameRate },
-        },
-        audio: true,
-      });
+      const desktopCapture = Boolean(window.movaDesktopShell);
+      const stream = await navigator.mediaDevices.getDisplayMedia(
+        screenCaptureOptions({ width, height, frameRate }, desktopCapture),
+      );
       activeScreenQuality.current = { width, height, frameRate };
       const screenTrack = stream.getVideoTracks()[0];
+      if (!screenTrack) throw new DOMException('Источник экрана не передал видеодорожку', 'NotReadableError');
+      removeUnsafeScreenAudio(stream, desktopCapture, screenTrack.getSettings().displaySurface);
       screenTrack.contentHint = screenShareContentHint(frameRate);
       const old = screenStreamRef.current;
       if (old) {
@@ -1639,7 +1674,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       screenTrack.onended = () => void stopScreen();
       await renegotiateAll();
       await Promise.all(screenSenders.map((sender) => configureScreenShareSender(sender, activeScreenQuality.current).catch(() => false)));
-      if (!stream.getAudioTracks().length) setError('Экран демонстрируется без звука. В окне выбора включите «Поделиться аудио» (звук доступен не для всех источников).');
+      if (!stream.getAudioTracks().length) setError(desktopCapture
+        ? 'Экран демонстрируется без звука. Системный звук отключён, чтобы голоса звонка не дублировались.'
+        : 'Экран демонстрируется без звука. В окне выбора включите «Поделиться аудио» (звук доступен не для всех источников).');
       else setError('');
     } catch (screenError) {
       if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') return;

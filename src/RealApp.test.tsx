@@ -236,6 +236,29 @@ describe('presence status', () => {
 });
 
 describe('profile editor polish', () => {
+  it('opens avatar cropping and applies the selected square preview', async () => {
+    const user = userEvent.setup();
+    const bitmap = { width: 1200, height: 800, close: vi.fn() };
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(bitmap));
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, type) => callback(new Blob([new Uint8Array(60_000)], { type })));
+    const { container } = render(<ToastProvider><ProfileEditor user={currentUser} open onClose={vi.fn()} onSaved={vi.fn()} /></ToastProvider>);
+    const file = new File([new Uint8Array(180_000)], 'avatar.png', { type: 'image/png' });
+
+    await user.upload(screen.getByLabelText('Изменить аватар'), file);
+
+    expect(await screen.findByRole('heading', { name: 'Кадрирование аватара' })).toBeVisible();
+    const zoom = screen.getByRole('slider', { name: 'Масштаб аватара' });
+    expect(zoom).toHaveValue('1');
+    fireEvent.change(zoom, { target: { value: '1.5' } });
+    expect(screen.getByText('150%')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Применить' }));
+
+    await screen.findByRole('heading', { name: 'Редактировать профиль' });
+    expect(container.querySelector('.mova-profile-preview .mova-avatar img')).toHaveAttribute('src', expect.stringMatching(/^data:image\/webp;base64,/));
+    expect(bitmap.close).toHaveBeenCalled();
+  });
+
   it('uses one username shell and edits the value without @ while preserving profile data', async () => {
     const user = userEvent.setup();
     const profileUser: AppUser = { ...currentUser, bio: 'О себе', activity: { name: 'Minecraft', startedAt: '2026-08-10T10:00:00.000Z' } };
