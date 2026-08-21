@@ -190,8 +190,10 @@ html.mova-landing-document body { background:#0d0f14; }
 .mova-landing-footer__meta { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-top:62px; padding-top:18px; color:rgba(255,255,255,.5); border-top:1px solid rgba(255,255,255,.14); font-size:9px; }
 .mova-landing-footer__word { margin:64px -4vw 0; padding:.04em 0 .02em; color:rgba(255,255,255,.94); font-size:clamp(140px,42vw,1400px); font-weight:850; line-height:.88; letter-spacing:-.085em; text-align:center; white-space:nowrap; }
 
-.mova-landing-video-modal { position:fixed; z-index:1000; inset:0; display:grid; place-items:center; padding:24px; background:rgba(4,5,8,.82); backdrop-filter:blur(16px); animation:mova-landing-modal-in 180ms ease both; }
-.mova-landing-video-modal__panel { width:min(680px,100%); overflow:hidden; background:#12151c; border:1px solid rgba(255,255,255,.13); border-radius:24px; box-shadow:0 35px 120px rgba(0,0,0,.65); }
+.mova-landing-video-modal { position:fixed; z-index:1000; inset:0; display:grid; place-items:center; padding:24px; opacity:0; background:rgba(4,5,8,.82); backdrop-filter:blur(16px); pointer-events:none; transition:opacity 180ms ease; }
+.mova-landing-video-modal.is-open { opacity:1; pointer-events:auto; }
+.mova-landing-video-modal__panel { width:min(680px,100%); overflow:hidden; background:#12151c; border:1px solid rgba(255,255,255,.13); border-radius:24px; box-shadow:0 35px 120px rgba(0,0,0,.65); transform:translateY(8px) scale(.985); transition:transform 180ms ease; }
+.mova-landing-video-modal.is-open .mova-landing-video-modal__panel { transform:none; }
 .mova-landing-video-modal__panel>header { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:19px 20px; }
 .mova-landing-video-modal__panel>header span { color:var(--landing-violet-soft); font-size:8px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
 .mova-landing-video-modal__panel>header h2 { margin:4px 0 0; font-size:19px; letter-spacing:-.03em; }
@@ -267,9 +269,8 @@ html.mova-landing-document body { background:#0d0f14; }
   .mova-landing-timeline li { min-height:0; }
   .mova-landing-features { padding:72px 0; }
   .mova-landing-features article { padding:23px; }
-  .mova-landing-ai-scene { width:calc(100% - 32px); min-height:0; margin:60px auto 72px; padding-top:330px; }
-  .mova-landing-ai-scene__character { top:0; right:0; bottom:auto; left:auto; width:250px; min-height:330px; }
-  .mova-landing-ai-scene__character>img { right:0; left:auto; bottom:0; height:325px; }
+  .mova-landing-ai-scene { width:calc(100% - 32px); min-height:0; margin:60px auto 72px; padding-top:0; }
+  .mova-landing-ai-scene__character { display:none; }
   .mova-landing-ai { grid-template-columns:1fr; width:100%; min-height:0; margin:0; padding:26px 24px 28px; border-radius:23px; }
   .mova-landing-ai__icon { width:48px; height:48px; }
   .mova-landing-ai>a { grid-column:auto; justify-self:stretch; }

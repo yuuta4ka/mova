@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LandingPage } from './LandingPage';
 
 describe('Mova landing page', () => {
@@ -36,14 +36,23 @@ describe('Mova landing page', () => {
   });
 
   it('opens and closes the secret video', () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
     render(<LandingPage />);
 
     fireEvent.click(screen.getByRole('button', { name: /Открыть секретное видео/i }));
 
+    expect(play).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('dialog', { name: /Секретное видео/i })).toBeVisible();
-    expect(document.querySelector('video source')).toHaveAttribute('src', '/mova-secret.mp4');
+    expect(Array.from(document.querySelectorAll('video source')).map((source) => source.getAttribute('src'))).toEqual([
+      '/mova-secret-mobile.m4v',
+      '/mova-secret.mp4',
+    ]);
 
     fireEvent.click(screen.getByRole('button', { name: /Закрыть видео/i }));
+    expect(pause).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog', { name: /Секретное видео/i })).not.toBeInTheDocument();
+    play.mockRestore();
+    pause.mockRestore();
   });
 });

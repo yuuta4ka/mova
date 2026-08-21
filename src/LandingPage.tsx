@@ -96,6 +96,26 @@ function Brand() {
 export function LandingPage() {
   const [isVideoOpen, setIsVideoOpen] = useState(false);
   const landingRef = useRef<HTMLDivElement>(null);
+  const secretVideoRef = useRef<HTMLVideoElement>(null);
+
+  const openSecretVideo = () => {
+    const video = secretVideoRef.current;
+    if (video) {
+      video.currentTime = 0;
+      const playback = video.play();
+      if (playback) void playback.catch(() => undefined);
+    }
+    setIsVideoOpen(true);
+  };
+
+  const closeSecretVideo = () => {
+    const video = secretVideoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = 0;
+    }
+    setIsVideoOpen(false);
+  };
 
   useEffect(() => {
     const root = landingRef.current;
@@ -319,7 +339,7 @@ export function LandingPage() {
             <h2 id="finale-title">Поздравляем — вы пролистали сайт до самого конца.</h2>
             <p>За такое полагается маленькая награда. Нажмите на карточку, чтобы посмотреть секретное видео.</p>
           </div>
-          <button className="mova-landing-finale__video" type="button" onClick={() => setIsVideoOpen(true)} aria-label="Открыть секретное видео">
+          <button className="mova-landing-finale__video" type="button" onClick={openSecretVideo} aria-label="Открыть секретное видео">
             <img src="/mova-secret-poster.png" alt="Кадр из секретного видео с котом" />
             <span className="mova-landing-finale__play"><Play size={24} fill="currentColor" /></span>
             <span className="mova-landing-finale__caption"><strong>Посмотреть видео</strong><small>12 секунд заслуженного отдыха</small></span>
@@ -343,28 +363,29 @@ export function LandingPage() {
         <div className="mova-landing-footer__word" aria-hidden="true">Mova</div>
       </footer>
 
-      {isVideoOpen ? (
-        <div
-          className="mova-landing-video-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="video-modal-title"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setIsVideoOpen(false);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') setIsVideoOpen(false);
-          }}
-        >
-          <div className="mova-landing-video-modal__panel">
-            <header><div><span>Ваша награда</span><h2 id="video-modal-title">Секретное видео</h2></div><button type="button" autoFocus onClick={() => setIsVideoOpen(false)} aria-label="Закрыть видео"><X size={20} /></button></header>
-            <video controls autoPlay playsInline poster="/mova-secret-poster.png">
-              <source src="/mova-secret.mp4" type="video/mp4" />
-              Ваш браузер не поддерживает видео. <a href="/mova-secret.mp4">Открыть файл</a>.
-            </video>
-          </div>
+      <div
+        className={`mova-landing-video-modal${isVideoOpen ? ' is-open' : ''}`}
+        role="dialog"
+        aria-modal={isVideoOpen ? 'true' : undefined}
+        aria-hidden={!isVideoOpen}
+        aria-labelledby="video-modal-title"
+        inert={!isVideoOpen}
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeSecretVideo();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') closeSecretVideo();
+        }}
+      >
+        <div className="mova-landing-video-modal__panel">
+          <header><div><span>Ваша награда</span><h2 id="video-modal-title">Секретное видео</h2></div><button type="button" onClick={closeSecretVideo} aria-label="Закрыть видео"><X size={20} /></button></header>
+          <video ref={secretVideoRef} controls playsInline preload="metadata" poster="/mova-secret-poster.png">
+            <source src="/mova-secret-mobile.m4v" type="video/mp4" />
+            <source src="/mova-secret.mp4" type="video/mp4" />
+            Ваш браузер не поддерживает видео. <a href="/mova-secret.mp4">Открыть файл</a>.
+          </video>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
