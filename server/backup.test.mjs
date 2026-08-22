@@ -20,6 +20,13 @@ async function fixture() {
   database.insertUser({ id: 'user', name: 'Юта', email: 'user@mova.test', handle: '@user', color: '#74DCCB', passwordHash: 'hash', createdAt });
   database.createConversation({ id: 'chat', kind: 'direct', title: 'Backup', createdBy: 'user', createdAt }, ['user']);
   const attachment = await database.storeBuffer(Buffer.from('backup attachment'), 'proof.txt', 'text/plain', 'user');
+  expect(database.getUpload(attachment.url.split('/').at(-1))).toEqual({
+    fileName: attachment.url.split('/').at(-1),
+    originalName: 'proof.txt',
+    type: 'text/plain',
+    size: Buffer.byteLength('backup attachment'),
+  });
+  expect(await database.normalizeAttachment({ ...attachment, name: 'spoofed.bin', type: 'application/octet-stream', size: 999_999 }, 'user')).toEqual(attachment);
   for (let index = 1; index <= 7; index += 1) {
     const id = `message-${String(index).padStart(2, '0')}`;
     database.insertMessage({ id, conversationId: 'chat', authorId: 'user', content: `Сообщение ${index}`, attachment: index === 7 ? attachment : null, createdAt, sentAt: createdAt });

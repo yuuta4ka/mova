@@ -41,6 +41,14 @@ export interface MessageReply {
   attachment?: MessageAttachment;
   author: AppUser;
 }
+export interface ForwardedMessageSource {
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+  canOpen: boolean;
+  conversationId?: string;
+  messageId?: string;
+}
 export interface AppMessage {
   id: string;
   conversationId: string;
@@ -49,6 +57,7 @@ export interface AppMessage {
   attachment?: MessageAttachment;
   replyToId?: string;
   replyTo?: MessageReply;
+  forwardedFrom?: ForwardedMessageSource;
   createdAt: string;
   sentAt?: string;
   editedAt?: string;
@@ -74,7 +83,7 @@ export interface AppMessage {
 }
 export interface AppConversation {
   id: string;
-  kind: 'direct' | 'group';
+  kind: 'direct' | 'group' | 'saved';
   title: string;
   avatarDataUrl?: string;
   members: AppUser[];
@@ -279,6 +288,7 @@ export const api = {
   editMessage: (conversationId: string, messageId: string, content: string) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
   setMessagePinned: (conversationId: string, messageId: string, pinned: boolean) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}/pin`, { method: pinned ? 'POST' : 'DELETE' }),
   forwardMessage: (conversationId: string, messageId: string, targetConversationId: string) => request<{ message: AppMessage }>(`/api/conversations/${conversationId}/messages/${messageId}/forward`, { method: 'POST', body: JSON.stringify({ conversationId: targetConversationId }) }),
+  messageContext: (conversationId: string, messageId: string) => request<{ messages: AppMessage[] }>(`/api/conversations/${conversationId}/messages/${messageId}/context`),
   deleteMessage: (conversationId: string, messageId: string, scope: 'self' | 'everyone' = 'self') => request<{ type: 'message:delete'; conversationId: string; messageId: string; userId: string; deletedAt: string; scope: 'self' | 'everyone'; lastMessage: Omit<AppMessage, 'author'> | null }>(`/api/conversations/${conversationId}/messages/${messageId}${scope === 'everyone' ? '?scope=everyone' : ''}`, { method: 'DELETE' }),
   markConversationRead: (conversationId: string, throughMessageId: string) =>
     request<{

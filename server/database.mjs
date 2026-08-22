@@ -102,6 +102,7 @@ function rowMessage(row) {
     content: row.content || '',
     attachment: jsonParse(row.attachment_json),
     replyToId: row.reply_to_id || undefined,
+    forwardedFrom: jsonParse(row.forward_json),
     call: jsonParse(row.call_json),
     friendRequest: jsonParse(row.friend_request_json),
     clientId: row.client_id || undefined,
@@ -204,6 +205,7 @@ export async function openDatabase(paths) {
       content TEXT NOT NULL DEFAULT '',
       attachment_json TEXT,
       reply_to_id TEXT REFERENCES messages(id),
+      forward_json TEXT,
       call_json TEXT,
       friend_request_json TEXT,
       client_id TEXT,
@@ -230,7 +232,10 @@ export async function openDatabase(paths) {
       owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,
       attached_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
-      purpose TEXT NOT NULL DEFAULT 'pending'
+      purpose TEXT NOT NULL DEFAULT 'pending',
+      original_name TEXT NOT NULL DEFAULT '',
+      mime_type TEXT NOT NULL DEFAULT '',
+      size INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS friendships (
       user_low_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -295,11 +300,17 @@ export async function openDatabase(paths) {
   const messageColumns = sqlite.prepare('PRAGMA table_info(messages)').all();
   if (!messageColumns.some((column) => column.name === 'client_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN client_id TEXT');
   if (!messageColumns.some((column) => column.name === 'friend_request_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN friend_request_json TEXT');
+  if (!messageColumns.some((column) => column.name === 'forward_json')) sqlite.exec('ALTER TABLE messages ADD COLUMN forward_json TEXT');
   if (!messageColumns.some((column) => column.name === 'pinned_at')) sqlite.exec('ALTER TABLE messages ADD COLUMN pinned_at TEXT');
   if (!messageColumns.some((column) => column.name === 'pinned_by_id')) sqlite.exec('ALTER TABLE messages ADD COLUMN pinned_by_id TEXT REFERENCES users(id)');
+  const uploadColumns = sqlite.prepare('PRAGMA table_info(uploads)').all();
+  if (!uploadColumns.some((column) => column.name === 'original_name')) sqlite.exec("ALTER TABLE uploads ADD COLUMN original_name TEXT NOT NULL DEFAULT ''");
+  if (!uploadColumns.some((column) => column.name === 'mime_type')) sqlite.exec("ALTER TABLE uploads ADD COLUMN mime_type TEXT NOT NULL DEFAULT ''");
+  if (!uploadColumns.some((column) => column.name === 'size')) sqlite.exec('ALTER TABLE uploads ADD COLUMN size INTEGER NOT NULL DEFAULT 0');
   const conversationColumns = sqlite.prepare('PRAGMA table_info(conversations)').all();
   if (!conversationColumns.some((column) => column.name === 'avatar_url')) sqlite.exec("ALTER TABLE conversations ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_client ON messages(author_id, client_id) WHERE client_id IS NOT NULL');
+  sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_saved_owner ON conversations(created_by) WHERE kind='saved'");
   const database = new MovaDatabase(sqlite, paths);
   await database.migrateLegacyJson();
   return database;
@@ -376,6 +387,17 @@ export class MovaDatabase {
     };
   }
 
+  getUpload(fileName) {
+    const row = this.sqlite.prepare('SELECT file_name, original_name, mime_type, size FROM uploads WHERE file_name=?').get(fileName);
+    if (!row) return null;
+    return {
+      fileName: row.file_name,
+      originalName: row.original_name || '',
+      type: row.mime_type || '',
+      size: Number(row.size || 0),
+    };
+  }
+
   async storeDataUrl(dataUrl, name = 'file', ownerId = null, purpose = 'pending') {
     const match = /^data:([^;,]+)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(String(dataUrl || ''));
     if (!match) throw Object.assign(new Error('Некорректное содержимое файла'), { statusCode: 400 });
@@ -396,7 +418,8 @@ export class MovaDatabase {
     const filePath = join(this.paths.uploadsPath, fileName);
     await writeFile(filePath, contents, { flag: 'wx' });
     try {
-      this.sqlite.prepare('INSERT INTO uploads(file_name,owner_id,created_at,purpose) VALUES(?,?,?,?)').run(fileName, ownerId, new Date().toISOString(), purpose);
+      this.sqlite.prepare('INSERT INTO uploads(file_name,owner_id,created_at,purpose,original_name,mime_type,size) VALUES(?,?,?,?,?,?,?)')
+        .run(fileName, ownerId, new Date().toISOString(), purpose, String(name || 'Файл').slice(0, 180), String(mime || 'application/octet-stream').slice(0, 120), contents.length);
     } catch (error) {
       await unlink(filePath).catch(() => undefined);
       throw error;
@@ -413,12 +436,12 @@ export class MovaDatabase {
     if (!attachment) return null;
     if (attachment.url?.startsWith('/uploads/')) {
       const fileName = attachment.url.slice('/uploads/'.length);
-      const upload = this.sqlite.prepare('SELECT owner_id, attached_message_id FROM uploads WHERE file_name=?').get(fileName);
+      const upload = this.sqlite.prepare('SELECT owner_id, attached_message_id, original_name, mime_type, size FROM uploads WHERE file_name=?').get(fileName);
       if (!upload || (ownerId && upload.owner_id && upload.owner_id !== ownerId) || upload.attached_message_id) throw Object.assign(new Error('Загрузка недоступна'), { statusCode: 403 });
       return {
-        name: String(attachment.name || 'Файл').slice(0, 180),
-        type: String(attachment.type || 'application/octet-stream').slice(0, 120),
-        size: Number(attachment.size || 0),
+        name: String(upload.original_name || attachment.name || 'Файл').slice(0, 180),
+        type: String(upload.mime_type || attachment.type || 'application/octet-stream').slice(0, 120),
+        size: Number(upload.size || attachment.size || 0),
         url: attachment.url,
         ...attachmentMediaMetadata(attachment, attachment.type),
       };
@@ -770,12 +793,16 @@ export class MovaDatabase {
     );
   }
 
+  findSavedConversation(userId) {
+    return rowConversation(this.sqlite.prepare("SELECT * FROM conversations WHERE kind='saved' AND created_by=? LIMIT 1").get(userId));
+  }
+
   insertMessage(message) {
     this.transaction(() => {
       this.sqlite
-        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,call_json,friend_request_json,client_id,created_at,sent_at,edited_at,pinned_at,pinned_by_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.call ? JSON.stringify(message.call) : null, message.friendRequest ? JSON.stringify(message.friendRequest) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null, message.pinnedAt || null, message.pinnedById || null);
+        .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,forward_json,call_json,friend_request_json,client_id,created_at,sent_at,edited_at,pinned_at,pinned_by_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.forwardedFrom ? JSON.stringify(message.forwardedFrom) : null, message.call ? JSON.stringify(message.call) : null, message.friendRequest ? JSON.stringify(message.friendRequest) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null, message.pinnedAt || null, message.pinnedById || null);
       if (message.attachment?.url?.startsWith('/uploads/')) this.sqlite.prepare("UPDATE uploads SET attached_message_id=?, purpose='message' WHERE file_name=?").run(message.id, message.attachment.url.slice('/uploads/'.length));
     });
   }
@@ -834,6 +861,12 @@ export class MovaDatabase {
     return rowMessage(this.sqlite.prepare('SELECT * FROM messages WHERE id=? AND conversation_id=?').get(messageId, conversationId));
   }
 
+  isMessageVisibleTo(messageId, conversationId, userId) {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM messages
+      WHERE id=? AND conversation_id=?
+        AND NOT EXISTS (SELECT 1 FROM message_deletions hidden WHERE hidden.message_id=messages.id AND hidden.user_id=?)`).get(messageId, conversationId, userId));
+  }
+
   getMessageByClientId(authorId, clientId) {
     return rowMessage(this.sqlite.prepare('SELECT * FROM messages WHERE author_id=? AND client_id=?').get(authorId, clientId));
   }
@@ -876,6 +909,28 @@ export class MovaDatabase {
       hasMore,
       nextCursor: hasMore && oldest ? Buffer.from(JSON.stringify({ v: 1, createdAt: oldest.created_at, id: oldest.id })).toString('base64url') : null,
     };
+  }
+
+  messageContext(conversationId, messageId, { radius = 40, viewerId } = {}) {
+    const target = this.sqlite.prepare('SELECT id, created_at FROM messages WHERE id=? AND conversation_id=?').get(messageId, conversationId);
+    if (!target || (viewerId && !this.isMessageVisibleTo(messageId, conversationId, viewerId))) return null;
+    const hiddenFilter = viewerId
+      ? ' AND NOT EXISTS (SELECT 1 FROM message_deletions hidden WHERE hidden.message_id=messages.id AND hidden.user_id=?)'
+      : '';
+    const safeRadius = Math.max(1, Math.min(100, Number(radius) || 40));
+    const beforeParameters = viewerId
+      ? [conversationId, target.created_at, target.created_at, target.id, viewerId, safeRadius + 1]
+      : [conversationId, target.created_at, target.created_at, target.id, safeRadius + 1];
+    const afterParameters = viewerId
+      ? [conversationId, target.created_at, target.created_at, target.id, viewerId, safeRadius]
+      : [conversationId, target.created_at, target.created_at, target.id, safeRadius];
+    const before = this.sqlite.prepare(`SELECT messages.* FROM messages
+      WHERE conversation_id=? AND (created_at<? OR (created_at=? AND id<=?))${hiddenFilter}
+      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...beforeParameters).reverse();
+    const after = this.sqlite.prepare(`SELECT messages.* FROM messages
+      WHERE conversation_id=? AND (created_at>? OR (created_at=? AND id>?))${hiddenFilter}
+      ORDER BY created_at, id LIMIT ?`).all(...afterParameters);
+    return [...before, ...after].map(rowMessage);
   }
 
   readStates(conversationId) {

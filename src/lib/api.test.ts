@@ -46,6 +46,15 @@ describe('message attachments', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/conversations/chat/messages/voice/listened', expect.objectContaining({ method: 'POST' }));
   });
 
+  it('loads the context around an original forwarded message', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.messageContext('source-chat', 'source-message');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/conversations/source-chat/messages/source-message/context', expect.objectContaining({ headers: expect.any(Object) }));
+  });
+
   it('exposes the uploaded URL before posting so a failed message can retry the same upload', async () => {
     const uploadedAttachment = { name: 'retry.txt', type: 'text/plain', size: 5, url: '/uploads/retry.txt' };
     const serverMessage = {

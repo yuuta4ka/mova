@@ -140,25 +140,25 @@ describe('realtime while maintenance state changes', () => {
 
     const creatorOverview = await api('/api/conversations', { token: first.token });
     const recipientOverview = await api('/api/conversations', { token: second.token });
-    expect(creatorOverview.conversations).toEqual([expect.objectContaining({ id: conversationId, isDraft: true })]);
-    expect(recipientOverview.conversations).toEqual([]);
+    expect(creatorOverview.conversations).toContainEqual(expect.objectContaining({ id: conversationId, isDraft: true }));
+    expect(recipientOverview.conversations.filter((conversation) => conversation.kind !== 'saved')).toEqual([]);
 
     const published = waitForEvent(secondSocket, 'conversation:new', (event) => event.conversationId === conversationId);
     const delivered = waitForEvent(secondSocket, 'message:new', (event) => event.message.conversationId === conversationId && event.message.content === 'Первое сообщение');
     await api(`/api/conversations/${conversationId}/messages`, { method: 'POST', token: first.token, data: { content: 'Первое сообщение' } });
     await published;
     const deliveredMessage = (await delivered).message;
-    expect((await api('/api/conversations', { token: second.token })).conversations[0]).toMatchObject({ id: conversationId, isDraft: false, unreadCount: 1 });
+    expect((await api('/api/conversations', { token: second.token })).conversations.find((conversation) => conversation.id === conversationId)).toMatchObject({ id: conversationId, isDraft: false, unreadCount: 1 });
     await api(`/api/conversations/${conversationId}/read`, { method: 'POST', token: second.token, data: { throughMessageId: deliveredMessage.id } });
-    expect((await api('/api/conversations', { token: second.token })).conversations[0].unreadCount).toBe(0);
+    expect((await api('/api/conversations', { token: second.token })).conversations.find((conversation) => conversation.id === conversationId).unreadCount).toBe(0);
 
     const deletedForFirst = waitForEvent(firstSocket, 'conversation:delete', (event) => event.conversationId === conversationId);
     const deletedForSecond = waitForEvent(secondSocket, 'conversation:delete', (event) => event.conversationId === conversationId);
     await api(`/api/conversations/${conversationId}`, { method: 'DELETE', token: first.token });
     await deletedForFirst;
     await deletedForSecond;
-    expect((await api('/api/conversations', { token: first.token })).conversations).toEqual([]);
-    expect((await api('/api/conversations', { token: second.token })).conversations).toEqual([]);
+    expect((await api('/api/conversations', { token: first.token })).conversations.filter((conversation) => conversation.kind !== 'saved')).toEqual([]);
+    expect((await api('/api/conversations', { token: second.token })).conversations.filter((conversation) => conversation.kind !== 'saved')).toEqual([]);
 
     firstSocket.close();
     secondSocket.close();

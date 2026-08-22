@@ -381,6 +381,11 @@ describe('conversation overview updates', () => {
     expect(sortConversationsByActivity([olderConversation, newerConversation]).map((item) => item.id)).toEqual(['newer', 'older']);
   });
 
+  it('keeps Saved Messages above regular conversations', () => {
+    const savedConversation: AppConversation = { ...olderConversation, id: 'saved', kind: 'saved', title: 'Избранное', members: [currentUser] };
+    expect(sortConversationsByActivity([newerConversation, savedConversation]).map((item) => item.id)).toEqual(['saved', 'newer']);
+  });
+
   it('keeps conversations with friends above newer conversations with other users', () => {
     const stranger: AppUser = { ...friend, id: 'stranger', name: 'Незнакомец', relationship: 'none' };
     const strangerConversation: AppConversation = {
@@ -1362,8 +1367,8 @@ describe('RealMessages attachments', () => {
         files: [image],
       },
     });
-    expect(await screen.findByText('pasted.png')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
+    expect(screen.getByText('pasted.png')).toBeVisible();
   });
 
   it('attaches a dropped image and shows the drop target', async () => {
@@ -1377,7 +1382,8 @@ describe('RealMessages attachments', () => {
     fireEvent.drop(thread, {
       dataTransfer: { types: ['Files'], files: [image] },
     });
-    expect(await screen.findByText('dropped.png')).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
+    expect(screen.getByText('dropped.png')).toBeVisible();
   });
 
   it('removes a compact attachment draft without affecting the message text', async () => {
@@ -1387,11 +1393,50 @@ describe('RealMessages attachments', () => {
     await user.type(composer, 'Подпись');
     fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(['draft'], 'draft.txt', { type: 'text/plain' })] } });
 
-    expect(await screen.findByText('draft.txt')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Убрать вложение' }));
+    const removeAttachment = await screen.findByRole('button', { name: 'Убрать вложение' });
+    expect(screen.getByText('draft.txt')).toBeVisible();
+    await user.click(removeAttachment);
 
     expect(screen.queryByText('draft.txt')).not.toBeInTheDocument();
     expect(composer).toHaveValue('Подпись');
+  });
+
+  it('shows readable file sizes and an upload indicator for a pending attachment', () => {
+    const pending: AppMessage = {
+      id: 'pending-file',
+      clientId: 'pending-file',
+      conversationId: conversation.id,
+      authorId: currentUser.id,
+      author: currentUser,
+      content: '',
+      attachment: { name: 'Архив проекта.zip', type: 'application/zip', size: 2_750_000, dataUrl: 'data:application/zip;base64,dGVzdA==' },
+      createdAt: '2026-08-10T00:01:00.000Z',
+      deliveryState: 'sending',
+    };
+
+    renderChat([pending]);
+
+    expect(screen.getByRole('status', { name: 'Загружается Архив проекта.zip' })).toHaveTextContent('Загрузка…');
+    expect(screen.getByRole('status', { name: 'Загружается Архив проекта.zip' })).not.toHaveAttribute('href');
+  });
+
+  it('uses the original name in the stored file download URL', () => {
+    const stored: AppMessage = {
+      id: 'stored-file',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      author: friend,
+      content: '',
+      attachment: { name: 'Договор № 7.pdf', type: 'application/pdf', size: 2_750_000, url: '/uploads/random-name.pdf' },
+      createdAt: '2026-08-10T00:01:00.000Z',
+      sentAt: '2026-08-10T00:01:00.000Z',
+    };
+
+    renderChat([stored]);
+
+    const download = screen.getByRole('link', { name: /Договор № 7\.pdf/ });
+    expect(download).toHaveTextContent('2,75 МБ');
+    expect(download).toHaveAttribute('href', '/uploads/random-name.pdf?download=%D0%94%D0%BE%D0%B3%D0%BE%D0%B2%D0%BE%D1%80%20%E2%84%96%207.pdf');
   });
 
   it('opens an image in the viewer instead of downloading it', async () => {
@@ -2047,6 +2092,40 @@ describe('RealMessages group management', () => {
     expect(onConversationChange).toHaveBeenCalledWith(renamed);
   });
 
+  it('crops a replacement group photo before saving it', async () => {
+    const user = userEvent.setup();
+    const bitmap = { width: 1400, height: 900, close: vi.fn() };
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(bitmap));
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, type) => callback(new Blob([new Uint8Array(60_000)], { type })));
+    const updateConversation = vi.spyOn(api, 'updateConversation').mockImplementation(async (_conversationId, data) => ({ conversation: { ...groupConversation, ...data } }));
+    const onSend = vi.fn();
+    const rendered = render(<RealMessages conversation={groupConversation} currentUser={currentUser} messages={[]} onSend={onSend} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${groupConversation.title}` }));
+    await user.click(screen.getByRole('button', { name: 'Изменить группу' }));
+    const photo = new File([new Uint8Array(180_000)], 'group-photo.png', { type: 'image/png' });
+    await user.upload(screen.getByLabelText('Изменить фото группы'), photo);
+
+    expect(await screen.findByRole('heading', { name: 'Кадрирование фото группы' })).toBeVisible();
+    expect(screen.getByRole('group', { name: 'Область кадрирования фото группы' })).toBeVisible();
+    fireEvent.change(screen.getByRole('slider', { name: 'Масштаб фото группы' }), { target: { value: '1.4' } });
+    await user.click(screen.getByRole('button', { name: 'Применить' }));
+
+    const croppedPreview = rendered.container.querySelector('.mova-group-edit-photo img');
+    expect(croppedPreview).toHaveAttribute('src', expect.stringMatching(/^data:image\/webp;base64,/));
+    rendered.rerender(<RealMessages conversation={{ ...groupConversation, members: groupConversation.members.map((member) => member.id === teammate.id ? { ...member, presence: 'idle' } : member) }} currentUser={currentUser} messages={[]} onSend={onSend} />);
+    expect(rendered.container.querySelector('.mova-group-edit-photo img')).toHaveAttribute('src', expect.stringMatching(/^data:image\/webp;base64,/));
+    expect(screen.getByRole('button', { name: 'Готово' })).toBeEnabled();
+    await user.click(await screen.findByRole('button', { name: 'Готово' }));
+
+    await waitFor(() => expect(updateConversation).toHaveBeenCalledWith(groupConversation.id, {
+      title: groupConversation.title,
+      avatarDataUrl: expect.stringMatching(/^data:image\/webp;base64,/),
+    }));
+    expect(bitmap.close).toHaveBeenCalled();
+  });
+
   it('does not show the edit action to an ordinary member', async () => {
     const user = userEvent.setup();
     const memberView = { ...groupConversation, memberRoles: { [currentUser.id]: 'member', [teammate.id]: 'owner' } as AppConversation['memberRoles'], createdBy: teammate.id };
@@ -2283,6 +2362,48 @@ describe('RealMessages context actions and selection', () => {
     expect(container.querySelector('.mova-pinned-message__thumbnail img')).toHaveAttribute('src', '/uploads/photo.png');
   });
 
+  it('shows forwarding provenance and opens the original dialog message', async () => {
+    const user = userEvent.setup();
+    const onOpenForwardSource = vi.fn().mockResolvedValue(undefined);
+    const forwarded: AppMessage = {
+      ...own,
+      id: 'forwarded-with-source',
+      content: 'Сообщение автора',
+      forwardedFrom: {
+        authorId: friend.id,
+        authorName: friend.name,
+        createdAt: incoming.createdAt,
+        canOpen: true,
+        conversationId: conversation.id,
+        messageId: incoming.id,
+      },
+    };
+
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[forwarded]} onSend={vi.fn()} onEdit={vi.fn()} onOpenForwardSource={onOpenForwardSource} />);
+
+    expect(screen.getByLabelText(`Переслано от ${friend.name}`)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Редактировать сообщение' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: `Перейти к исходному сообщению ${friend.name}` }));
+    expect(onOpenForwardSource).toHaveBeenCalledWith(forwarded.forwardedFrom);
+  });
+
+  it('renders Saved Messages as a private storage chat without call controls', () => {
+    const savedConversation: AppConversation = {
+      ...conversation,
+      id: 'saved-chat',
+      kind: 'saved',
+      title: 'Избранное',
+      members: [currentUser],
+    };
+
+    render(<RealMessages conversation={savedConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    expect(screen.getByText('Личное хранилище')).toBeVisible();
+    expect(screen.getByText(/их видите только вы/)).toBeVisible();
+    expect(screen.getAllByLabelText('Избранное').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /Звонки доступны/ })).not.toBeInTheDocument();
+  });
+
   it('forwards to a chosen chat and confirms deletion', async () => {
     const user = userEvent.setup();
     const destination: AppConversation = { ...conversation, id: 'destination', kind: 'group', title: 'Команда', members: [currentUser, friend] };
@@ -2402,7 +2523,8 @@ describe('RealMessages ArrowUp editing', () => {
     const attachment = new File(['draft'], 'draft.txt', { type: 'text/plain' });
 
     fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [attachment] } });
-    expect(await screen.findByText('draft.txt')).toBeVisible();
+    await screen.findByRole('button', { name: 'Убрать вложение' });
+    expect(screen.getByText('draft.txt')).toBeVisible();
     composer.focus();
     await userEvent.setup().keyboard('{ArrowUp}');
 

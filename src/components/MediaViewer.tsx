@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { ChevronLeft, ChevronRight, Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import type { AppMessage, MessageAttachment } from '../lib/api';
+import { attachmentDownloadSource } from '../lib/fileAttachments';
 
 export const mediaViewerMinZoom = 1;
 export const mediaViewerMaxZoom = 4;
@@ -279,7 +280,7 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
           <strong>{current.attachment.name}</strong>
           {items.length > 1 && <small>{index + 1} / {items.length}</small>}
         </span>
-        <a href={source} download={current.attachment.name} aria-label="Скачать изображение" onClick={(event) => event.stopPropagation()}>
+        <a href={attachmentDownloadSource(current.attachment)} download={current.attachment.name} aria-label="Скачать изображение" onClick={(event) => event.stopPropagation()}>
           <Download size={18} aria-hidden="true" />
         </a>
         <button ref={closeButton} type="button" aria-label="Закрыть изображение" onClick={requestClose}>

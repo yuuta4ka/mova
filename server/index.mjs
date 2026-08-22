@@ -13,6 +13,7 @@ import { backupIfDue, resolveBackupConfig } from './backup.mjs';
 import { MaintenanceStore } from './maintenance.mjs';
 import { MovaMetrics, createLogger, requestId, routeName } from './observability.mjs';
 import { createEmailService } from './email.mjs';
+import { contentDisposition } from './file-download.mjs';
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(serverRoot, '..');
@@ -349,6 +350,24 @@ function auth(request) {
 function isMember(userId, conversationId) {
   return database.isMember(userId, conversationId);
 }
+function forwardedFromDto(forwardedFrom, viewerId) {
+  if (!forwardedFrom) return undefined;
+  const sourceVisible = Boolean(
+    viewerId
+      && forwardedFrom.conversationId
+      && forwardedFrom.messageId
+      && database.isMember(viewerId, forwardedFrom.conversationId)
+      && database.isMessageVisibleTo(forwardedFrom.messageId, forwardedFrom.conversationId, viewerId),
+  );
+  const sourceAuthor = database.getUserById(forwardedFrom.authorId);
+  return {
+    authorId: forwardedFrom.authorId,
+    authorName: sourceAuthor?.name || forwardedFrom.authorName || 'Пользователь',
+    createdAt: forwardedFrom.createdAt,
+    canOpen: sourceVisible,
+    ...(sourceVisible ? { conversationId: forwardedFrom.conversationId, messageId: forwardedFrom.messageId } : {}),
+  };
+}
 function messageDto(message, readStates = database.readStates(message.conversationId), viewerId) {
   const replyMessage = message.replyToId ? database.getMessage(message.replyToId, message.conversationId) : null;
   const replyAuthor = replyMessage ? database.getUserById(replyMessage.authorId) : null;
@@ -358,6 +377,7 @@ function messageDto(message, readStates = database.readStates(message.conversati
     readBy: readStates.filter((receipt) => receipt.userId !== message.authorId && receipt.readAt >= message.createdAt),
     listenedBy: message.attachment?.type?.startsWith('audio/') && message.attachment.durationMs ? database.voiceListens(message.id) : [],
     author: userDto(database.getUserById(message.authorId), viewerId),
+    ...(message.forwardedFrom ? { forwardedFrom: forwardedFromDto(message.forwardedFrom, viewerId) } : {}),
     ...(replyMessage && replyAuthor
       ? {
           replyTo: {
@@ -384,6 +404,7 @@ function conversationDto(conversation, userId) {
         ...storedLastMessage,
         sentAt: storedLastMessage.sentAt || storedLastMessage.createdAt,
         readBy: Array.isArray(storedLastMessage.readBy) ? storedLastMessage.readBy : [],
+        ...(storedLastMessage.forwardedFrom ? { forwardedFrom: forwardedFromDto(storedLastMessage.forwardedFrom, userId) } : {}),
       }
     : null;
   return {
@@ -406,6 +427,8 @@ function canInteractInConversation(conversationId, userId) {
   return !otherUserId || !database.isBlockedEither(userId, otherUserId);
 }
 function canCallInConversation(conversationId, userId) {
+  const conversation = database.getConversation(conversationId);
+  if (!conversation || conversation.kind === 'saved') return false;
   const otherUserId = directOtherUserId(conversationId, userId);
   return !otherUserId || database.areFriends(userId, otherUserId);
 }
@@ -438,6 +461,25 @@ function ensureDirectConversation(firstUserId, secondUserId) {
   };
   database.createConversation(conversation, [firstUserId, secondUserId]);
   return conversation;
+}
+function ensureSavedConversation(userId) {
+  const existing = database.findSavedConversation(userId);
+  if (existing) return existing;
+  const conversation = {
+    id: id('saved'),
+    kind: 'saved',
+    title: 'Избранное',
+    createdBy: userId,
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    database.createConversation(conversation, [userId]);
+    return conversation;
+  } catch (error) {
+    const concurrent = database.findSavedConversation(userId);
+    if (concurrent) return concurrent;
+    throw error;
+  }
 }
 function createFriendRequestMessage(requester, otherUserId) {
   const conversation = ensureDirectConversation(requester.id, otherUserId);
@@ -918,12 +960,14 @@ async function handleApi(request, response) {
       return json(response, 200, { user: dto });
     }
     if (request.method === 'GET' && url.pathname === '/api/conversations') {
+      ensureSavedConversation(user.id);
       const conversations = database.listConversations(user.id)
         .map((item) => conversationDto(item, user.id))
         .filter((conversation) => !conversation.isDraft || conversation.createdBy === user.id);
       return json(response, 200, {
         conversations: conversations.sort(
-          (left, right) => new Date(right.lastMessage?.createdAt || right.createdAt).getTime() - new Date(left.lastMessage?.createdAt || left.createdAt).getTime(),
+          (left, right) => Number(right.kind === 'saved') - Number(left.kind === 'saved')
+            || new Date(right.lastMessage?.createdAt || right.createdAt).getTime() - new Date(left.lastMessage?.createdAt || left.createdAt).getTime(),
         ),
       });
     }
@@ -1041,6 +1085,7 @@ async function handleApi(request, response) {
       const conversationId = deleteConversationMatch[1];
       if (!isMember(user.id, conversationId)) return json(response, 403, { error: 'Нет доступа к чату' });
       const conversation = database.getConversation(conversationId);
+      if (conversation?.kind === 'saved') return json(response, 403, { error: 'Избранное нельзя удалить' });
       if (conversation?.kind === 'group' && database.membershipRole(user.id, conversationId) !== 'owner') return json(response, 403, { error: 'Удалить группу может только владелец' });
       if (activeCalls.has(conversationId) || voiceRooms.has(conversationId)) return json(response, 409, { error: 'Нельзя удалить чат во время звонка' });
       const memberIds = database.memberIds(conversationId);
@@ -1143,6 +1188,14 @@ async function handleApi(request, response) {
       broadcastMessage('message:new', stored.message);
       return json(response, 201, { message: dto });
     }
+    const messageContextMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/context$/);
+    if (messageContextMatch && !isMember(user.id, messageContextMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
+    if (messageContextMatch && request.method === 'GET') {
+      const context = database.messageContext(messageContextMatch[1], messageContextMatch[2], { viewerId: user.id });
+      if (!context) return json(response, 404, { error: 'Исходное сообщение не найдено' });
+      const readStates = database.readStates(messageContextMatch[1]);
+      return json(response, 200, { messages: context.map((message) => messageDto(message, readStates, user.id)) });
+    }
     const voiceListenedMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/listened$/);
     if (voiceListenedMatch && !isMember(user.id, voiceListenedMatch[1])) return json(response, 403, { error: 'Нет доступа к чату' });
     if (voiceListenedMatch && request.method === 'POST') {
@@ -1181,12 +1234,20 @@ async function handleApi(request, response) {
       if (!canInteractInConversation(targetConversationId, user.id)) return json(response, 403, { error: 'Обмен сообщениями недоступен из-за блокировки' });
       const wasEmptyConversation = !database.lastMessage(targetConversationId);
       const createdAt = new Date().toISOString();
+      const sourceAuthor = database.getUserById(source.authorId);
       const forwarded = {
         id: id('msg'),
         conversationId: targetConversationId,
         authorId: user.id,
         content: source.content,
         ...(source.attachment ? { attachment: source.attachment } : {}),
+        forwardedFrom: source.forwardedFrom || {
+          conversationId: source.conversationId,
+          messageId: source.id,
+          authorId: source.authorId,
+          authorName: sourceAuthor?.name || 'Пользователь',
+          createdAt: source.createdAt,
+        },
         createdAt,
         sentAt: createdAt,
         readBy: [],
@@ -1203,6 +1264,7 @@ async function handleApi(request, response) {
       const message = database.getMessage(editMessageMatch[2], editMessageMatch[1]);
       if (!message) return json(response, 404, { error: 'Сообщение не найдено' });
       if (message.kind && message.kind !== 'user') return json(response, 400, { error: 'Системное сообщение нельзя редактировать' });
+      if (message.forwardedFrom) return json(response, 400, { error: 'Пересланное сообщение нельзя редактировать' });
       if (message.authorId !== user.id)
         return json(response, 403, {
           error: 'Можно редактировать только свои сообщения',
@@ -1284,14 +1346,18 @@ async function serveUpload(request, response, pathname) {
   if (!filePath.startsWith(`${resolve(dataPaths.uploadsPath)}${sep}`)) return json(response, 403, { error: 'Нет доступа' });
   try {
     const info = await stat(filePath);
+    const upload = database.getUpload(fileName);
+    const requestedName = new URL(request.url, 'http://localhost').searchParams.get('download');
+    const downloadName = upload?.originalName || requestedName || fileName;
     const extension = extname(filePath).toLowerCase();
     const inlineImage = ['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'].includes(extension);
+    const downloading = requestedName !== null || !inlineImage;
     response.writeHead(200, {
-      'content-type': inlineImage ? contentTypes[extension] : 'application/octet-stream',
+      'content-type': upload?.type || (inlineImage ? contentTypes[extension] : 'application/octet-stream'),
       'content-length': info.size,
       'cache-control': 'public, max-age=31536000, immutable',
       'x-content-type-options': 'nosniff',
-      'content-disposition': `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      'content-disposition': contentDisposition(downloading ? 'attachment' : 'inline', downloadName),
     });
     if (request.method === 'HEAD') return response.end();
     createReadStream(filePath).on('error', () => response.destroy()).pipe(response);

@@ -5,6 +5,7 @@ describe('server observability', () => {
   it('normalizes high-cardinality paths and untrusted request ids', () => {
     expect(routeName('/api/conversations/chat-123/messages/message-456')).toBe('/api/conversations/:conversationId/messages/:messageId');
     expect(routeName('/api/conversations/chat-123/messages/message-456/forward')).toBe('/api/conversations/:conversationId/messages/:messageId/forward');
+    expect(routeName('/api/conversations/chat-123/messages/message-456/context')).toBe('/api/conversations/:conversationId/messages/:messageId/context');
     expect(routeName('/uploads/private-file.png')).toBe('/uploads/:file');
     expect(requestId('valid-request-123')).toBe('valid-request-123');
     expect(requestId('bad id')).toMatch(/^[a-f0-9]{24}$/);

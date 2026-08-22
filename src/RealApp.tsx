@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
-import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type MessageAttachment, type RealtimeEvent } from './lib/api';
+import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Bookmark, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type ForwardedMessageSource, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
 import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurface, StatusIndicator, Tooltip, useToast } from './components/Primitives';
@@ -20,6 +20,7 @@ import { getMessageStructure } from './lib/messageGrouping';
 import { clearPersistentUserData, deletePersistentConversation, loadPersistentClientState, persistConversations, persistMessages, persistOutbox, persistUsers, removeOutbox, type OutboxEntry } from './lib/persistentClientStore';
 import { buildCallDiagnosticReport, copyDiagnosticReport } from './lib/callDiagnostics';
 import { startUnreadTitleBlink } from './lib/documentTitle';
+import { attachmentDownloadSource, formatFileSize } from './lib/fileAttachments';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
@@ -211,7 +212,9 @@ const conversationRelationshipRank = (conversation: AppConversation) => {
   return 2;
 };
 export const sortConversationsByActivity = (items: AppConversation[]) => [...items].sort((left, right) =>
-  conversationRelationshipRank(left) - conversationRelationshipRank(right) || conversationActivityAt(right) - conversationActivityAt(left),
+  Number(right.kind === 'saved') - Number(left.kind === 'saved')
+  || conversationRelationshipRank(left) - conversationRelationshipRank(right)
+  || conversationActivityAt(right) - conversationActivityAt(left),
 );
 export const updateConversationLastMessage = (items: AppConversation[], message: AppMessage, onlyIfCurrent = false) => {
   const { author: _author, ...lastMessage } = message;
@@ -390,7 +393,7 @@ type AvatarCropDraft = { file: File; previewUrl: string };
 type AvatarCropPosition = { x: number; y: number };
 const clampCropPosition = (value: number) => Math.min(1, Math.max(-1, value));
 
-function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: AvatarCropDraft; onCancel: () => void; onApply: (dataUrl: string) => void; showError: (message: string) => void }) {
+function AvatarCropEditor({ draft, onCancel, onApply, showError, subject = 'avatar' }: { draft: AvatarCropDraft; onCancel: () => void; onApply: (dataUrl: string) => void; showError: (message: string) => void; subject?: 'avatar' | 'group' }) {
   const [position, setPosition] = useState<AvatarCropPosition>({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [imageSize, setImageSize] = useState({ width: 1, height: 1 });
@@ -410,7 +413,7 @@ function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: Avat
       const cropped = await cropImageFile(draft.file, { ...position, zoom }, { outputSize: 1024, maxBytes: 650_000, quality: 0.94 });
       onApply(await fileToDataUrl(cropped));
     } catch (cropError) {
-      showError(cropError instanceof Error ? cropError.message : 'Не удалось кадрировать фотографию');
+      showError(cropError instanceof Error ? cropError.message : subject === 'group' ? 'Не удалось кадрировать фото группы' : 'Не удалось кадрировать фотографию');
     } finally {
       setProcessing(false);
     }
@@ -419,10 +422,10 @@ function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: Avat
     <>
       <header>
         <div>
-          <h2 id="avatar-crop-title">Кадрирование аватара</h2>
+          <h2 id={subject === 'group' ? 'group-photo-crop-title' : 'avatar-crop-title'}>{subject === 'group' ? 'Кадрирование фото группы' : 'Кадрирование аватара'}</h2>
           <p id="avatar-crop-help">Перетащите фотографию и настройте масштаб</p>
         </div>
-        <IconButton data-dialog-close label="Закрыть кадрирование" onClick={onCancel}>
+        <IconButton data-dialog-close label={subject === 'group' ? 'Закрыть кадрирование фото группы' : 'Закрыть кадрирование'} onClick={onCancel}>
           <X size={18} />
         </IconButton>
       </header>
@@ -431,7 +434,7 @@ function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: Avat
           ref={cropStage}
           className="mova-avatar-crop__stage"
           role="group"
-          aria-label="Область кадрирования аватара"
+          aria-label={subject === 'group' ? 'Область кадрирования фото группы' : 'Область кадрирования аватара'}
           tabIndex={0}
           onKeyDown={(event) => {
             const step = event.shiftKey ? 0.1 : 0.025;
@@ -462,7 +465,7 @@ function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: Avat
         >
           <img
             src={draft.previewUrl}
-            alt="Предпросмотр аватара"
+            alt={subject === 'group' ? 'Предпросмотр фото группы' : 'Предпросмотр аватара'}
             draggable={false}
             onLoad={(event) => setImageSize({ width: Math.max(1, event.currentTarget.naturalWidth), height: Math.max(1, event.currentTarget.naturalHeight) })}
             style={{
@@ -476,7 +479,7 @@ function AvatarCropEditor({ draft, onCancel, onApply, showError }: { draft: Avat
         </div>
         <label className="mova-avatar-crop__zoom">
           <span>Масштаб</span>
-          <input aria-label="Масштаб аватара" type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
+          <input aria-label={subject === 'group' ? 'Масштаб фото группы' : 'Масштаб аватара'} type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
           <output>{Math.round(zoom * 100)}%</output>
         </label>
       </div>
@@ -1512,6 +1515,7 @@ export function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
 }
 
 function ConversationAvatar({ conversation, currentUser }: { conversation: AppConversation; currentUser: AppUser }) {
+  if (conversation.kind === 'saved') return <span className="mova-avatar mova-avatar--lg mova-saved-avatar" aria-label="Избранное"><Bookmark size={25} fill="currentColor" /></span>;
   if (conversation.kind === 'group') return <Avatar name={conversation.title} src={conversation.avatarDataUrl} color="#ff9638" size="lg" />;
   const person = conversation.members.find((member) => member.id !== currentUser.id) ?? currentUser;
   return <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} status={avatarStatus(person.presence, person.isOnline)} size="lg" />;
@@ -1677,19 +1681,32 @@ function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: {
   const [view, setView] = useState<GroupEditorView>('details');
   const [localConversation, setLocalConversation] = useState(conversation);
   const [title, setTitle] = useState(conversation.title);
+  const [titleChanged, setTitleChanged] = useState(false);
   const [avatarDataUrl, setAvatarDataUrl] = useState(conversation.avatarDataUrl || '');
   const [avatarChanged, setAvatarChanged] = useState(false);
+  const [avatarCrop, setAvatarCrop] = useState<AvatarCropDraft | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [removingUser, setRemovingUser] = useState<AppUser | null>(null);
+  const draftConversationId = useRef(conversation.id);
   useEffect(() => {
+    const conversationChanged = draftConversationId.current !== conversation.id;
+    draftConversationId.current = conversation.id;
     setLocalConversation(conversation);
-    setTitle(conversation.title);
-    setAvatarDataUrl(conversation.avatarDataUrl || '');
-    setAvatarChanged(false);
-  }, [conversation]);
+    if (conversationChanged || !titleChanged) {
+      setTitle(conversation.title);
+      if (conversationChanged) setTitleChanged(false);
+    }
+    if (conversationChanged || (!avatarChanged && !avatarCrop)) {
+      setAvatarDataUrl(conversation.avatarDataUrl || '');
+      if (conversationChanged) {
+        setAvatarChanged(false);
+        setAvatarCrop(null);
+      }
+    }
+  }, [conversation, titleChanged, avatarChanged, avatarCrop]);
   useEffect(() => {
     setView('details');
     setQuery('');
@@ -1703,10 +1720,13 @@ function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: {
   const visibleMembers = localConversation.members.filter((member) => !normalizedQuery || `${member.name} ${member.handle}`.toLocaleLowerCase().includes(normalizedQuery));
   const addableMembers = users.filter((member) => member.relationship === 'friend' && !localConversation.members.some((existing) => existing.id === member.id) && (!normalizedQuery || `${member.name} ${member.handle}`.toLocaleLowerCase().includes(normalizedQuery)));
   const applyConversation = (updated: AppConversation) => {
+    draftConversationId.current = updated.id;
     setLocalConversation(updated);
     setTitle(updated.title);
+    setTitleChanged(false);
     setAvatarDataUrl(updated.avatarDataUrl || '');
     setAvatarChanged(false);
+    setAvatarCrop(null);
     onUpdated(updated);
   };
   const selectGroupImage = async (file?: File) => {
@@ -1715,12 +1735,14 @@ function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: {
       setError('Выберите изображение для группы');
       return;
     }
+    if (file.size > 30_000_000) {
+      setError('Фотография должна быть меньше 30 МБ');
+      return;
+    }
     setImageLoading(true);
     setError('');
     try {
-      const prepared = await prepareImageDataUrl(file, { maxDimension: 1024, maxBytes: 650_000, quality: 0.94, skipBelowBytes: 120_000 });
-      setAvatarDataUrl(prepared.dataUrl);
-      setAvatarChanged(true);
+      setAvatarCrop({ file, previewUrl: await fileToDataUrl(file) });
     } catch (imageError) {
       setError(imageError instanceof Error ? imageError.message : 'Не удалось подготовить изображение');
     } finally {
@@ -1805,20 +1827,35 @@ function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: {
   return (
     <>
       <div className="mova-group-editor">
-        <header>
-          <IconButton label="Назад" onClick={goBack}><ArrowLeft size={23} /></IconButton>
-          <h2 id="group-edit-title">{titleByView}</h2>
-          {view === 'details' && <button type="button" className="mova-group-edit-save" disabled={busy || imageLoading || title.trim().length < 2 || (title.trim() === localConversation.title && !avatarChanged)} onClick={() => void saveDetails()}>{busy ? <LoaderCircle className="mova-spin" size={19} /> : 'Готово'}</button>}
-        </header>
-        {view === 'details' ? (
-          <div className="mova-group-edit-body">
+        {avatarCrop ? (
+          <div className="mova-group-crop-view">
+            <AvatarCropEditor
+              draft={avatarCrop}
+              subject="group"
+              onCancel={() => setAvatarCrop(null)}
+              onApply={(nextAvatarDataUrl) => {
+                setAvatarDataUrl(nextAvatarDataUrl);
+                setAvatarChanged(true);
+                setAvatarCrop(null);
+              }}
+              showError={setError}
+            />
+          </div>
+        ) : <>
+          <header>
+            <IconButton label="Назад" onClick={goBack}><ArrowLeft size={23} /></IconButton>
+            <h2 key={view} id="group-edit-title">{titleByView}</h2>
+            {view === 'details' && <button type="button" className="mova-group-edit-save" disabled={busy || imageLoading || title.trim().length < 2 || (title.trim() === localConversation.title && !avatarChanged)} onClick={() => void saveDetails()}>{busy ? <LoaderCircle className="mova-spin" size={19} /> : 'Готово'}</button>}
+          </header>
+          {view === 'details' ? (
+          <div key={view} className="mova-group-edit-body mova-group-editor-view">
             <section className="mova-group-edit-profile">
               <label className="mova-group-edit-photo" aria-label="Изменить фото группы">
                 <Avatar name={localConversation.title} src={avatarDataUrl} color="#ff9638" size="xl" />
                 <span>{imageLoading ? <LoaderCircle className="mova-spin" size={24} /> : <><Camera size={31} /><Plus size={17} /></>}</span>
                 <input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void selectGroupImage(file); }} />
               </label>
-              <label className="mova-group-title-field"><span>Название группы</span><input value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} aria-label="Название группы" /></label>
+              <label className="mova-group-title-field"><span>Название группы</span><input value={title} maxLength={80} onChange={(event) => { setTitle(event.target.value); setTitleChanged(true); }} aria-label="Название группы" /></label>
             </section>
             <section className="mova-group-edit-actions">
               <button type="button" onClick={() => setView('admins')}><ShieldCheck size={24} /><span><strong>Администраторы</strong><small>{adminCount}</small></span><ChevronRight size={19} /></button>
@@ -1827,7 +1864,7 @@ function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: {
             {!isOwner && <p className="mova-group-edit-hint">Назначать администраторов может только владелец группы.</p>}
           </div>
         ) : (
-          <div className="mova-group-manage-body">
+          <div key={view} className="mova-group-manage-body mova-group-editor-view">
             {(view === 'members' || view === 'add') && <label className="mova-group-create-search"><Search size={20} /><input data-dialog-initial autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск" aria-label={view === 'add' ? 'Поиск новых участников' : 'Поиск участников'} />{query && <button type="button" aria-label="Очистить поиск" onClick={() => setQuery('')}><X size={16} /></button>}</label>}
             {view === 'members' && <button type="button" className="mova-group-add-members" onClick={() => { setView('add'); setQuery(''); }}><UserPlus size={21} /><span>Добавить участников</span><ChevronRight size={18} /></button>}
             {view === 'admins' && !isOwner && <p className="mova-group-manage-note">Список администраторов. Изменять роли может только владелец.</p>}
@@ -1839,7 +1876,8 @@ function GroupEditor({ conversation, currentUser, users, onClose, onUpdated }: {
                   : visibleMembers.map((member) => renderMember(member, 'members'))}
             </section>
           </div>
-        )}
+          )}
+        </>}
         {error && <div className="mova-group-edit-error" role="alert">{error}</div>}
       </div>
       <ConfirmDialog open={Boolean(removingUser)} title="Удалить участника?" description={removingUser ? `${removingUser.name} больше не сможет читать и отправлять сообщения в этой группе.` : ''} confirmLabel="Удалить из группы" onCancel={() => !busy && setRemovingUser(null)} onConfirm={() => void removeMember()} />
@@ -2890,6 +2928,7 @@ interface RealMessagesProps {
   availableConversations?: AppConversation[];
   onPinMessage?: (messageId: string, pinned: boolean) => Promise<void>;
   onForwardMessage?: (messageId: string, conversationId: string) => Promise<void>;
+  onOpenForwardSource?: (source: ForwardedMessageSource) => Promise<void>;
   onDeleteMessage?: (messageId: string, scope?: 'self' | 'everyone') => Promise<void>;
   onDeleteConversation?: () => void;
   availableUsers?: AppUser[];
@@ -2901,6 +2940,8 @@ interface RealMessagesProps {
   onVoiceListen?: (messageId: string) => Promise<void>;
   draftText?: string;
   onDraftChange?: (text: string) => void;
+  focusMessageId?: string | null;
+  onFocusMessageHandled?: () => void;
 }
 
 interface RealMessagesViewProps extends RealMessagesProps {
@@ -2912,7 +2953,7 @@ interface RealMessagesViewProps extends RealMessagesProps {
   onStartCall: (video: boolean) => void;
 }
 
-function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, availableConversations = [], onPinMessage, onForwardMessage, onDeleteMessage, onDeleteConversation = () => undefined, availableUsers = [], onConversationChange = () => undefined, onOpenDirectConversation = () => undefined, onStartDirectCall = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange }: RealMessagesViewProps) {
+function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0, loading = false, historyError = false, hasOlderMessages = false, loadingOlderMessages = false, olderHistoryError = false, typingUserIds = [], mobileActive = true, onMobileBack, onCallOpenChange, voiceSession, voiceConversation, callCanvasOpen, onOpenCallCanvas, onMinimizeCallCanvas, onStartCall, onSend, onRetry, onRetryHistory, onLoadOlder, onEdit, availableConversations = [], onPinMessage, onForwardMessage, onOpenForwardSource, onDeleteMessage, onDeleteConversation = () => undefined, availableUsers = [], onConversationChange = () => undefined, onOpenDirectConversation = () => undefined, onStartDirectCall = () => undefined, onRelationshipChange, onMarkRead, onVoiceListen, draftText = '', onDraftChange, focusMessageId = null, onFocusMessageHandled }: RealMessagesViewProps) {
   const toast = useToast();
   const [value, setValue] = useState('');
   const [sending, setSending] = useState(false);
@@ -2936,6 +2977,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [attachment, setAttachment] = useState<MessageAttachment | undefined>();
+  const [preparingAttachment, setPreparingAttachment] = useState<Pick<MessageAttachment, 'name' | 'size'> | undefined>();
   const [attachmentError, setAttachmentError] = useState('');
   const retryingMessagesRef = useRef(new Set<string>());
   const [retryingMessageIds, setRetryingMessageIds] = useState<Set<string>>(() => new Set());
@@ -2984,21 +3026,21 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const other = storedOther && relationshipOverride?.id === storedOther.id ? { ...storedOther, ...relationshipOverride } : storedOther;
   const relationship = other?.relationship || 'none';
   const blocked = relationship === 'blocked' || relationship === 'blocked_by';
-  const canCall = conversation.kind !== 'direct' || relationship === 'friend';
+  const canCall = conversation.kind === 'group' || (conversation.kind === 'direct' && relationship === 'friend');
   const currentGroupRole = conversation.kind === 'group' ? groupMemberRole(conversation, currentUser.id) : 'member';
   const canEditGroup = conversation.kind === 'group' && ['owner', 'admin'].includes(currentGroupRole);
   const messageStructure = useMemo(() => getMessageStructure(messages), [messages]);
   const mediaGallery = useMemo(() => buildMediaGallery(messages), [messages]);
   const pinnedMessages = useMemo(() => [...messages].filter((message) => message.pinnedAt).sort((left, right) => String(right.pinnedAt).localeCompare(String(left.pinnedAt))), [messages]);
   const pinnedMessage = pinnedMessages[0] || null;
-  const forwardDestinations = useMemo(() => availableConversations.filter((item) => item.id !== conversation.id), [availableConversations, conversation.id]);
+  const forwardDestinations = useMemo(() => availableConversations.filter((item) => item.id !== conversation.id).sort((left, right) => Number(right.kind === 'saved') - Number(left.kind === 'saved')), [availableConversations, conversation.id]);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
   const matchingMessages = useMemo(() => (normalizedSearch ? messages.filter((message) => message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)).reverse() : []), [messages, normalizedSearch]);
   const selectedMessageItems = useMemo(() => messages.filter((message) => selectedMessages.includes(message.id)), [messages, selectedMessages]);
   const canDeleteSelectionForEveryone = selectedMessageItems.length > 0 && selectedMessageItems.every((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user'));
   const activeMatchId = matchingMessages[activeMatchIndex]?.id || matchingMessages[0]?.id;
   const matchCount = matchingMessages.length;
-  const status = conversation.kind === 'direct' ? formatPresenceStatus(other) : `${conversation.members.length} участников`;
+  const status = conversation.kind === 'saved' ? 'Личное хранилище' : conversation.kind === 'direct' ? formatPresenceStatus(other) : `${conversation.members.length} участников`;
   const typingLabel = conversationTypingLabel(conversation, currentUser.id, typingUserIds);
   const voiceState = normalizeCallState(voiceSession.state);
   const callOpen = callCanvasOpen && voiceConversation.id === conversation.id && voiceState !== 'idle' && voiceState !== 'available';
@@ -3374,7 +3416,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
 
   const send = async () => {
     const content = value.trim();
-    if ((!content && !attachment) || (editingMessage && sending)) return;
+    if ((!content && !attachment) || preparingAttachment || (editingMessage && sending)) return;
     setSendError('');
     announceTyping(false);
     if (!editingMessage) {
@@ -3452,6 +3494,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     if (!file) return;
     setAttachmentError('');
     if (file.size > (file.type.startsWith('image/') ? 30_000_000 : 8_000_000)) return setAttachmentError(file.type.startsWith('image/') ? 'Фотография должна быть меньше 30 МБ' : 'Файл должен быть меньше 8 МБ');
+    setPreparingAttachment({ name: file.name || 'Файл', size: file.size });
     try {
       const clipboardName = `Изображение ${new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }).replace(':', '-')}.png`;
       const prepared = file.type.startsWith('image/') ? await prepareImageDataUrl(file) : { file, dataUrl: await fileToDataUrl(file) };
@@ -3464,6 +3507,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       });
     } catch {
       setAttachmentError('Не удалось прочитать файл');
+    } finally {
+      setPreparingAttachment(undefined);
     }
   };
   const pasteFile = (event: ClipboardEvent) => {
@@ -3594,6 +3639,16 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     previousMessageCount.current = messages.length;
     pendingHistoryPrepend.current = null;
   }, [messages]);
+  useEffect(() => {
+    if (!focusMessageId || !messages.some((message) => message.id === focusMessageId)) return;
+    const frame = window.requestAnimationFrame(() => {
+      jumpToMessage(focusMessageId);
+      positionedAtBottom.current = false;
+      setAtMessageBottom(false);
+      onFocusMessageHandled?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusMessageId, jumpToMessage, messages, onFocusMessageHandled]);
   useEffect(() => {
     const markRead = () => {
       if (!onMarkRead || !mobileActive || !atMessageBottom || document.visibilityState !== 'visible') return;
@@ -3741,8 +3796,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
         <button
           type="button"
           className="mova-chat-identity"
-          aria-label={`Открыть информацию о ${conversation.title}`}
+          aria-label={conversation.kind === 'saved' ? 'Избранное' : `Открыть информацию о ${conversation.title}`}
           aria-expanded={profileInfoOpen}
+          disabled={conversation.kind === 'saved'}
           onClick={() => {
             setProfileInfoOpen(true);
             setDetailsOpen(false);
@@ -3759,7 +3815,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           </span>
         </button>
         <div>
-          <VoiceCallBar
+          {conversation.kind !== 'saved' && <VoiceCallBar
             conversation={conversation}
             callConversation={voiceConversation}
             currentUser={currentUser}
@@ -3774,7 +3830,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             onMinimizeCanvas={onMinimizeCallCanvas}
             onStartCall={onStartCall}
             canCall={canCall}
-          />
+          />}
           <IconButton
             label="Поиск"
             className={searchOpen ? 'is-active' : ''}
@@ -3964,8 +4020,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             <span>{muted ? 'Включить уведомления' : 'Выключить уведомления'}</span>
             {muted && <Check size={17} />}
           </button>
-          {callMenuItem(false)}
-          {callMenuItem(true)}
+          {conversation.kind !== 'saved' && callMenuItem(false)}
+          {conversation.kind !== 'saved' && callMenuItem(true)}
           <button
             type="button"
             role="menuitem"
@@ -4080,7 +4136,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
         <div className="mova-real-thread-intro">
           <ConversationAvatar conversation={conversation} currentUser={currentUser} />
           <h1><AppleEmoji text={conversation.title} /></h1>
-          <p>{conversation.kind === 'direct' ? `Это начало вашей переписки${other ? ` с ${other.name}` : ''}.` : 'Группа создана. Можно начинать разговор.'}</p>
+          <p>{conversation.kind === 'saved' ? 'Здесь можно хранить сообщения, фотографии и файлы — их видите только вы.' : conversation.kind === 'direct' ? `Это начало вашей переписки${other ? ` с ${other.name}` : ''}.` : 'Группа создана. Можно начинать разговор.'}</p>
           {conversation.kind === 'direct' && other && (
             <div className="mova-thread-intro-actions">
               {relationship !== 'friend' && relationship !== 'blocked' && relationship !== 'blocked_by' && (
@@ -4185,11 +4241,12 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           const showGroupAvatarSlot = conversation.kind === 'group' && !own;
           const imageAttachment = Boolean(message.attachment?.type.startsWith('image/'));
           const voiceAttachment = isVoiceAttachment(message.attachment);
+          const fileUploading = Boolean(message.attachment && !imageAttachment && !voiceAttachment && message.deliveryState === 'sending' && message.attachment.dataUrl && !message.attachment.url);
           const voiceRecipients = voiceAttachment ? conversation.members.filter((member) => member.id !== message.authorId) : [];
           const voiceUnlistened = voiceAttachment && (own
             ? voiceRecipients.some((member) => !message.listenedBy?.some((receipt) => receipt.userId === member.id))
             : !message.listenedBy?.some((receipt) => receipt.userId === currentUser.id));
-          const imageCaption = imageAttachment && Boolean(message.content.trim() || message.replyTo);
+          const imageCaption = imageAttachment && Boolean(message.content.trim() || message.replyTo || message.forwardedFrom);
           const selectedForAction = selectedMessages.includes(message.id);
           return (
             <Fragment key={messageKey}>
@@ -4223,14 +4280,33 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 )}
                 <div className="mova-message-body">
                   {showGroupAvatarSlot && structure.startsGroup && <strong><AppleEmoji text={message.author.name} /></strong>}
-                  {!selectingMessages && own && onEdit && Boolean(message.content.trim()) && (!message.kind || message.kind === 'user') && (
+                  {!selectingMessages && own && onEdit && !message.forwardedFrom && Boolean(message.content.trim()) && (!message.kind || message.kind === 'user') && (
                     <div className="mova-message-quick-actions" aria-label="Действия с сообщением">
                       <button type="button" aria-label="Редактировать сообщение" title="Редактировать" onClick={(event) => { event.stopPropagation(); editOwnMessage(message); }}>
                         <Pencil size={14} aria-hidden="true" />
                       </button>
                     </div>
                   )}
-                  <div className={`mova-real-bubble${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment && !voiceAttachment ? ' has-file' : ''}${voiceAttachment ? ' has-voice' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
+                  <div className={`mova-real-bubble${message.forwardedFrom ? ' has-forward' : ''}${message.replyTo ? ' has-reply' : ''}${message.attachment && !imageAttachment && !voiceAttachment ? ' has-file' : ''}${voiceAttachment ? ' has-voice' : ''}${imageAttachment ? ` has-image ${imageCaption ? 'has-caption' : 'is-image-only'}` : ''}`}>
+                  {message.forwardedFrom && (
+                    <div className="mova-message-forwarded" aria-label={`Переслано от ${message.forwardedFrom.authorName}`}>
+                      <Forward size={14} aria-hidden="true" />
+                      <span>
+                        <small>Переслано от</small>
+                        <strong><AppleEmoji text={message.forwardedFrom.authorName} /></strong>
+                      </span>
+                      {message.forwardedFrom.canOpen && message.forwardedFrom.conversationId && message.forwardedFrom.messageId && onOpenForwardSource && (
+                        <button
+                          type="button"
+                          aria-label={`Перейти к исходному сообщению ${message.forwardedFrom.authorName}`}
+                          title="Перейти в диалог"
+                          onClick={() => void onOpenForwardSource(message.forwardedFrom!)}
+                        >
+                          <ArrowRight size={16} aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {message.replyTo && (
                     <button
                       type="button"
@@ -4271,11 +4347,19 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                         onListen={!own && voiceUnlistened && onVoiceListen ? () => onVoiceListen(message.id) : undefined}
                       />
                     ) : (
-                      <a className="mova-message-file" href={attachmentSource(message.attachment)} download={message.attachment.name}>
-                        <FileText size={20} />
+                      <a
+                        className={`mova-message-file${fileUploading ? ' is-uploading' : ''}`}
+                        href={fileUploading ? undefined : attachmentDownloadSource(message.attachment)}
+                        download={fileUploading ? undefined : message.attachment.name}
+                        role={fileUploading ? 'status' : undefined}
+                        aria-label={fileUploading ? `Загружается ${message.attachment.name}` : undefined}
+                        aria-busy={fileUploading || undefined}
+                        onClick={fileUploading ? (event) => event.preventDefault() : undefined}
+                      >
+                        {fileUploading ? <LoaderCircle className="mova-spin" size={20} aria-hidden="true" /> : <FileText size={20} />}
                         <span>
                           <strong>{message.attachment.name}</strong>
-                          <small>{Math.max(1, Math.round(message.attachment.size / 1024))} КБ</small>
+                          <small>{fileUploading ? 'Загрузка…' : formatFileSize(message.attachment.size)}</small>
                         </span>
                       </a>
                     ))}
@@ -4349,11 +4433,20 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               </span>
               <span className="mova-composer-row__copy">
                 <strong><AppleEmoji text={attachment.name} /></strong>
-                <small>{Math.max(1, Math.round(attachment.size / 1024))} КБ</small>
+                <small>{formatFileSize(attachment.size)}</small>
               </span>
               <button type="button" className="mova-composer-row__remove" aria-label="Убрать вложение" onClick={() => setAttachment(undefined)}>
                 <X size={16} aria-hidden="true" />
               </button>
+            </div>
+          )}
+          {preparingAttachment && (
+            <div className="mova-attachment-draft is-preparing" role="status" aria-label={`Подготавливается ${preparingAttachment.name}`} aria-busy="true">
+              <span className="mova-composer-row__icon"><LoaderCircle className="mova-spin" size={17} aria-hidden="true" /></span>
+              <span className="mova-composer-row__copy">
+                <strong><AppleEmoji text={preparingAttachment.name} /></strong>
+                <small>Подготовка… · {formatFileSize(preparingAttachment.size)}</small>
+              </span>
             </div>
           )}
           <div className={`mova-composer-input-row${voiceRecorder.state !== 'idle' ? ' is-recording' : ''}`}>
@@ -4417,8 +4510,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                         if (!editingMessage) onDraftChange?.('');
                         return;
                       }
-                      if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && onEdit) {
-                        const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
+                      if (event.key === 'ArrowUp' && !value && !editingMessage && !replyingTo && !attachment && !preparingAttachment && onEdit) {
+                        const latestEditableMessage = [...messages].reverse().find((message) => message.authorId === currentUser.id && !message.forwardedFrom && (!message.kind || message.kind === 'user') && Boolean(message.content.trim()));
                         if (latestEditableMessage) {
                           event.preventDefault();
                           editOwnMessage(latestEditableMessage);
@@ -4445,9 +4538,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 >
                   <Smile size={21} aria-hidden="true" />
                 </IconButton>
-                {value.trim() || attachment || editingMessage ? (
-                  <button className="mova-composer-send" type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={(!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
-                    <Send size={18} aria-hidden="true" />
+                {value.trim() || attachment || preparingAttachment || editingMessage ? (
+                  <button className="mova-composer-send" type="submit" aria-label={editingMessage ? 'Сохранить изменения' : 'Отправить'} disabled={Boolean(preparingAttachment) || (!value.trim() && !attachment) || Boolean(editingMessage && sending)}>
+                    {preparingAttachment ? <LoaderCircle className="mova-spin" size={18} aria-hidden="true" /> : <Send size={18} aria-hidden="true" />}
                   </button>
                 ) : (
                   <IconButton label="Записать голосовое сообщение" className="mova-composer-mic" disabled={blocked} onClick={() => void startVoiceRecording()}>
@@ -4481,7 +4574,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               <ConversationAvatar conversation={item} currentUser={currentUser} />
               <span>
                 <strong><AppleEmoji text={item.title} /></strong>
-                <small>{item.kind === 'group' ? `${item.members.length} участников` : item.members.find((member) => member.id !== currentUser.id)?.handle || 'Личный чат'}</small>
+                <small>{item.kind === 'saved' ? 'Только для вас' : item.kind === 'group' ? `${item.members.length} участников` : item.members.find((member) => member.id !== currentUser.id)?.handle || 'Личный чат'}</small>
               </span>
               <Forward size={18} aria-hidden="true" />
             </button>
@@ -4575,6 +4668,7 @@ export function RealMessages(props: RealMessagesProps) {
     }
   }, [voiceSession, voiceState]);
   const startCall = (video: boolean) => {
+    if (props.conversation.kind === 'saved') return;
     const contact = props.conversation.kind === 'direct' ? props.conversation.members.find((member) => member.id !== props.currentUser.id) : null;
     if (contact && contact.relationship !== 'friend') return;
     if (voiceState !== 'idle') return;
@@ -4671,6 +4765,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   const [users, setUsers] = useState<AppUser[]>(userCache.get(currentUser.id)?.value || []);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [messages, setMessages] = useState<AppMessage[]>(() => initialMessageCache?.value || []);
+  const [focusedMessage, setFocusedMessage] = useState<{ conversationId: string; messageId: string } | null>(null);
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string[]>>({});
   const [drafts, setDrafts] = useState<ConversationDrafts>(() => loadConversationDrafts(currentUser.id));
   const [loading, setLoading] = useState(!isFresh(conversationCache.get(currentUser.id)) || !isFresh(userCache.get(currentUser.id)));
@@ -5140,6 +5235,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     window.localStorage.setItem('mova-selected-conversation', conversationId);
     showMobileConversation(conversationId);
   }, [showMobileConversation]);
+  const clearFocusedMessage = useCallback(() => setFocusedMessage(null), []);
   useEffect(() => {
     const handleNotificationClick = (event: MessageEvent<{ type?: string; conversationId?: string }>) => {
       if (event.data?.type === 'mova:notification-click' && event.data.conversationId) selectConversation(event.data.conversationId);
@@ -5153,6 +5249,10 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   }, [selectConversation]);
   const requestCall = useCallback((conversationId: string, video: boolean) => {
     const callConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+    if (callConversation?.kind === 'saved') {
+      toast.push('В Избранном звонки недоступны.', 'info');
+      return;
+    }
     const callContact = callConversation?.kind === 'direct' ? callConversation.members.find((member) => member.id !== currentUserRef.current.id) : null;
     if (callContact && callContact.relationship !== 'friend') {
       toast.push('Звонки доступны только друзьям.', 'info');
@@ -5866,6 +5966,35 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
       return next;
     });
   };
+  const openForwardSource = async (source: ForwardedMessageSource) => {
+    if (!source.canOpen || !source.conversationId || !source.messageId) {
+      toast.push('Исходный диалог недоступен.', 'info');
+      return;
+    }
+    try {
+      const [latest, context] = await Promise.all([
+        api.messages(source.conversationId),
+        api.messageContext(source.conversationId, source.messageId),
+      ]);
+      const nextMessages = mergeMessageHistory(latest.messages, context.messages);
+      const cacheKey = messageCacheKey(currentUser.id, source.conversationId);
+      messageCache.set(cacheKey, {
+        value: nextMessages,
+        updatedAt: Date.now(),
+        hasMore: Boolean(latest.hasMore),
+        nextCursor: latest.nextCursor || null,
+      });
+      if (selectedIdRef.current === source.conversationId) {
+        setMessages(nextMessages);
+        setHasOlderMessages(Boolean(latest.hasMore));
+        setMessageHistoryCursor(latest.nextCursor || null);
+      }
+      setFocusedMessage({ conversationId: source.conversationId, messageId: source.messageId });
+      selectConversation(source.conversationId);
+    } catch (error) {
+      toast.push(error instanceof Error ? error.message : 'Не удалось открыть исходное сообщение.', 'danger');
+    }
+  };
   const deleteMessage = async (messageId: string, scope: 'self' | 'everyone' = 'self') => {
     if (!selectedId) return;
     const result = await api.deleteMessage(selectedId, messageId, scope);
@@ -5927,6 +6056,8 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     };
   }, [conversations, currentUser.id, searchActive, searchQueryReady, searchTab]);
   const listedConversations = useMemo(() => conversations.filter((conversation) => !conversation.isDraft || Boolean(drafts[conversation.id]?.text.trim())).sort((left, right) => {
+    const savedOrder = Number(right.kind === 'saved') - Number(left.kind === 'saved');
+    if (savedOrder) return savedOrder;
     const relationshipOrder = conversationRelationshipRank(left) - conversationRelationshipRank(right);
     if (relationshipOrder) return relationshipOrder;
     const leftActivity = new Date(drafts[left.id]?.updatedAt || left.lastMessage?.createdAt || left.createdAt).getTime();
@@ -6179,6 +6310,7 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           availableConversations={conversations}
           onPinMessage={setMessagePinned}
           onForwardMessage={forwardMessage}
+          onOpenForwardSource={openForwardSource}
           onDeleteMessage={deleteMessage}
           availableUsers={users}
           onConversationChange={applyConversationUpdate}
@@ -6189,6 +6321,8 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
           onVoiceListen={(messageId) => markVoiceListened(selected.id, messageId)}
           draftText={drafts[selected.id]?.text || ''}
           onDraftChange={(text) => updateConversationDraft(selected.id, text)}
+          focusMessageId={focusedMessage?.conversationId === selected.id ? focusedMessage.messageId : null}
+          onFocusMessageHandled={clearFocusedMessage}
           onDeleteConversation={() => void deleteConversation(selected.id)}
         />
       ) : (
