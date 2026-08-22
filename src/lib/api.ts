@@ -10,7 +10,7 @@ export interface AppUser {
   bio?: string;
   avatarDataUrl?: string;
   bannerDataUrl?: string;
-  activity?: { type?: 'game'; name: string; startedAt: string } | null;
+  activity?: { type?: 'game'; name: string; startedAt: string; iconDataUrl?: string } | null;
   lastActiveAt?: string;
   emailVerifiedAt?: string;
   createdAt: string;
@@ -243,10 +243,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ presence, dndUntil }),
     }),
-  updateActivity: (name: string | null) =>
+  updateActivity: (name: string | null, iconDataUrl?: string) =>
     request<{ user: AppUser }>('/api/activity', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, iconDataUrl }),
     }),
   users: () => request<{ users: AppUser[] }>('/api/users'),
   requestFriend: (userId: string) => request<{ user: AppUser }>(`/api/friends/${userId}`, { method: 'POST' }),

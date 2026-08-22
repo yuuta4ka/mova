@@ -107,14 +107,15 @@ describe('game activity', () => {
     const observer = await openSocket(second.token);
 
     const startedEvent = waitForProfile(observer, first.user.id);
-    const started = await request('/api/activity', { method: 'POST', token: first.token, body: { name: 'Minecraft' } });
-    expect(started.user.activity).toMatchObject({ type: 'game', name: 'Minecraft' });
+    const iconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const started = await request('/api/activity', { method: 'POST', token: first.token, body: { name: 'Minecraft', iconDataUrl } });
+    expect(started.user.activity).toMatchObject({ type: 'game', name: 'Minecraft', iconDataUrl });
     expect((await startedEvent).activity).toEqual(started.user.activity);
     expect((await request('/api/me', { token: first.token })).user.activity).toEqual(started.user.activity);
 
     const socketActivityEvent = waitForProfile(observer, first.user.id);
-    player.send(JSON.stringify({ type: 'activity:update', name: 'Stardew Valley' }));
-    expect((await socketActivityEvent).activity).toMatchObject({ type: 'game', name: 'Stardew Valley' });
+    player.send(JSON.stringify({ type: 'activity:update', name: 'Stardew Valley', iconDataUrl }));
+    expect((await socketActivityEvent).activity).toMatchObject({ type: 'game', name: 'Stardew Valley', iconDataUrl });
 
     const disconnectedEvent = waitForProfile(observer, first.user.id);
     player.close();

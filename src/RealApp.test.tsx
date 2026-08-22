@@ -183,6 +183,35 @@ describe('voice processing settings', () => {
 
     expect(setAutoLaunch).toHaveBeenCalledWith(false);
   });
+
+  it('registers a currently running desktop application as a game', async () => {
+    const registeredGame = { id: 'game-1', title: 'Tiny Indie', executableName: 'tiny-indie.exe' };
+    const registerGame = vi.fn().mockResolvedValue({ enabled: true, registeredGames: [registeredGame] });
+    const listRunningApplications = vi.fn()
+      .mockResolvedValueOnce([{ id: 'app-1', name: 'Tiny Indie', executableName: 'tiny-indie.exe', registered: false }])
+      .mockResolvedValue([{ id: 'app-1', name: 'Tiny Indie', executableName: 'tiny-indie.exe', registered: true }]);
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      getGameActivitySettings: vi.fn().mockResolvedValue({ enabled: true, registeredGames: [] }),
+      listRunningApplications,
+      registerGame,
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const user = userEvent.setup();
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Приложение' }));
+    const application = await screen.findByRole('combobox', { name: 'Запущенное приложение' });
+    await waitFor(() => expect(application).toHaveValue('app-1'));
+    await user.click(screen.getByRole('button', { name: 'Добавить игру' }));
+
+    expect(registerGame).toHaveBeenCalledWith('app-1', 'Tiny Indie');
+    expect(await screen.findByText('Tiny Indie')).toBeVisible();
+  });
 });
 
 describe('presence status', () => {

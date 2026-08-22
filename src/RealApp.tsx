@@ -21,6 +21,7 @@ import { clearPersistentUserData, deletePersistentConversation, loadPersistentCl
 import { buildCallDiagnosticReport, copyDiagnosticReport } from './lib/callDiagnostics';
 import { startUnreadTitleBlink } from './lib/documentTitle';
 import { attachmentDownloadSource, formatFileSize } from './lib/fileAttachments';
+import type { DesktopGameActivity, DesktopGameActivitySettings, DesktopRegisteredGame, DesktopRunningApplication } from './DesktopTitlebar';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
@@ -32,6 +33,11 @@ const activityTime = (startedAt?: string) => {
   const hours = Math.floor(minutes / 60);
   return `${hours} ч. ${minutes % 60} мин.`;
 };
+function GameActivityIcon({ activity, size = 20 }: { activity?: { name: string; iconDataUrl?: string } | null; size?: number }) {
+  return activity?.iconDataUrl
+    ? <img className="mova-game-icon" src={activity.iconDataUrl} alt="" width={size} height={size} draggable={false} />
+    : <Gamepad2 size={size} aria-hidden="true" />;
+}
 const russianCount = (value: number, one: string, few: string, many: string) => {
   const tens = value % 100;
   const units = value % 10;
@@ -856,6 +862,12 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
   const [testProcessingStatus, setTestProcessingStatus] = useState('');
   const [autoLaunch, setAutoLaunch] = useState(true);
   const [desktopSettingsError, setDesktopSettingsError] = useState('');
+  const [gameActivityEnabled, setGameActivityEnabled] = useState(true);
+  const [registeredGames, setRegisteredGames] = useState<DesktopRegisteredGame[]>([]);
+  const [runningApplications, setRunningApplications] = useState<DesktopRunningApplication[]>([]);
+  const [selectedApplicationId, setSelectedApplicationId] = useState('');
+  const [registeredGameTitle, setRegisteredGameTitle] = useState('');
+  const [gameRegistryLoading, setGameRegistryLoading] = useState(false);
   const testStream = useRef<MediaStream | null>(null);
   const testPipeline = useRef<MicrophonePipeline | null>(null);
   const testContext = useRef<AudioContext | null>(null);
@@ -891,6 +903,27 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       setDeviceError(error instanceof Error ? error.message : 'Нет доступа к аудиоустройствам');
     }
   }, []);
+  const applyGameActivitySettings = useCallback((next: DesktopGameActivitySettings) => {
+    setGameActivityEnabled(next.enabled);
+    setRegisteredGames(next.registeredGames);
+  }, []);
+  const refreshRunningApplications = useCallback(async () => {
+    const desktopShell = window.movaDesktopShell;
+    if (!desktopShell?.listRunningApplications) return;
+    setGameRegistryLoading(true);
+    try {
+      setDesktopSettingsError('');
+      const applications = await desktopShell.listRunningApplications();
+      setRunningApplications(applications);
+      setSelectedApplicationId((current) => applications.some((item) => item.id === current && !item.registered)
+        ? current
+        : applications.find((item) => !item.registered)?.id || '');
+    } catch {
+      setDesktopSettingsError('Не удалось получить список запущенных приложений.');
+    } finally {
+      setGameRegistryLoading(false);
+    }
+  }, []);
   useEffect(() => {
     if (open) {
       setSettings(loadAudioSettings());
@@ -901,9 +934,19 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       if (window.movaDesktopShell?.getAutoLaunch) {
         void window.movaDesktopShell.getAutoLaunch().then(setAutoLaunch).catch(() => setDesktopSettingsError('Не удалось прочитать настройку автозапуска.'));
       }
+      if (window.movaDesktopShell?.getGameActivitySettings) {
+        void window.movaDesktopShell.getGameActivitySettings().then(applyGameActivitySettings).catch(() => setDesktopSettingsError('Не удалось прочитать настройки игровой активности.'));
+      }
       void refreshDevices(false);
     } else stopTest();
-  }, [open, refreshDevices, stopTest]);
+  }, [applyGameActivitySettings, open, refreshDevices, stopTest]);
+  useEffect(() => {
+    if (open && section === 'application') void refreshRunningApplications();
+  }, [open, refreshRunningApplications, section]);
+  useEffect(() => {
+    const application = runningApplications.find((item) => item.id === selectedApplicationId);
+    setRegisteredGameTitle(application?.name || '');
+  }, [runningApplications, selectedApplicationId]);
   useEffect(() => () => stopTest(), [stopTest]);
   const startTest = async () => {
     if (testing) return stopTest();
@@ -963,10 +1006,39 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       setDeviceError(error instanceof Error ? error.message : 'Не удалось воспроизвести звук');
     }
   };
+  const addRegisteredGame = async () => {
+    const desktopShell = window.movaDesktopShell;
+    if (!desktopShell?.registerGame || !selectedApplicationId) return;
+    setGameRegistryLoading(true);
+    try {
+      setDesktopSettingsError('');
+      applyGameActivitySettings(await desktopShell.registerGame(selectedApplicationId, registeredGameTitle));
+      await refreshRunningApplications();
+    } catch (error) {
+      setDesktopSettingsError(error instanceof Error ? error.message : 'Не удалось добавить игру.');
+    } finally {
+      setGameRegistryLoading(false);
+    }
+  };
+  const removeRegisteredGame = async (gameId: string) => {
+    const desktopShell = window.movaDesktopShell;
+    if (!desktopShell?.unregisterGame) return;
+    setGameRegistryLoading(true);
+    try {
+      setDesktopSettingsError('');
+      applyGameActivitySettings(await desktopShell.unregisterGame(gameId));
+      await refreshRunningApplications();
+    } catch (error) {
+      setDesktopSettingsError(error instanceof Error ? error.message : 'Не удалось удалить игру из списка.');
+    } finally {
+      setGameRegistryLoading(false);
+    }
+  };
   const save = async () => {
     try {
       setDesktopSettingsError('');
       if (window.movaDesktopShell?.setAutoLaunch) await window.movaDesktopShell.setAutoLaunch(autoLaunch);
+      if (window.movaDesktopShell?.setGameActivityEnabled) applyGameActivitySettings(await window.movaDesktopShell.setGameActivityEnabled(gameActivityEnabled));
     } catch {
       setDesktopSettingsError('Не удалось изменить автозапуск Mova.');
       return;
@@ -1052,9 +1124,43 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
                 <h3><Power size={18} /> Запуск системы</h3>
                 <ToggleSetting label="Запускать Mova с системой" description="Mova запустится свёрнутой в область уведомлений. По умолчанию включено." checked={autoLaunch} onChange={setAutoLaunch} />
               </section>
-              <section>
+              <section className="mova-game-registry">
                 <h3><Gamepad2 size={18} /> Игровая активность</h3>
-                <p>Desktop-версия автоматически показывает друзьям, в какую игру вы играете. Веб-версия не получает доступ к запущенным процессам.</p>
+                <ToggleSetting label="Показывать игровую активность" description="Mova определяет игры только на этом устройстве и отправляет друзьям название и иконку текущей игры." checked={gameActivityEnabled} onChange={setGameActivityEnabled} />
+                {user.activity && gameActivityEnabled && (
+                  <div className="mova-game-registry__current">
+                    <GameActivityIcon activity={user.activity} size={34} />
+                    <span><small>Сейчас определяется</small><strong>{user.activity.name}</strong></span>
+                  </div>
+                )}
+                <div className="mova-game-registry__add">
+                  <label>
+                    <span>Добавить запущенное приложение как игру</span>
+                    <select aria-label="Запущенное приложение" value={selectedApplicationId} onChange={(event) => setSelectedApplicationId(event.target.value)} disabled={gameRegistryLoading || !gameActivityEnabled}>
+                      <option value="">{gameRegistryLoading ? 'Обновляем список…' : 'Выберите приложение'}</option>
+                      {runningApplications.filter((item) => !item.registered).map((item) => <option key={item.id} value={item.id}>{item.name} — {item.executableName}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Название в Mova</span>
+                    <input aria-label="Название добавляемой игры" value={registeredGameTitle} maxLength={80} disabled={!selectedApplicationId || gameRegistryLoading || !gameActivityEnabled} onChange={(event) => setRegisteredGameTitle(event.target.value)} />
+                  </label>
+                  <Button type="button" size="sm" leadingIcon={<Plus size={15} />} disabled={!selectedApplicationId || !registeredGameTitle.trim() || gameRegistryLoading || !gameActivityEnabled} onClick={() => void addRegisteredGame()}>Добавить игру</Button>
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={gameRegistryLoading ? <LoaderCircle className="mova-spin" size={15} /> : <RotateCcw size={15} />} disabled={gameRegistryLoading} onClick={() => void refreshRunningApplications()}>Обновить</Button>
+                </div>
+                <small>Steam, Epic Games, GOG и игры из macOS-категории Games распознаются автоматически, включая новые инди-игры. Ручное добавление нужно для самостоятельных игр и нестандартных лаунчеров.</small>
+                {registeredGames.length > 0 && (
+                  <div className="mova-game-registry__list" aria-label="Добавленные вручную игры">
+                    <b>Добавленные игры</b>
+                    {registeredGames.map((game) => (
+                      <div key={game.id}>
+                        <GameActivityIcon activity={{ name: game.title, iconDataUrl: game.iconDataUrl }} size={30} />
+                        <span><strong>{game.title}</strong><small>{game.executableName}</small></span>
+                        <IconButton label={`Удалить ${game.title}`} size="sm" disabled={gameRegistryLoading} onClick={() => void removeRegisteredGame(game.id)}><Trash2 size={15} /></IconButton>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </section>
               {desktopSettingsError && <div className="mova-auth-error">{desktopSettingsError}</div>}
             </div>
@@ -1305,7 +1411,7 @@ function AccountMenu({ user, open, onClose, onEdit, onSettings, onUpdated, onLog
       </div>
       {user.activity && (
         <div className="mova-current-activity">
-          <Gamepad2 size={16} />
+          <GameActivityIcon activity={user.activity} size={28} />
           <span>
             <strong>Играет в {user.activity.name}</strong>
             <small>уже {activityTime(user.activity.startedAt)}</small>
@@ -3888,7 +3994,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 )}
               </section>
               <section className="mova-contact-info__card">
-                {selectedGroupMember.activity && (selectedGroupMember.isOnline ?? selectedGroupMember.presence === 'online') && <div><Gamepad2 size={25} /><span><strong>{selectedGroupMember.activity.name}</strong><small>Играет уже {activityTime(selectedGroupMember.activity.startedAt)}</small></span></div>}
+                {selectedGroupMember.activity && (selectedGroupMember.isOnline ?? selectedGroupMember.presence === 'online') && <div><GameActivityIcon activity={selectedGroupMember.activity} size={34} /><span><strong>{selectedGroupMember.activity.name}</strong><small>Играет уже {activityTime(selectedGroupMember.activity.startedAt)}</small></span></div>}
                 <div><AtSign size={25} /><span><strong>{selectedGroupMember.handle?.replace(/^@/, '') || 'не указан'}</strong><small>Имя пользователя</small></span></div>
                 <div><Info size={25} /><span><strong>{selectedGroupMember.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div>
               </section>
@@ -3912,7 +4018,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 )}
               </section>
               <section className="mova-contact-info__card">
-                {conversation.kind === 'direct' && other?.activity && (other.isOnline ?? other.presence === 'online') && <div><Gamepad2 size={25} /><span><strong>{other.activity.name}</strong><small>Играет уже {activityTime(other.activity.startedAt)}</small></span></div>}
+                {conversation.kind === 'direct' && other?.activity && (other.isOnline ?? other.presence === 'online') && <div><GameActivityIcon activity={other.activity} size={34} /><span><strong>{other.activity.name}</strong><small>Играет уже {activityTime(other.activity.startedAt)}</small></span></div>}
                 {conversation.kind === 'direct' && <div className="mova-message-body"><AtSign size={25} /><span><strong>{other?.handle?.replace(/^@/, '') || 'не указан'}</strong><small>Имя пользователя</small></span></div>}
                 {conversation.kind === 'direct' ? <div><Info size={25} /><span><strong>{other?.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div> : <div><Users size={25} /><span><strong>{conversation.members.length} {russianCount(conversation.members.length, 'участник', 'участника', 'участников')}</strong><small>Участники</small></span></div>}
                 <label><Bell size={25} /><span><strong>Уведомления</strong><small>{muted ? 'Выключены' : 'Включены'}</small></span><input type="checkbox" checked={!muted} onChange={toggleMuted} aria-label="Уведомления" /><i /></label>
@@ -5602,17 +5708,9 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     const desktopShell = window.movaDesktopShell;
     if (!desktopShell?.getGameActivity || !desktopShell.onGameActivityChange) return;
     let active = true;
-    let requestedName: string | null | undefined;
-    const synchronizeGame = (activity: { name: string; startedAt: string } | null) => {
+    const synchronizeGame = (activity: DesktopGameActivity | null) => {
       const name = activity?.name?.trim() || null;
-      realtime.send({ type: 'activity:update', name });
-      if (requestedName === name) return;
-      requestedName = name;
-      void api.updateActivity(name).then((result) => {
-        if (active) onUserUpdate(result.user);
-      }).catch(() => {
-        if (active) requestedName = undefined;
-      });
+      realtime.send({ type: 'activity:update', name, iconDataUrl: activity?.iconDataUrl || '' });
     };
     const dispose = desktopShell.onGameActivityChange(synchronizeGame);
     const disposeRealtime = realtime.subscribe((event) => {

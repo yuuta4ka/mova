@@ -16,6 +16,11 @@ export type DesktopShellApi = {
   setAutoLaunch?: (enabled: boolean) => Promise<boolean>;
   getSystemIdleTime?: () => Promise<number>;
   getGameActivity?: () => Promise<DesktopGameActivity | null>;
+  getGameActivitySettings?: () => Promise<DesktopGameActivitySettings>;
+  setGameActivityEnabled?: (enabled: boolean) => Promise<DesktopGameActivitySettings>;
+  listRunningApplications?: () => Promise<DesktopRunningApplication[]>;
+  registerGame?: (applicationId: string, title?: string) => Promise<DesktopGameActivitySettings>;
+  unregisterGame?: (gameId: string) => Promise<DesktopGameActivitySettings>;
   onGameActivityChange?: (callback: (activity: DesktopGameActivity | null) => void) => () => void;
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
@@ -24,6 +29,28 @@ export type DesktopShellApi = {
 export type DesktopGameActivity = {
   name: string;
   startedAt: string;
+  iconDataUrl?: string;
+  source?: 'manual' | 'steam' | 'epic' | 'gog' | 'macos' | 'known';
+};
+
+export type DesktopRegisteredGame = {
+  id: string;
+  title: string;
+  executableName: string;
+  iconDataUrl?: string;
+};
+
+export type DesktopRunningApplication = {
+  id: string;
+  name: string;
+  executableName: string;
+  iconDataUrl?: string;
+  registered: boolean;
+};
+
+export type DesktopGameActivitySettings = {
+  enabled: boolean;
+  registeredGames: DesktopRegisteredGame[];
 };
 
 export type DesktopShareSourceKind = 'window' | 'screen' | 'device';

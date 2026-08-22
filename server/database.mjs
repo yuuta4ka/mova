@@ -650,6 +650,10 @@ export class MovaDatabase {
       .run(user.name, user.email, user.handle, user.color, user.presence, user.dndUntil || null, user.bio || '', user.avatarDataUrl || '', user.bannerDataUrl || '', user.activity ? JSON.stringify(user.activity) : null, user.lastActiveAt || null, user.passwordHash, user.emailVerifiedAt || null, Number(user.sessionVersion || 1), user.id);
   }
 
+  clearGameActivities() {
+    return this.sqlite.prepare('UPDATE users SET activity_json=NULL WHERE activity_json IS NOT NULL').run().changes;
+  }
+
   createEmailChallenge(challenge) {
     this.transaction(() => {
       this.sqlite.prepare(`DELETE FROM email_challenges WHERE purpose=? AND consumed_at IS NULL AND (email=? OR (? IS NOT NULL AND user_id=?))`).run(challenge.purpose, challenge.email, challenge.userId || null, challenge.userId || null);

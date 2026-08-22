@@ -30,6 +30,7 @@ const voiceReconnectTimers = new Map();
 const activeCalls = new Map();
 const callCleanupTimers = new Map();
 const voiceReconnectGraceMs = Math.max(1_000, Number(process.env.MOVA_VOICE_RECONNECT_GRACE_MS || 12_000));
+const gameActivityTtlMs = 60_000;
 const hashAsync = promisify(scrypt);
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 eventLoopDelay.enable();
@@ -158,6 +159,18 @@ const secureEqual = (left, right) => {
   const rightBuffer = Buffer.from(String(right || ''));
   return leftBuffer.length === rightBuffer.length && leftBuffer.length > 0 && timingSafeEqual(leftBuffer, rightBuffer);
 };
+const normalizeActivityIconDataUrl = (value) => {
+  const iconDataUrl = String(value || '').trim();
+  if (!iconDataUrl || iconDataUrl.length > 120_000) return '';
+  return /^data:image\/png;base64,[a-z0-9+/=]+$/iu.test(iconDataUrl) ? iconDataUrl : '';
+};
+const normalizedGameActivity = (value) => {
+  const name = String(value?.name || '').trim().slice(0, 80);
+  if (!name) return null;
+  const iconDataUrl = normalizeActivityIconDataUrl(value?.iconDataUrl);
+  return { name, ...(iconDataUrl ? { iconDataUrl } : {}) };
+};
+const sameGameActivity = (left, right) => (left?.name || '') === (right?.name || '') && (left?.iconDataUrl || '') === (right?.iconDataUrl || '');
 const publicUser = (storedUser) => {
   if (!storedUser) return null;
   const { passwordHash, sessionVersion, ...user } = storedUser;
@@ -520,13 +533,14 @@ function safeSocketSend(socket, payload) {
 }
 function synchronizeSocketGameActivity(userId) {
   const activeSocket = [...(clients.get(userId) || [])]
-    .filter((socket) => socket.gameActivityName)
+    .filter((socket) => socket.gameActivity?.name)
     .sort((left, right) => (right.gameActivityChangedAt || 0) - (left.gameActivityChangedAt || 0))[0];
   const currentUser = database.getUserById(userId);
   if (!currentUser) return;
-  const nextName = activeSocket?.gameActivityName || '';
-  if ((currentUser.activity?.name || '') === nextName) return;
-  currentUser.activity = nextName ? { type: 'game', name: nextName, startedAt: new Date().toISOString() } : null;
+  const nextActivity = activeSocket?.gameActivity || null;
+  if (sameGameActivity(currentUser.activity, nextActivity)) return;
+  const startedAt = currentUser.activity?.name === nextActivity?.name ? currentUser.activity.startedAt : new Date().toISOString();
+  currentUser.activity = nextActivity ? { type: 'game', ...nextActivity, startedAt } : null;
   database.updateUser(currentUser);
   broadcastAll({ type: 'profile:update', user: publicUser(currentUser) });
 }
@@ -939,9 +953,10 @@ async function handleApi(request, response) {
     if (request.method === 'POST' && url.pathname === '/api/activity') {
       if (!allowRequest(`activity:${user.id}`, 30, 60_000)) throw Object.assign(new Error('Слишком много обновлений активности'), { statusCode: 429 });
       const data = await body(request);
-      const name = String(data.name || '').trim().slice(0, 80);
-      if ((user.activity?.name || '') === name) return json(response, 200, { user: publicUser(user) });
-      user.activity = name ? { type: 'game', name, startedAt: new Date().toISOString() } : null;
+      const activity = normalizedGameActivity(data);
+      if (sameGameActivity(user.activity, activity)) return json(response, 200, { user: publicUser(user) });
+      const startedAt = user.activity?.name === activity?.name ? user.activity.startedAt : new Date().toISOString();
+      user.activity = activity ? { type: 'game', ...activity, startedAt } : null;
       database.updateUser(user);
       const dto = publicUser(user);
       broadcastAll({ type: 'profile:update', user: dto }, user.id);
@@ -1556,9 +1571,10 @@ function handleSocket(socket, request) {
           }),
         );
       if (event.type === 'activity:update') {
-        const name = String(event.name || '').trim().slice(0, 80);
-        if (socket.gameActivityName !== name) socket.gameActivityChangedAt = Date.now();
-        socket.gameActivityName = name;
+        const activity = normalizedGameActivity(event);
+        if (!sameGameActivity(socket.gameActivity, activity)) socket.gameActivityChangedAt = Date.now();
+        socket.gameActivity = activity;
+        socket.gameActivityObservedAt = Date.now();
         socket.gameActivityDeclared = true;
         return synchronizeSocketGameActivity(user.id);
       }
@@ -1730,6 +1746,7 @@ function handleSocket(socket, request) {
 }
 
 database = await openDatabase(dataPaths);
+database.clearGameActivities();
 configureWebPush();
 await database.cleanupOrphanUploads();
 database.cleanupEmailChallenges();
@@ -1762,8 +1779,14 @@ const sockets = new WebSocketServer({ noServer: true, maxPayload: 256_000, perMe
 sockets.on('connection', handleSocket);
 const socketHeartbeat = setInterval(() => {
   const now = Date.now();
+  const staleActivityUsers = new Set();
   for (const [key, item] of rateLimits) if (item.resetAt <= now) rateLimits.delete(key);
   for (const socket of sockets.clients) {
+    if (socket.gameActivity?.name && now - Number(socket.gameActivityObservedAt || 0) > gameActivityTtlMs) {
+      socket.gameActivity = null;
+      socket.gameActivityChangedAt = now;
+      staleActivityUsers.add(socket.userId);
+    }
     if (socket.isAlive === false) {
       socket.terminate();
       continue;
@@ -1771,6 +1794,7 @@ const socketHeartbeat = setInterval(() => {
     socket.isAlive = false;
     socket.ping();
   }
+  for (const userId of staleActivityUsers) synchronizeSocketGameActivity(userId);
 }, 30_000);
 sockets.on('close', () => clearInterval(socketHeartbeat));
 server.on('upgrade', (request, socket, head) => {

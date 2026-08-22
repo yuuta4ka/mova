@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, Notification, Tray, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
 import updater from 'electron-updater';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +8,7 @@ import { availableSharePickerTabs, buildSharePickerSources } from './share-picke
 import { desktopCallStatusLabel, resolveDesktopCallStatus, shouldKeepDesktopWindowOpen } from './tray-status.mjs';
 import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, updateStartupDelayMs } from './update-state.mjs';
 import { desktopWindowFrameOptions } from './window-shell.mjs';
-import { detectRunningGame, gameActivityPollIntervalMs } from './game-activity.mjs';
+import { gameActivityPollIntervalMs, installedGameRegistryRefreshMs, listDesktopProcesses, loadInstalledGameRegistry, loadRunningMacGameBundles, resolveGameFromProcesses, runningApplicationsFromProcesses } from './game-activity.mjs';
 import { desktopAppPageUrl, desktopAppUrlCandidates, isTrustedDesktopOrigin } from './app-server.mjs';
 import { desktopApplicationEditMenu, desktopEditContextMenuTemplate } from './edit-context-menu.mjs';
 
@@ -29,6 +30,11 @@ let updateIntervalTimer = null;
 let gameActivityTimer = null;
 let gameActivityScanInFlight = false;
 let desktopGameActivity = null;
+let desktopGameActivityKey = '';
+let gameActivityMissingScans = 0;
+let installedGameRegistry = [];
+let installedGameRegistryLoadedAt = 0;
+const gameIconCache = new Map();
 let launchHidden = process.argv.includes('--hidden');
 const desktopUpdateState = {
   configured: false,
@@ -52,6 +58,78 @@ async function updateDesktopSettings(values) {
   const settings = { ...(await readDesktopSettings()), ...values };
   await writeFile(settingsPath(), JSON.stringify(settings, null, 2));
   return settings;
+}
+
+function normalizedRegisteredGames(settings) {
+  if (!Array.isArray(settings?.registeredGames)) return [];
+  return settings.registeredGames
+    .map((game) => ({
+      id: String(game?.id || ''),
+      title: String(game?.title || '').trim().slice(0, 80),
+      identity: String(game?.identity || '').trim(),
+      executableName: String(game?.executableName || '').trim().slice(0, 160),
+      createdAt: String(game?.createdAt || ''),
+    }))
+    .filter((game) => game.id && game.title && game.identity);
+}
+
+async function gameActivitySettings() {
+  const settings = await readDesktopSettings();
+  return {
+    enabled: typeof settings.gameActivityEnabled === 'boolean' ? settings.gameActivityEnabled : true,
+    registeredGames: normalizedRegisteredGames(settings),
+  };
+}
+
+async function gameIconDataUrl(path) {
+  const key = String(path || '');
+  if (!key) return '';
+  if (!gameIconCache.has(key)) {
+    gameIconCache.set(key, app.getFileIcon(key, { size: 'normal' })
+      .then((image) => {
+        if (!image || image.isEmpty()) return '';
+        const size = image.getSize();
+        const resized = size.width > 64 || size.height > 64 ? image.resize({ width: 64, height: 64, quality: 'best' }) : image;
+        const dataUrl = resized.toDataURL();
+        return dataUrl.length <= 120_000 ? dataUrl : '';
+      })
+      .catch(() => ''));
+  }
+  return gameIconCache.get(key);
+}
+
+async function refreshInstalledGameRegistry(force = false) {
+  if (!force && Date.now() - installedGameRegistryLoadedAt < installedGameRegistryRefreshMs) return installedGameRegistry;
+  installedGameRegistry = await loadInstalledGameRegistry(process.platform).catch(() => installedGameRegistry);
+  installedGameRegistryLoadedAt = Date.now();
+  return installedGameRegistry;
+}
+
+async function runningApplications() {
+  const settings = await gameActivitySettings();
+  const applications = runningApplicationsFromProcesses(await listDesktopProcesses(process.platform), process.platform);
+  const registeredIdentities = new Set(settings.registeredGames.map((game) => game.identity));
+  return Promise.all(applications.map(async (item) => ({
+    id: item.id,
+    name: item.name,
+    executableName: item.executableName,
+    iconDataUrl: await gameIconDataUrl(item.iconPath),
+    registered: registeredIdentities.has(item.identity),
+  })));
+}
+
+async function registeredGameDtos(games) {
+  return Promise.all(games.map(async (game) => ({
+    id: game.id,
+    title: game.title,
+    executableName: game.executableName,
+    iconDataUrl: await gameIconDataUrl(game.identity),
+  })));
+}
+
+async function gameActivitySettingsDto() {
+  const settings = await gameActivitySettings();
+  return { enabled: settings.enabled, registeredGames: await registeredGameDtos(settings.registeredGames) };
 }
 
 function supportsAutoLaunch() {
@@ -175,13 +253,48 @@ function sendGameActivity() {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop-activity:game-change', desktopGameActivity);
 }
 
-async function refreshGameActivity() {
+async function refreshGameActivity({ clearImmediately = false } = {}) {
   if (gameActivityScanInFlight) return;
   gameActivityScanInFlight = true;
   try {
-    const name = await detectRunningGame();
-    if (name === desktopGameActivity?.name || (!name && !desktopGameActivity)) return;
-    desktopGameActivity = name ? { name, startedAt: new Date().toISOString() } : null;
+    const settings = await gameActivitySettings();
+    if (!settings.enabled) {
+      desktopGameActivity = null;
+      desktopGameActivityKey = '';
+      gameActivityMissingScans = 0;
+      sendGameActivity();
+      return;
+    }
+    const [processes, registryGames] = await Promise.all([listDesktopProcesses(process.platform), refreshInstalledGameRegistry()]);
+    const systemGames = process.platform === 'darwin' ? await loadRunningMacGameBundles(processes) : [];
+    const detected = resolveGameFromProcesses(processes, {
+      platform: process.platform,
+      installedGames: [...registryGames, ...systemGames],
+      registeredGames: settings.registeredGames,
+    });
+    if (!detected) {
+      gameActivityMissingScans += 1;
+      if (desktopGameActivity && !clearImmediately && gameActivityMissingScans < 2) {
+        sendGameActivity();
+        return;
+      }
+      desktopGameActivity = null;
+      desktopGameActivityKey = '';
+      sendGameActivity();
+      return;
+    }
+    gameActivityMissingScans = 0;
+    if (detected.key === desktopGameActivityKey && desktopGameActivity) {
+      sendGameActivity();
+      return;
+    }
+    desktopGameActivityKey = detected.key;
+    desktopGameActivity = {
+      name: detected.name,
+      startedAt: new Date().toISOString(),
+      iconDataUrl: await gameIconDataUrl(detected.iconPath),
+      source: detected.source,
+    };
     sendGameActivity();
   } finally {
     gameActivityScanInFlight = false;
@@ -583,6 +696,49 @@ ipcMain.handle('desktop-activity:get-system-idle-time', (event) => {
   return Math.max(0, Math.round(powerMonitor.getSystemIdleTime()));
 });
 ipcMain.handle('desktop-activity:get-game', (event) => (controlledMainWindow(event) ? desktopGameActivity : null));
+ipcMain.handle('desktop-activity:get-settings', async (event) => {
+  if (!controlledMainWindow(event)) return { enabled: false, registeredGames: [] };
+  return gameActivitySettingsDto();
+});
+ipcMain.handle('desktop-activity:set-enabled', async (event, enabled) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  await updateDesktopSettings({ gameActivityEnabled: enabled === true });
+  await refreshGameActivity({ clearImmediately: true });
+  return gameActivitySettingsDto();
+});
+ipcMain.handle('desktop-activity:list-applications', async (event) => {
+  if (!controlledMainWindow(event)) return [];
+  return runningApplications();
+});
+ipcMain.handle('desktop-activity:register-game', async (event, applicationId, requestedTitle) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  const applications = runningApplicationsFromProcesses(await listDesktopProcesses(process.platform), process.platform);
+  const application = applications.find((item) => item.id === String(applicationId || ''));
+  if (!application) throw new Error('Приложение больше не запущено. Обновите список.');
+  const settings = await gameActivitySettings();
+  const title = String(requestedTitle || application.name).trim().replace(/\s+/gu, ' ').slice(0, 80);
+  if (!title) throw new Error('Укажите название игры.');
+  const existing = settings.registeredGames.find((game) => game.identity === application.identity);
+  const game = {
+    id: existing?.id || randomUUID(),
+    title,
+    identity: application.identity,
+    executableName: application.executableName,
+    createdAt: existing?.createdAt || new Date().toISOString(),
+  };
+  const registeredGames = [...settings.registeredGames.filter((item) => item.identity !== application.identity), game];
+  await updateDesktopSettings({ registeredGames });
+  await refreshGameActivity({ clearImmediately: true });
+  return gameActivitySettingsDto();
+});
+ipcMain.handle('desktop-activity:unregister-game', async (event, gameId) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  const settings = await gameActivitySettings();
+  const registeredGames = settings.registeredGames.filter((game) => game.id !== String(gameId || ''));
+  await updateDesktopSettings({ registeredGames });
+  await refreshGameActivity({ clearImmediately: true });
+  return gameActivitySettingsDto();
+});
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {

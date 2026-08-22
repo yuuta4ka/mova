@@ -24,6 +24,11 @@ contextBridge.exposeInMainWorld('movaDesktopShell', {
   setAutoLaunch: (enabled) => ipcRenderer.invoke('desktop-settings:set-auto-launch', enabled),
   getSystemIdleTime: () => ipcRenderer.invoke('desktop-activity:get-system-idle-time'),
   getGameActivity: () => ipcRenderer.invoke('desktop-activity:get-game'),
+  getGameActivitySettings: () => ipcRenderer.invoke('desktop-activity:get-settings'),
+  setGameActivityEnabled: (enabled) => ipcRenderer.invoke('desktop-activity:set-enabled', enabled),
+  listRunningApplications: () => ipcRenderer.invoke('desktop-activity:list-applications'),
+  registerGame: (applicationId, title) => ipcRenderer.invoke('desktop-activity:register-game', applicationId, title),
+  unregisterGame: (gameId) => ipcRenderer.invoke('desktop-activity:unregister-game', gameId),
   onGameActivityChange(callback) {
     const listener = (_event, activity) => callback(activity);
     ipcRenderer.on('desktop-activity:game-change', listener);
