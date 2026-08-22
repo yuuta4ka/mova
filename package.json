@@ -27,8 +27,9 @@
     "desktop:dev": "concurrently -k -n mova,electron -c cyan,magenta \"pnpm dev\" \"wait-on http-get://127.0.0.1:5173/api/health && electron .\"",
     "desktop:pack": "electron-builder --dir",
     "desktop:build": "electron-builder",
-    "desktop:build:mac": "electron-builder --mac dmg zip",
-    "desktop:build:win": "electron-builder --win nsis --x64",
+    "desktop:prune": "node scripts/desktop-release.mjs prune",
+    "desktop:build:mac": "electron-builder --mac dmg zip && pnpm desktop:prune",
+    "desktop:build:win": "electron-builder --win nsis --x64 && node scripts/desktop-release.mjs alias-windows && pnpm desktop:prune",
     "desktop:build:linux": "electron-builder --linux AppImage deb"
   },
   "dependencies": {
@@ -100,7 +101,7 @@
     },
     "win": {
       "icon": "desktop/assets/icon.png",
-      "artifactName": "Mova Setup ${version}.${ext}",
+      "artifactName": "Mova.Setup.${version}.${ext}",
       "target": "nsis"
     },
     "nsis": {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, Tray, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
 import updater from 'electron-updater';
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -9,6 +9,7 @@ import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, up
 import { desktopWindowFrameOptions } from './window-shell.mjs';
 import { detectRunningGame, gameActivityPollIntervalMs } from './game-activity.mjs';
 import { desktopAppPageUrl, desktopAppUrlCandidates, isTrustedDesktopOrigin } from './app-server.mjs';
+import { desktopApplicationEditMenu, desktopEditContextMenuTemplate } from './edit-context-menu.mjs';
 
 const { autoUpdater } = updater;
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
@@ -274,6 +275,10 @@ function createMenu() {
         { role: 'quit' },
       ],
     },
+    {
+      label: 'Правка',
+      submenu: desktopApplicationEditMenu(),
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -325,6 +330,11 @@ function configureWindowShell(window) {
   window.webContents.once('did-finish-load', () => applyDesktopCallStatus(desktopCallStatus));
   window.webContents.once('did-finish-load', sendGameActivity);
   window.webContents.once('did-finish-load', setUpdateProgressBar);
+  window.webContents.on('context-menu', (_event, params) => {
+    const template = desktopEditContextMenuTemplate(params);
+    if (!template.length || window.isDestroyed()) return;
+    Menu.buildFromTemplate(template).popup({ window });
+  });
 }
 
 function lockWindowTitle(window) {
@@ -554,6 +564,12 @@ ipcMain.on('desktop-share-picker:cancel', (event, requestId) => {
   request.finish();
 });
 ipcMain.handle('desktop-window:is-maximized', (event) => controlledMainWindow(event)?.isMaximized() ?? false);
+ipcMain.handle('desktop-clipboard:write-text', (event, value) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  if (typeof value !== 'string') throw new TypeError('Текст для копирования должен быть строкой.');
+  clipboard.writeText(value);
+  return true;
+});
 ipcMain.handle('desktop-settings:get-auto-launch', async (event) => {
   if (!controlledMainWindow(event)) return false;
   return configuredAutoLaunch();

@@ -2291,6 +2291,28 @@ describe('RealMessages context actions and selection', () => {
     expect(screen.getByText('1 сообщение')).toBeVisible();
   });
 
+  it('copies messages through the native desktop clipboard bridge', async () => {
+    const user = userEvent.setup();
+    const writeClipboardText = vi.fn().mockResolvedValue(true);
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      writeClipboardText,
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const browserWriteText = vi.spyOn(navigator.clipboard, 'writeText');
+    const { container } = renderChat([incoming]);
+
+    fireEvent.contextMenu(container.querySelector('.mova-real-message')!);
+    await user.click(screen.getByRole('menuitem', { name: 'Копировать' }));
+
+    expect(writeClipboardText).toHaveBeenCalledWith(incoming.content);
+    expect(browserWriteText).not.toHaveBeenCalled();
+  });
+
   it('shows bottom bulk actions, deletes own selections for everyone and exits with Escape', async () => {
     const user = userEvent.setup();
     const onDeleteMessage = vi.fn().mockResolvedValue(undefined);

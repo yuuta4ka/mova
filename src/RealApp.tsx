@@ -3221,7 +3221,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setMessageMenu(null);
     const text = message.content || attachmentLabel(message.attachment) || 'Вложение';
     try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      if (window.movaDesktopShell?.writeClipboardText) await window.movaDesktopShell.writeClipboardText(text);
+      else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
       else {
         const copyBuffer = document.createElement('textarea');
         copyBuffer.value = text;

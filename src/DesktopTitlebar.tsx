@@ -5,6 +5,7 @@ export type DesktopShellApi = {
   minimize: () => void;
   toggleMaximize: () => void;
   close: () => void;
+  writeClipboardText?: (text: string) => Promise<boolean>;
   setCallStatus?: (status: { active: boolean; speaking: boolean; muted: boolean; deafened: boolean }) => void;
   showNotification?: (notification: { kind: 'message' | 'call'; title: string; body: string; conversationId: string }) => void;
   onNotificationClick?: (callback: (notification: { kind: 'message' | 'call'; conversationId: string }) => void) => () => void;
