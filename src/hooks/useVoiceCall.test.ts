@@ -11,6 +11,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete window.movaDesktopShell;
   sessionStorage.clear();
   localStorage.clear();
   vi.unstubAllGlobals();
@@ -145,6 +146,60 @@ describe('voice call state model', () => {
     await waitFor(() => expect(nextTrack.applyConstraints).toHaveBeenCalledWith(expect.objectContaining({ noiseSuppression: true })));
     expect(getUserMedia).toHaveBeenCalledTimes(2);
     expect(nextTrack.enabled).toBe(false);
+  });
+
+  it('applies desktop hotkey actions to the active call while Mova is in the background', async () => {
+    let emit: (event: RealtimeEvent) => void = () => undefined;
+    let emitHotkey: (action: 'toggle-microphone' | 'toggle-headphones') => void = () => undefined;
+    vi.spyOn(realtime, 'subscribe').mockImplementation((listener) => {
+      emit = listener;
+      return () => undefined;
+    });
+    const send = vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    const microphoneTrack = { enabled: true, stop: vi.fn() } as unknown as MediaStreamTrack;
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          id: 'microphone-stream',
+          getTracks: () => [microphoneTrack],
+          getAudioTracks: () => [microphoneTrack],
+        }),
+      },
+    });
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      onHotkeyAction: vi.fn((callback) => {
+        emitHotkey = callback;
+        return () => undefined;
+      }),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const { result } = renderHook(() => useVoiceCall('chat', 'me'));
+
+    act(() => result.current.call());
+    await act(async () => emit({
+      type: 'call:accept',
+      conversationId: 'chat',
+      fromUserId: 'friend',
+      startedAt: '2026-08-26T15:00:00.000Z',
+    }));
+    act(() => emitHotkey('toggle-microphone'));
+    expect(result.current.muted).toBe(true);
+    expect(microphoneTrack.enabled).toBe(false);
+
+    act(() => emitHotkey('toggle-headphones'));
+    expect(result.current.deafened).toBe(true);
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'voice:state',
+      muted: true,
+      deafened: true,
+    }));
   });
 
   it('restores a server-confirmed room membership as available without creating a duplicate join', async () => {

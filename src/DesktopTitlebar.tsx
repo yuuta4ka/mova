@@ -14,6 +14,14 @@ export type DesktopShellApi = {
   cancelSharePicker?: (requestId: string) => void;
   getAutoLaunch?: () => Promise<boolean>;
   setAutoLaunch?: (enabled: boolean) => Promise<boolean>;
+  getHotkeys?: () => Promise<DesktopHotkeySettings>;
+  setHotkeys?: (settings: DesktopHotkeySettings) => Promise<DesktopHotkeySettings>;
+  setHotkeyCaptureActive?: (active: boolean) => void;
+  onHotkeyAction?: (callback: (action: DesktopHotkeyAction) => void) => () => void;
+  getUpdateState?: () => Promise<DesktopUpdateState>;
+  checkForUpdates?: () => Promise<DesktopUpdateState>;
+  installUpdate?: () => Promise<DesktopUpdateState>;
+  onUpdateStateChange?: (callback: (state: DesktopUpdateState) => void) => () => void;
   getSystemIdleTime?: () => Promise<number>;
   getGameActivity?: () => Promise<DesktopGameActivity | null>;
   getGameActivitySettings?: () => Promise<DesktopGameActivitySettings>;
@@ -26,11 +34,27 @@ export type DesktopShellApi = {
   onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
 };
 
+export type DesktopHotkeyAction = 'toggle-microphone' | 'toggle-headphones';
+
+export type DesktopHotkeySettings = {
+  toggleMicrophone: string;
+  toggleHeadphones: string;
+};
+
 export type DesktopGameActivity = {
   name: string;
   startedAt: string;
   iconDataUrl?: string;
   source?: 'manual' | 'steam' | 'epic' | 'gog' | 'macos' | 'known';
+};
+
+export type DesktopUpdateState = {
+  currentVersion: string;
+  availableVersion: string;
+  phase: 'idle' | 'checking' | 'downloading' | 'downloaded';
+  progress: number;
+  lastResult: 'idle' | 'up-to-date' | 'available' | 'error';
+  supported: boolean;
 };
 
 export type DesktopRegisteredGame = {

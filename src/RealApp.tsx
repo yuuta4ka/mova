@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Bookmark, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Bookmark, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Keyboard, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type ForwardedMessageSource, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
@@ -8,7 +8,7 @@ import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurfac
 import { formatVoiceDuration, isVoiceAttachment, useVoiceMessagePlayer, VoiceMessage, VoiceMessagePlayerBar, VoicePlaybackAudio } from './components/VoiceMessage';
 import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
 import { EmojiPicker } from './components/EmojiPicker';
-import { buildMediaGallery, MediaViewer } from './components/MediaViewer';
+import { buildMediaGallery, MediaViewer, type MediaViewerItem } from './components/MediaViewer';
 import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, withNoiseSuppressionMode, type AudioSettings, type NoiseSuppressionMode } from './lib/audioSettings';
 import { createMicrophonePipeline, type MicrophonePipeline } from './lib/microphoneProcessing';
 import { defaultScreenShareSettings, loadScreenShareSettings, saveScreenShareSettings, type ScreenShareSettings } from './lib/screenShareSettings';
@@ -21,11 +21,19 @@ import { clearPersistentUserData, deletePersistentConversation, loadPersistentCl
 import { buildCallDiagnosticReport, copyDiagnosticReport } from './lib/callDiagnostics';
 import { startUnreadTitleBlink } from './lib/documentTitle';
 import { attachmentDownloadSource, formatFileSize } from './lib/fileAttachments';
-import type { DesktopGameActivity, DesktopGameActivitySettings, DesktopRegisteredGame, DesktopRunningApplication } from './DesktopTitlebar';
+import { audioDeviceLabel } from './lib/audioDevices';
+import { DesktopHotkeySettingsPanel } from './components/DesktopHotkeySettings';
+import { defaultDesktopHotkeySettings } from './lib/desktopHotkeys';
+import type { DesktopGameActivity, DesktopGameActivitySettings, DesktopHotkeySettings, DesktopRegisteredGame, DesktopRunningApplication, DesktopUpdateState } from './DesktopTitlebar';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
 const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
-const attachmentLabel = (attachment?: MessageAttachment | null) => isVoiceAttachment(attachment) ? 'Голосовое сообщение' : attachment?.name || '';
+const attachmentLabel = (attachment?: MessageAttachment | null) => {
+  if (isVoiceAttachment(attachment)) return 'Голосовое сообщение';
+  if (attachment?.type.startsWith('image/')) return 'Фотография';
+  if (attachment?.type.startsWith('video/')) return 'Видео';
+  return attachment?.name || '';
+};
 const activityTime = (startedAt?: string) => {
   if (!startedAt) return '';
   const minutes = Math.max(1, Math.floor((Date.now() - new Date(startedAt).getTime()) / 60000));
@@ -816,7 +824,7 @@ function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpd
         <div className="mova-account-email-current">
           <span>Текущий адрес</span>
           <strong>{user.email}</strong>
-          <em className={user.emailVerifiedAt ? 'is-verified' : 'is-unverified'}>{user.emailVerifiedAt ? 'Подтверждена' : 'Требуется подтверждение'}</em>
+          {!user.emailVerifiedAt && user.email && <em className="is-unverified">Требуется подтверждение</em>}
         </div>
         {step === 'request' ? <form onSubmit={requestChange}>
           <label>
@@ -849,7 +857,7 @@ function AccountEmailSettings({ user, onUserUpdate }: { user: AppUser; onUserUpd
 }
 
 export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate = () => undefined }: { user: AppUser; open: boolean; onClose: () => void; onEditProfile: () => void; onUserUpdate?: (user: AppUser) => void }) {
-  const [section, setSection] = useState<'profile' | 'account' | 'appearance' | 'audio' | 'screen' | 'application'>('audio');
+  const [section, setSection] = useState<'profile' | 'account' | 'appearance' | 'audio' | 'screen' | 'application' | 'hotkeys'>('audio');
   const [settings, setSettings] = useState<AudioSettings>(defaultAudioSettings);
   const [screenSettings, setScreenSettings] = useState<ScreenShareSettings>(defaultScreenShareSettings);
   const [backgroundColor, setBackgroundColor] = useState(defaultBackgroundColor);
@@ -861,7 +869,10 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
   const [level, setLevel] = useState(0);
   const [testProcessingStatus, setTestProcessingStatus] = useState('');
   const [autoLaunch, setAutoLaunch] = useState(true);
+  const [desktopHotkeys, setDesktopHotkeys] = useState<DesktopHotkeySettings>(defaultDesktopHotkeySettings);
   const [desktopSettingsError, setDesktopSettingsError] = useState('');
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
+  const [desktopUpdateActionPending, setDesktopUpdateActionPending] = useState(false);
   const [gameActivityEnabled, setGameActivityEnabled] = useState(true);
   const [registeredGames, setRegisteredGames] = useState<DesktopRegisteredGame[]>([]);
   const [runningApplications, setRunningApplications] = useState<DesktopRunningApplication[]>([]);
@@ -934,12 +945,28 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       if (window.movaDesktopShell?.getAutoLaunch) {
         void window.movaDesktopShell.getAutoLaunch().then(setAutoLaunch).catch(() => setDesktopSettingsError('Не удалось прочитать настройку автозапуска.'));
       }
+      if (window.movaDesktopShell?.getHotkeys) {
+        void window.movaDesktopShell.getHotkeys().then(setDesktopHotkeys).catch(() => setDesktopSettingsError('Не удалось прочитать горячие клавиши.'));
+      }
       if (window.movaDesktopShell?.getGameActivitySettings) {
         void window.movaDesktopShell.getGameActivitySettings().then(applyGameActivitySettings).catch(() => setDesktopSettingsError('Не удалось прочитать настройки игровой активности.'));
+      }
+      if (window.movaDesktopShell?.getUpdateState) {
+        void window.movaDesktopShell.getUpdateState().then(setDesktopUpdate).catch(() => setDesktopSettingsError('Не удалось получить сведения о версии Mova.'));
       }
       void refreshDevices(false);
     } else stopTest();
   }, [applyGameActivitySettings, open, refreshDevices, stopTest]);
+  useEffect(() => {
+    if (!open) return;
+    return window.movaDesktopShell?.onUpdateStateChange?.(setDesktopUpdate);
+  }, [open]);
+  useEffect(() => {
+    const desktopShell = window.movaDesktopShell;
+    if (!desktopShell?.setHotkeyCaptureActive || !open || section !== 'hotkeys') return;
+    desktopShell.setHotkeyCaptureActive(true);
+    return () => desktopShell.setHotkeyCaptureActive?.(false);
+  }, [open, section]);
   useEffect(() => {
     if (open && section === 'application') void refreshRunningApplications();
   }, [open, refreshRunningApplications, section]);
@@ -1034,13 +1061,36 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       setGameRegistryLoading(false);
     }
   };
+  const handleDesktopUpdate = async () => {
+    const desktopShell = window.movaDesktopShell;
+    if (!desktopShell) return;
+    setDesktopUpdateActionPending(true);
+    setDesktopSettingsError('');
+    try {
+      const next = desktopUpdate?.phase === 'downloaded'
+        ? await desktopShell.installUpdate?.()
+        : await desktopShell.checkForUpdates?.();
+      if (next) setDesktopUpdate(next);
+    } catch {
+      setDesktopSettingsError('Не удалось проверить обновления Mova.');
+    } finally {
+      setDesktopUpdateActionPending(false);
+    }
+  };
   const save = async () => {
     try {
       setDesktopSettingsError('');
-      if (window.movaDesktopShell?.setAutoLaunch) await window.movaDesktopShell.setAutoLaunch(autoLaunch);
+      if (window.movaDesktopShell?.setAutoLaunch) {
+        const appliedAutoLaunch = await window.movaDesktopShell.setAutoLaunch(autoLaunch);
+        setAutoLaunch(appliedAutoLaunch);
+        if (appliedAutoLaunch !== autoLaunch) throw new Error(`Не удалось ${autoLaunch ? 'включить' : 'выключить'} автозапуск Mova.`);
+      }
+      if (window.movaDesktopShell?.setHotkeys) setDesktopHotkeys(await window.movaDesktopShell.setHotkeys(desktopHotkeys));
       if (window.movaDesktopShell?.setGameActivityEnabled) applyGameActivitySettings(await window.movaDesktopShell.setGameActivityEnabled(gameActivityEnabled));
-    } catch {
-      setDesktopSettingsError('Не удалось изменить автозапуск Mova.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const shortcutError = message.match(/(?:Сочетание|Одно сочетание|Недопустимое сочетание)[^.]*\.?/u)?.[0];
+      setDesktopSettingsError(shortcutError || message || 'Не удалось сохранить desktop-настройки Mova.');
       return;
     }
     saveAudioSettings(settings);
@@ -1050,6 +1100,29 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
     stopTest();
     onClose();
   };
+  const desktopUpdateBusy = desktopUpdateActionPending || desktopUpdate?.phase === 'checking' || desktopUpdate?.phase === 'downloading';
+  const desktopUpdateDescription = !desktopUpdate
+    ? 'Получаем сведения о версии…'
+    : !desktopUpdate.supported
+      ? 'Проверка обновлений доступна в установленной версии Mova.'
+      : desktopUpdate.phase === 'checking'
+        ? 'Ищем новую версию…'
+        : desktopUpdate.phase === 'downloading'
+          ? `Загружаем обновление — ${desktopUpdate.progress}%`
+          : desktopUpdate.phase === 'downloaded'
+            ? `Mova ${desktopUpdate.availableVersion || 'новой версии'} готова к установке.`
+            : desktopUpdate.lastResult === 'up-to-date'
+              ? 'У вас установлена последняя версия.'
+              : desktopUpdate.lastResult === 'error'
+                ? 'Не удалось проверить обновления. Попробуйте ещё раз.'
+                : 'Автоматическая проверка обновлений включена.';
+  const desktopUpdateTone = desktopUpdate?.phase === 'downloaded'
+    ? 'update'
+    : desktopUpdate?.lastResult === 'up-to-date'
+      ? 'success'
+      : desktopUpdate?.lastResult === 'error'
+        ? 'error'
+        : 'idle';
   return (
     <DialogSurface open={open} onClose={onClose} className="mova-settings" labelledBy="settings-title">
         <aside>
@@ -1079,17 +1152,23 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
             Демонстрация
           </button>
           {window.movaDesktopShell && (
-            <button type="button" className={section === 'application' ? 'is-active' : ''} onClick={() => setSection('application')}>
-              <Power size={17} />
-              Приложение
-            </button>
+            <>
+              <button type="button" className={section === 'hotkeys' ? 'is-active' : ''} onClick={() => setSection('hotkeys')}>
+                <Keyboard size={17} />
+                Горячие клавиши
+              </button>
+              <button type="button" className={section === 'application' ? 'is-active' : ''} onClick={() => setSection('application')}>
+                <Power size={17} />
+                Приложение
+              </button>
+            </>
           )}
         </aside>
         <main>
           <header>
             <div>
-              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'account' ? 'Аккаунт' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : section === 'application' ? 'Приложение' : 'Голос и звук'}</h2>
-              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'account' ? 'Почта и безопасность входа' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : section === 'application' ? 'Запуск Mova и desktop-возможности' : 'Устройства и обработка голоса'}</p>
+              <h2 id="settings-title">{section === 'profile' ? 'Профиль' : section === 'account' ? 'Аккаунт' : section === 'appearance' ? 'Оформление' : section === 'screen' ? 'Демонстрация экрана' : section === 'hotkeys' ? 'Горячие клавиши' : section === 'application' ? 'Приложение' : 'Голос и звук'}</h2>
+              <p>{section === 'profile' ? 'Отображение вашего аккаунта' : section === 'account' ? 'Почта и безопасность входа' : section === 'appearance' ? 'Цвет фона и акцента' : section === 'screen' ? 'Качество при включении демонстрации' : section === 'hotkeys' ? 'Управление звонком из любого приложения' : section === 'application' ? 'Запуск Mova и desktop-возможности' : 'Устройства и обработка голоса'}</p>
             </div>
             <IconButton data-dialog-close label="Закрыть настройки" onClick={onClose}>
               <X size={18} />
@@ -1118,8 +1197,35 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
             <BackgroundDefaults color={backgroundColor} onChange={setBackgroundColor} accentColor={accentColor} onAccentChange={setAccentColor} />
           ) : section === 'screen' ? (
             <ScreenShareDefaults settings={screenSettings} onChange={setScreenSettings} />
+          ) : section === 'hotkeys' ? (
+            <>
+              <DesktopHotkeySettingsPanel settings={desktopHotkeys} platform={window.movaDesktopShell?.platform || ''} onChange={setDesktopHotkeys} />
+              {desktopSettingsError && <div className="mova-auth-error mova-hotkey-save-error">{desktopSettingsError}</div>}
+            </>
           ) : section === 'application' ? (
             <div className="mova-audio-settings mova-application-settings">
+              <section className="mova-client-version">
+                <h3><Info size={18} /> Версия и обновления</h3>
+                <div className="mova-client-version__row">
+                  <span className="mova-client-version__mark" aria-hidden="true">M</span>
+                  <span className="mova-client-version__copy">
+                    <small>Версия клиента</small>
+                    <strong>Mova {desktopUpdate?.currentVersion || '—'}</strong>
+                    <em className={`is-${desktopUpdateTone}`}>{desktopUpdateDescription}</em>
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    leadingIcon={desktopUpdateBusy ? <LoaderCircle className="mova-spin" size={15} /> : desktopUpdate?.phase === 'downloaded' ? <Upload size={15} /> : <RotateCcw size={15} />}
+                    disabled={!desktopUpdate?.supported || desktopUpdateBusy}
+                    onClick={() => void handleDesktopUpdate()}
+                  >
+                    {desktopUpdate?.phase === 'downloaded' ? 'Установить обновление' : desktopUpdate?.phase === 'downloading' ? `${desktopUpdate.progress}%` : desktopUpdate?.phase === 'checking' ? 'Проверяем…' : 'Проверить обновления'}
+                  </Button>
+                </div>
+                <p>Проверяем новую версию после запуска Mova и затем каждые четыре часа.</p>
+              </section>
               <section>
                 <h3><Power size={18} /> Запуск системы</h3>
                 <ToggleSetting label="Запускать Mova с системой" description="Mova запустится свёрнутой в область уведомлений. По умолчанию включено." checked={autoLaunch} onChange={setAutoLaunch} />
@@ -1182,12 +1288,12 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
                       })
                     }
                   >
-                    <option value="default">Системный микрофон</option>
+                    <option value="default">По умолчанию</option>
                     {inputs
                       .filter((device) => device.deviceId !== 'default')
                       .map((device, index) => (
                         <option key={device.deviceId} value={device.deviceId}>
-                          {device.label || `Микрофон ${index + 1}`}
+                          {audioDeviceLabel(device, `Микрофон ${index + 1}`)}
                         </option>
                       ))}
                   </select>
@@ -1220,12 +1326,12 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
                       })
                     }
                   >
-                    <option value="default">Системное устройство</option>
+                    <option value="default">По умолчанию</option>
                     {outputs
                       .filter((device) => device.deviceId !== 'default')
                       .map((device, index) => (
                         <option key={device.deviceId} value={device.deviceId}>
-                          {device.label || `Устройство ${index + 1}`}
+                          {audioDeviceLabel(device, `Устройство ${index + 1}`)}
                         </option>
                       ))}
                   </select>
@@ -1620,11 +1726,11 @@ export function AuthScreen({ onAuth }: { onAuth: (user: AppUser) => void }) {
   );
 }
 
-function ConversationAvatar({ conversation, currentUser }: { conversation: AppConversation; currentUser: AppUser }) {
+function ConversationAvatar({ conversation, currentUser, onAvatarClick }: { conversation: AppConversation; currentUser: AppUser; onAvatarClick?: () => void }) {
   if (conversation.kind === 'saved') return <span className="mova-avatar mova-avatar--lg mova-saved-avatar" aria-label="Избранное"><Bookmark size={25} fill="currentColor" /></span>;
-  if (conversation.kind === 'group') return <Avatar name={conversation.title} src={conversation.avatarDataUrl} color="#ff9638" size="lg" />;
+  if (conversation.kind === 'group') return <Avatar name={conversation.title} src={conversation.avatarDataUrl} color="#ff9638" size="lg" onClick={conversation.avatarDataUrl ? onAvatarClick : undefined} />;
   const person = conversation.members.find((member) => member.id !== currentUser.id) ?? currentUser;
-  return <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} status={avatarStatus(person.presence, person.isOnline)} size="lg" />;
+  return <Avatar name={person.name} src={person.avatarDataUrl} color={person.color} status={avatarStatus(person.presence, person.isOnline)} size="lg" onClick={person.avatarDataUrl ? onAvatarClick : undefined} />;
 }
 
 const groupMemberRole = (conversation: AppConversation, userId: string): 'owner' | 'admin' | 'member' =>
@@ -3083,7 +3189,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [attachment, setAttachment] = useState<MessageAttachment | undefined>();
-  const [preparingAttachment, setPreparingAttachment] = useState<Pick<MessageAttachment, 'name' | 'size'> | undefined>();
+  const [preparingAttachment, setPreparingAttachment] = useState<Pick<MessageAttachment, 'name' | 'size' | 'type'> | undefined>();
   const [attachmentError, setAttachmentError] = useState('');
   const retryingMessagesRef = useRef(new Set<string>());
   const [retryingMessageIds, setRetryingMessageIds] = useState<Set<string>>(() => new Set());
@@ -3097,6 +3203,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [replyHighlightId, setReplyHighlightId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState(false);
   const [imagePreviewId, setImagePreviewId] = useState<string | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<MediaViewerItem | null>(null);
   const [callStageHost, setCallStageHost] = useState<HTMLElement | null>(null);
   const [callBannerHost, setCallBannerHost] = useState<HTMLElement | null>(null);
   const [callChatOpen, setCallChatOpen] = useState(false);
@@ -3150,6 +3257,16 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const typingLabel = conversationTypingLabel(conversation, currentUser.id, typingUserIds);
   const voiceState = normalizeCallState(voiceSession.state);
   const callOpen = callCanvasOpen && voiceConversation.id === conversation.id && voiceState !== 'idle' && voiceState !== 'available';
+  const openAvatarPreview = (id: string, name: string, source?: string) => {
+    if (!source) return;
+    const attachment: MessageAttachment = {
+      name: `Аватар ${name}`,
+      type: source.match(/^data:([^;,]+)/)?.[1] || 'image/*',
+      size: 0,
+      ...(source.startsWith('data:') ? { dataUrl: source } : { url: source }),
+    };
+    setAvatarPreview({ id: `avatar-${id}`, attachment });
+  };
 
   useEffect(() => {
     if (mobileActive) return;
@@ -3166,6 +3283,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setDeletingMessages(null);
     setSelectionDeleteOpen(false);
     setImagePreviewId(null);
+    setAvatarPreview(null);
   }, [mobileActive]);
 
   const announceTyping = useCallback(
@@ -3484,6 +3602,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   useEffect(() => {
     if (!searchOpen && !detailsOpen && !profileInfoOpen && !emojiOpen) return;
     const closeOutside = (event: PointerEvent) => {
+      if (avatarPreview) return;
       const target = event.target as Element | null;
       if (!target?.closest) return;
       if (searchOpen && target.closest('.mova-chat-search-panel,[aria-label="Поиск"]')) return;
@@ -3497,6 +3616,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      if (avatarPreview) return;
       if (emojiOpen) {
         event.stopPropagation();
         setEmojiOpen(false);
@@ -3513,7 +3633,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       document.removeEventListener('pointerdown', closeOutside);
       window.removeEventListener('keydown', closeOnEscape);
     };
-  }, [detailsOpen, emojiOpen, profileInfoOpen, searchOpen]);
+  }, [avatarPreview, detailsOpen, emojiOpen, profileInfoOpen, searchOpen]);
 
   useEffect(() => {
     if (conversation.kind !== 'direct' || (other?.isOnline ?? other?.presence === 'online')) return;
@@ -3601,7 +3721,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     if (!file) return;
     setAttachmentError('');
     if (file.size > (file.type.startsWith('image/') ? 30_000_000 : 8_000_000)) return setAttachmentError(file.type.startsWith('image/') ? 'Фотография должна быть меньше 30 МБ' : 'Файл должен быть меньше 8 МБ');
-    setPreparingAttachment({ name: file.name || 'Файл', size: file.size });
+    setPreparingAttachment({ name: file.name || 'Файл', size: file.size, type: file.type || 'application/octet-stream' });
     try {
       const clipboardName = `Изображение ${new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }).replace(':', '-')}.png`;
       const prepared = file.type.startsWith('image/') ? await prepareImageDataUrl(file) : { file, dataUrl: await fileToDataUrl(file) };
@@ -3691,6 +3811,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setSelectingMessages(false);
     setSelectedMessages([]);
     setImagePreviewId(null);
+    setAvatarPreview(null);
     composerSelection.current = { start: 0, end: 0 };
     setMuted(localStorage.getItem(`mova-muted-${conversation.id}`) === 'true');
     setRelationshipOverride(null);
@@ -3705,13 +3826,13 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     pendingHistoryPrepend.current = null;
   }, [conversation.id]);
   useEffect(() => {
-    if (!profileInfoOpen) return;
+    if (!profileInfoOpen || avatarPreview) return;
     const close = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setProfileInfoOpen(false);
     };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
-  }, [profileInfoOpen]);
+  }, [avatarPreview, profileInfoOpen]);
   useEffect(() => {
     if (!activeMatchId) return;
     const match = messageElements.current.get(activeMatchId);
@@ -3977,7 +4098,14 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 <h2>Информация</h2>
               </header>
               <section className="mova-contact-info__profile">
-                <Avatar name={selectedGroupMember.name} src={selectedGroupMember.avatarDataUrl} color={selectedGroupMember.color} status={avatarStatus(selectedGroupMember.presence, selectedGroupMember.isOnline)} size="xl" />
+                <Avatar
+                  name={selectedGroupMember.name}
+                  src={selectedGroupMember.avatarDataUrl}
+                  color={selectedGroupMember.color}
+                  status={avatarStatus(selectedGroupMember.presence, selectedGroupMember.isOnline)}
+                  size="xl"
+                  onClick={selectedGroupMember.avatarDataUrl ? () => openAvatarPreview(selectedGroupMember.id, selectedGroupMember.name, selectedGroupMember.avatarDataUrl) : undefined}
+                />
                 <h3><AppleEmoji text={selectedGroupMember.name} /></h3>
                 <p>{formatPresenceStatus(selectedGroupMember)}</p>
                 {selectedGroupMember.id !== currentUser.id && (
@@ -3996,7 +4124,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               <section className="mova-contact-info__card">
                 {selectedGroupMember.activity && (selectedGroupMember.isOnline ?? selectedGroupMember.presence === 'online') && <div><GameActivityIcon activity={selectedGroupMember.activity} size={34} /><span><strong>{selectedGroupMember.activity.name}</strong><small>Играет уже {activityTime(selectedGroupMember.activity.startedAt)}</small></span></div>}
                 <div><AtSign size={25} /><span><strong>{selectedGroupMember.handle?.replace(/^@/, '') || 'не указан'}</strong><small>Имя пользователя</small></span></div>
-                <div><Info size={25} /><span><strong>{selectedGroupMember.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div>
+                <div className="mova-contact-info__bio"><Info size={25} /><span><strong>{selectedGroupMember.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div>
               </section>
             </>
           ) : (
@@ -4007,7 +4135,13 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 {canEditGroup && <IconButton label="Изменить группу" onClick={() => setGroupEditorOpen(true)}><Pencil size={21} /></IconButton>}
               </header>
               <section className="mova-contact-info__profile">
-                <ConversationAvatar conversation={conversation} currentUser={currentUser} />
+                <ConversationAvatar
+                  conversation={conversation}
+                  currentUser={currentUser}
+                  onAvatarClick={() => conversation.kind === 'group'
+                    ? openAvatarPreview(conversation.id, conversation.title, conversation.avatarDataUrl)
+                    : other && openAvatarPreview(other.id, other.name, other.avatarDataUrl)}
+                />
                 <h3><AppleEmoji text={conversation.title} /></h3>
                 <p>{status}</p>
                 {conversation.kind === 'direct' && other && (
@@ -4020,7 +4154,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               <section className="mova-contact-info__card">
                 {conversation.kind === 'direct' && other?.activity && (other.isOnline ?? other.presence === 'online') && <div><GameActivityIcon activity={other.activity} size={34} /><span><strong>{other.activity.name}</strong><small>Играет уже {activityTime(other.activity.startedAt)}</small></span></div>}
                 {conversation.kind === 'direct' && <div className="mova-message-body"><AtSign size={25} /><span><strong>{other?.handle?.replace(/^@/, '') || 'не указан'}</strong><small>Имя пользователя</small></span></div>}
-                {conversation.kind === 'direct' ? <div><Info size={25} /><span><strong>{other?.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div> : <div><Users size={25} /><span><strong>{conversation.members.length} {russianCount(conversation.members.length, 'участник', 'участника', 'участников')}</strong><small>Участники</small></span></div>}
+                {conversation.kind === 'direct' ? <div className="mova-contact-info__bio"><Info size={25} /><span><strong>{other?.bio || 'Информация о себе не указана'}</strong><small>О себе</small></span></div> : <div><Users size={25} /><span><strong>{conversation.members.length} {russianCount(conversation.members.length, 'участник', 'участника', 'участников')}</strong><small>Участники</small></span></div>}
                 <label><Bell size={25} /><span><strong>Уведомления</strong><small>{muted ? 'Выключены' : 'Включены'}</small></span><input type="checkbox" checked={!muted} onChange={toggleMuted} aria-label="Уведомления" /><i /></label>
               </section>
               {conversation.kind === 'group' && (
@@ -4430,10 +4564,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                   )}
                   {message.attachment &&
                     (message.attachment.type.startsWith('image/') ? (
-                      <button type="button" className="mova-message-image" onClick={() => setImagePreviewId(message.id)} aria-label={`Открыть изображение ${message.attachment.name}`}>
+                      <button type="button" className="mova-message-image" onClick={() => setImagePreviewId(message.id)} aria-label="Открыть изображение">
                         <CachedImage
                           src={attachmentSource(message.attachment)}
-                          alt={message.attachment.name}
+                          alt=""
                           onLoad={() => {
                             if (!positionedAtBottom.current) return;
                             window.requestAnimationFrame(() => {
@@ -4459,13 +4593,13 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                         href={fileUploading ? undefined : attachmentDownloadSource(message.attachment)}
                         download={fileUploading ? undefined : message.attachment.name}
                         role={fileUploading ? 'status' : undefined}
-                        aria-label={fileUploading ? `Загружается ${message.attachment.name}` : undefined}
+                        aria-label={fileUploading ? `Загружается ${attachmentLabel(message.attachment)}` : undefined}
                         aria-busy={fileUploading || undefined}
                         onClick={fileUploading ? (event) => event.preventDefault() : undefined}
                       >
-                        {fileUploading ? <LoaderCircle className="mova-spin" size={20} aria-hidden="true" /> : <FileText size={20} />}
+                        {fileUploading ? <LoaderCircle className="mova-spin" size={20} aria-hidden="true" /> : message.attachment.type.startsWith('video/') ? <Video size={20} aria-hidden="true" /> : <FileText size={20} aria-hidden="true" />}
                         <span>
-                          <strong>{message.attachment.name}</strong>
+                          <strong>{attachmentLabel(message.attachment)}</strong>
                           <small>{fileUploading ? 'Загрузка…' : formatFileSize(message.attachment.size)}</small>
                         </span>
                       </a>
@@ -4536,10 +4670,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           {attachment && (
             <div className="mova-attachment-draft">
               <span className="mova-composer-row__icon">
-                {attachment.type.startsWith('image/') ? <img src={attachmentSource(attachment)} alt="" /> : <FileText size={17} aria-hidden="true" />}
+                {attachment.type.startsWith('image/') ? <img src={attachmentSource(attachment)} alt="" /> : attachment.type.startsWith('video/') ? <Video size={17} aria-hidden="true" /> : <FileText size={17} aria-hidden="true" />}
               </span>
               <span className="mova-composer-row__copy">
-                <strong><AppleEmoji text={attachment.name} /></strong>
+                <strong><AppleEmoji text={attachmentLabel(attachment)} /></strong>
                 <small>{formatFileSize(attachment.size)}</small>
               </span>
               <button type="button" className="mova-composer-row__remove" aria-label="Убрать вложение" onClick={() => setAttachment(undefined)}>
@@ -4548,10 +4682,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             </div>
           )}
           {preparingAttachment && (
-            <div className="mova-attachment-draft is-preparing" role="status" aria-label={`Подготавливается ${preparingAttachment.name}`} aria-busy="true">
+            <div className="mova-attachment-draft is-preparing" role="status" aria-label={`Подготавливается ${attachmentLabel(preparingAttachment)}`} aria-busy="true">
               <span className="mova-composer-row__icon"><LoaderCircle className="mova-spin" size={17} aria-hidden="true" /></span>
               <span className="mova-composer-row__copy">
-                <strong><AppleEmoji text={preparingAttachment.name} /></strong>
+                <strong><AppleEmoji text={attachmentLabel(preparingAttachment)} /></strong>
                 <small>Подготовка… · {formatFileSize(preparingAttachment.size)}</small>
               </span>
             </div>
@@ -4668,6 +4802,11 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       {imagePreviewId && mediaGallery.some((item) => item.id === imagePreviewId) &&
         createPortal(
           <MediaViewer items={mediaGallery} activeId={imagePreviewId} onClose={() => setImagePreviewId(null)} />,
+          document.body,
+        )}
+      {avatarPreview &&
+        createPortal(
+          <MediaViewer items={[avatarPreview]} activeId={avatarPreview.id} onClose={() => setAvatarPreview(null)} />,
           document.body,
         )}
       <DialogSurface open={Boolean(forwardingMessages)} onClose={() => !messageActionBusy && setForwardingMessages(null)} className="mova-forward-message-dialog" labelledBy="mova-forward-message-title">

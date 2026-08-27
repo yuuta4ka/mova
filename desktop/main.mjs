@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification, Tray, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, Tray, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, session, shell } from 'electron';
 import updater from 'electron-updater';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -11,11 +11,15 @@ import { desktopWindowFrameOptions } from './window-shell.mjs';
 import { gameActivityPollIntervalMs, installedGameRegistryRefreshMs, listDesktopProcesses, loadInstalledGameRegistry, loadRunningMacGameBundles, resolveGameFromProcesses, runningApplicationsFromProcesses } from './game-activity.mjs';
 import { desktopAppPageUrl, desktopAppUrlCandidates, isTrustedDesktopOrigin } from './app-server.mjs';
 import { desktopApplicationEditMenu, desktopEditContextMenuTemplate } from './edit-context-menu.mjs';
+import { desktopDisplayMediaStreams } from './display-media.mjs';
+import { defaultDesktopHotkeys, desktopHotkeyEntries, normalizeDesktopHotkeys, validateDesktopHotkeys } from './hotkeys.mjs';
+import { desktopAutoLaunchEnabled, desktopAutoLaunchError, desktopAutoLaunchQueryOptions, desktopAutoLaunchSettings } from './auto-launch.mjs';
 
 const { autoUpdater } = updater;
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
 const settingsPath = () => join(app.getPath('userData'), 'desktop.json');
 const appPreloadPath = join(desktopRoot, 'app-preload.cjs');
+const updateDialogPreloadPath = join(desktopRoot, 'update-dialog-preload.cjs');
 const iconPath = join(desktopRoot, 'assets', 'icon.png');
 
 let mainWindow = null;
@@ -27,6 +31,7 @@ let sharePickerSequence = 0;
 let activeSharePicker = null;
 let updateStartupTimer = null;
 let updateIntervalTimer = null;
+let activeUpdateDialog = null;
 let gameActivityTimer = null;
 let gameActivityScanInFlight = false;
 let desktopGameActivity = null;
@@ -34,6 +39,7 @@ let desktopGameActivityKey = '';
 let gameActivityMissingScans = 0;
 let installedGameRegistry = [];
 let installedGameRegistryLoadedAt = 0;
+let desktopHotkeys = { ...defaultDesktopHotkeys };
 const gameIconCache = new Map();
 let launchHidden = process.argv.includes('--hidden');
 const desktopUpdateState = {
@@ -41,6 +47,7 @@ const desktopUpdateState = {
   phase: 'idle',
   version: '',
   progress: 0,
+  lastResult: 'idle',
   manualRequest: false,
   promptOpen: false,
 };
@@ -58,6 +65,53 @@ async function updateDesktopSettings(values) {
   const settings = { ...(await readDesktopSettings()), ...values };
   await writeFile(settingsPath(), JSON.stringify(settings, null, 2));
   return settings;
+}
+
+function sendDesktopHotkeyAction(action) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('desktop-hotkeys:action', action);
+}
+
+function registerDesktopHotkeys(settings) {
+  globalShortcut.unregisterAll();
+  for (const [action, accelerator] of desktopHotkeyEntries(settings)) {
+    if (globalShortcut.register(accelerator, () => sendDesktopHotkeyAction(action))) continue;
+    globalShortcut.unregisterAll();
+    return `Сочетание ${accelerator} уже занято системой или другим приложением.`;
+  }
+  return '';
+}
+
+async function initializeDesktopHotkeys() {
+  const stored = normalizeDesktopHotkeys((await readDesktopSettings()).hotkeys);
+  const validated = validateDesktopHotkeys(stored);
+  desktopHotkeys = validated.error ? { ...defaultDesktopHotkeys } : validated.settings;
+  const error = registerDesktopHotkeys(desktopHotkeys);
+  if (error) console.warn(`Desktop hotkey registration failed: ${error}`);
+}
+
+async function replaceDesktopHotkeys(value) {
+  const candidate = validateDesktopHotkeys(value);
+  if (candidate.error) throw new Error(candidate.error);
+  const previous = desktopHotkeys;
+  const suspended = globalShortcut.isSuspended();
+  if (suspended) globalShortcut.setSuspended(false);
+  const registrationError = registerDesktopHotkeys(candidate.settings);
+  if (registrationError) {
+    registerDesktopHotkeys(previous);
+    if (suspended) globalShortcut.setSuspended(true);
+    throw new Error(registrationError);
+  }
+  try {
+    await updateDesktopSettings({ hotkeys: candidate.settings });
+    desktopHotkeys = candidate.settings;
+  } catch (error) {
+    registerDesktopHotkeys(previous);
+    if (suspended) globalShortcut.setSuspended(true);
+    throw error;
+  }
+  if (suspended) globalShortcut.setSuspended(true);
+  return desktopHotkeys;
 }
 
 function normalizedRegisteredGames(settings) {
@@ -136,34 +190,41 @@ function supportsAutoLaunch() {
   return process.platform === 'darwin' || process.platform === 'win32';
 }
 
+function readSystemAutoLaunch() {
+  if (!supportsAutoLaunch() || !app.isPackaged) return { enabled: false, settings: null };
+  const settings = app.getLoginItemSettings(desktopAutoLaunchQueryOptions(process.platform, process.execPath));
+  return { enabled: desktopAutoLaunchEnabled(process.platform, settings), settings };
+}
+
 function applyAutoLaunch(enabled) {
-  if (!supportsAutoLaunch() || !app.isPackaged) return;
-  if (process.platform === 'win32') {
-    app.setLoginItemSettings({ openAtLogin: enabled, args: enabled ? ['--hidden'] : [] });
-    return;
-  }
-  app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: enabled });
+  if (!supportsAutoLaunch() || !app.isPackaged) return { enabled, settings: null };
+  const settings = desktopAutoLaunchSettings(process.platform, process.execPath, enabled);
+  if (settings) app.setLoginItemSettings(settings);
+  return readSystemAutoLaunch();
 }
 
 async function initializeAutoLaunch() {
   const settings = await readDesktopSettings();
   const enabled = typeof settings.autoLaunch === 'boolean' ? settings.autoLaunch : true;
   if (typeof settings.autoLaunch !== 'boolean') await updateDesktopSettings({ autoLaunch: true });
-  applyAutoLaunch(enabled);
-  if (process.platform === 'darwin' && app.isPackaged) launchHidden ||= app.getLoginItemSettings().wasOpenedAtLogin === true;
-  return enabled;
+  const systemState = applyAutoLaunch(enabled);
+  if (enabled && app.isPackaged && !systemState.enabled) console.warn(desktopAutoLaunchError(process.platform, systemState.settings, true));
+  if (process.platform === 'darwin' && app.isPackaged) launchHidden ||= systemState.settings?.wasOpenedAtLogin === true;
+  return systemState.enabled;
 }
 
 async function setAutoLaunch(enabled) {
   const normalized = enabled === true;
   await updateDesktopSettings({ autoLaunch: normalized });
-  applyAutoLaunch(normalized);
-  return normalized;
+  const systemState = applyAutoLaunch(normalized);
+  if (systemState.enabled !== normalized) throw new Error(desktopAutoLaunchError(process.platform, systemState.settings, normalized));
+  return systemState.enabled;
 }
 
 async function configuredAutoLaunch() {
   const settings = await readDesktopSettings();
-  return typeof settings.autoLaunch === 'boolean' ? settings.autoLaunch : true;
+  const configured = typeof settings.autoLaunch === 'boolean' ? settings.autoLaunch : true;
+  return app.isPackaged && supportsAutoLaunch() ? readSystemAutoLaunch().enabled : configured;
 }
 
 function isTrustedOrigin(origin) {
@@ -196,6 +257,21 @@ function setUpdateProgressBar() {
     return;
   }
   mainWindow.setProgressBar(-1);
+}
+
+function desktopUpdateSnapshot() {
+  return {
+    currentVersion: app.getVersion(),
+    availableVersion: desktopUpdateState.version,
+    phase: desktopUpdateState.phase,
+    progress: normalizeUpdateProgress(desktopUpdateState.progress),
+    lastResult: desktopUpdateState.lastResult,
+    supported: app.isPackaged && desktopUpdateState.configured,
+  };
+}
+
+function sendDesktopUpdateState() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop-update:state', desktopUpdateSnapshot());
 }
 
 function desktopUpdateMenuItem() {
@@ -354,10 +430,10 @@ function configurePermissions() {
           fetchWindowIcons: true,
         });
         const source = await chooseDesktopSource(sources);
-        // Electron's loopback source is the complete system mix on Windows,
-        // including Mova's own call output. Sending it would make every voice
-        // return to participants a second time.
-        callback(source ? { video: source } : {});
+        // Electron 43.4+ honors the renderer's restrictOwnAudio constraint and
+        // turns this into loopbackWithoutChrome, so Mova's call output is not
+        // sent back while the rest of the shared system audio remains audible.
+        callback(desktopDisplayMediaStreams(source, request.audioRequested));
       } catch {
         callback({});
       }
@@ -504,15 +580,80 @@ async function showApp() {
   app.quit();
 }
 
-function updaterDialog(options) {
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) return dialog.showMessageBox(mainWindow, options);
-  return dialog.showMessageBox(options);
+function updaterDialog(options = {}) {
+  const buttons = Array.isArray(options.buttons) && options.buttons.length
+    ? options.buttons.slice(0, 3).map((button) => String(button).slice(0, 48))
+    : ['Понятно'];
+  const defaultId = Number.isInteger(options.defaultId) && options.defaultId >= 0 && options.defaultId < buttons.length
+    ? options.defaultId
+    : 0;
+  const cancelId = Number.isInteger(options.cancelId) && options.cancelId >= 0 && options.cancelId < buttons.length
+    ? options.cancelId
+    : buttons.length - 1;
+  const owner = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : null;
+
+  activeUpdateDialog?.finish(activeUpdateDialog.cancelId);
+  return new Promise((resolve) => {
+    const window = new BrowserWindow({
+      title: String(options.title || 'Обновление Mova'),
+      width: 456,
+      height: 388,
+      parent: owner || undefined,
+      modal: Boolean(owner),
+      show: false,
+      frame: false,
+      transparent: true,
+      hasShadow: true,
+      resizable: false,
+      maximizable: false,
+      minimizable: false,
+      fullscreenable: false,
+      autoHideMenuBar: true,
+      skipTaskbar: Boolean(owner),
+      icon: iconPath,
+      webPreferences: {
+        preload: updateDialogPreloadPath,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    });
+    let settled = false;
+    const finish = (response = cancelId) => {
+      if (settled) return;
+      settled = true;
+      if (activeUpdateDialog?.window === window) activeUpdateDialog = null;
+      if (!window.isDestroyed()) window.destroy();
+      resolve({ response, checkboxChecked: false });
+    };
+    activeUpdateDialog = { window, finish, cancelId, buttons };
+    window.once('closed', () => finish(cancelId));
+    window.once('ready-to-show', () => {
+      window.show();
+      window.focus();
+    });
+    window.webContents.once('did-finish-load', () => {
+      if (window.isDestroyed()) return;
+      window.webContents.send('desktop-update-dialog:payload', {
+        tone: ['success', 'update', 'error', 'info'].includes(options.tone) ? options.tone : options.type === 'error' ? 'error' : 'info',
+        title: String(options.title || 'Обновление Mova').slice(0, 80),
+        message: String(options.message || '').slice(0, 180),
+        detail: String(options.detail || '').slice(0, 360),
+        meta: String(options.meta || '').slice(0, 100),
+        buttons,
+        defaultId,
+        cancelId,
+      });
+    });
+    void window.loadFile(join(desktopRoot, 'update-dialog.html')).catch(() => finish(cancelId));
+  });
 }
 
 function refreshDesktopUpdateUi() {
   refreshTrayMenu();
   createMenu();
   setUpdateProgressBar();
+  sendDesktopUpdateState();
 }
 
 function setDesktopUpdateState(values) {
@@ -526,10 +667,11 @@ async function promptToInstallUpdate() {
   const version = desktopUpdateState.version;
   try {
     const result = await updaterDialog({
-      type: 'info',
+      tone: 'update',
       title: 'Обновление Mova',
-      message: version ? `Mova ${version} готова к установке` : 'Обновление Mova готово к установке',
-      detail: 'Перезапустить приложение сейчас? Если выбрать «Позже», обновление установится при следующем выходе из Mova.',
+      message: version ? `Mova ${version} уже готова` : 'Обновление уже готово',
+      detail: 'Можно перезапустить приложение сейчас или установить обновление при следующем выходе из Mova.',
+      meta: version ? `Новая версия ${version}` : '',
       buttons: ['Перезапустить и обновить', 'Позже'],
       defaultId: 0,
       cancelId: 1,
@@ -548,7 +690,7 @@ async function checkForDesktopUpdates({ manual = false } = {}) {
   if (!app.isPackaged) {
     if (manual) {
       await updaterDialog({
-        type: 'info',
+        tone: 'info',
         title: 'Обновление Mova',
         message: 'Проверка обновлений доступна в установленной версии Mova.',
         buttons: ['Понятно'],
@@ -562,7 +704,7 @@ async function checkForDesktopUpdates({ manual = false } = {}) {
     return;
   }
   if (desktopUpdateState.phase !== 'idle') return;
-  setDesktopUpdateState({ phase: 'checking', manualRequest: manual, progress: 0 });
+  setDesktopUpdateState({ phase: 'checking', manualRequest: manual, progress: 0, lastResult: 'idle' });
   void autoUpdater.checkForUpdates().catch((error) => {
     if (desktopUpdateState.phase !== 'idle') handleUpdateError(error);
   });
@@ -571,11 +713,11 @@ async function checkForDesktopUpdates({ manual = false } = {}) {
 function handleUpdateError(error) {
   const showError = desktopUpdateState.manualRequest;
   const message = error instanceof Error ? error.message : String(error || 'Неизвестная ошибка');
-  setDesktopUpdateState({ phase: 'idle', manualRequest: false, progress: 0 });
+  setDesktopUpdateState({ phase: 'idle', manualRequest: false, progress: 0, lastResult: 'error' });
   console.warn('Desktop update check failed:', message);
   if (showError) {
     void updaterDialog({
-      type: 'error',
+      tone: 'error',
       title: 'Обновление Mova',
       message: 'Не удалось проверить обновления.',
       detail: 'Проверьте подключение к интернету и попробуйте ещё раз.',
@@ -593,7 +735,7 @@ function configureUpdates() {
   autoUpdater.allowDowngrade = false;
   autoUpdater.allowPrerelease = false;
   autoUpdater.on('checking-for-update', () => {
-    if (desktopUpdateState.phase !== 'checking') setDesktopUpdateState({ phase: 'checking' });
+    if (desktopUpdateState.phase !== 'checking') setDesktopUpdateState({ phase: 'checking', lastResult: 'idle' });
   });
   autoUpdater.on('update-available', (info) => {
     setDesktopUpdateState({ phase: 'downloading', version: String(info?.version || ''), progress: 0 });
@@ -603,14 +745,15 @@ function configureUpdates() {
   });
   autoUpdater.on('update-not-available', async () => {
     const showResult = desktopUpdateState.manualRequest;
-    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0 });
+    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'up-to-date' });
     if (showResult) {
       await updaterDialog({
-        type: 'info',
+        tone: 'success',
         title: 'Обновление Mova',
-        message: 'У вас установлена актуальная версия Mova.',
-        detail: `Текущая версия: ${app.getVersion()}`,
-        buttons: ['Понятно'],
+        message: 'Всё обновлено',
+        detail: 'У вас установлена актуальная версия Mova.',
+        meta: `Версия ${app.getVersion()}`,
+        buttons: ['Отлично'],
       });
     }
   });
@@ -619,12 +762,13 @@ function configureUpdates() {
       phase: 'downloaded',
       version: String(info?.version || desktopUpdateState.version || ''),
       progress: 100,
+      lastResult: 'available',
       manualRequest: false,
     });
     void promptToInstallUpdate();
   });
   autoUpdater.on('update-cancelled', () => {
-    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0 });
+    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'idle' });
   });
   autoUpdater.on('error', handleUpdateError);
   refreshDesktopUpdateUi();
@@ -635,6 +779,12 @@ function configureUpdates() {
 }
 
 ipcMain.on('desktop-window:minimize', (event) => controlledMainWindow(event)?.minimize());
+ipcMain.on('desktop-update-dialog:respond', (event, response) => {
+  const active = activeUpdateDialog;
+  if (!active || active.window.isDestroyed() || event.sender !== active.window.webContents) return;
+  const normalized = Number(response);
+  active.finish(Number.isInteger(normalized) && normalized >= 0 && normalized < active.buttons.length ? normalized : active.cancelId);
+});
 ipcMain.on('desktop-window:toggle-maximize', (event) => {
   const window = controlledMainWindow(event);
   if (!window) return;
@@ -690,6 +840,32 @@ ipcMain.handle('desktop-settings:get-auto-launch', async (event) => {
 ipcMain.handle('desktop-settings:set-auto-launch', async (event, enabled) => {
   if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
   return setAutoLaunch(enabled === true);
+});
+ipcMain.handle('desktop-hotkeys:get', (event) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  return desktopHotkeys;
+});
+ipcMain.handle('desktop-hotkeys:set', async (event, value) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  return replaceDesktopHotkeys(value);
+});
+ipcMain.on('desktop-hotkeys:set-capture-active', (event, active) => {
+  if (!controlledMainWindow(event)) return;
+  globalShortcut.setSuspended(active === true);
+});
+ipcMain.handle('desktop-update:get-state', (event) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  return desktopUpdateSnapshot();
+});
+ipcMain.handle('desktop-update:check', async (event) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  await checkForDesktopUpdates();
+  return desktopUpdateSnapshot();
+});
+ipcMain.handle('desktop-update:install', async (event) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  if (desktopUpdateState.phase === 'downloaded') await promptToInstallUpdate();
+  return desktopUpdateSnapshot();
 });
 ipcMain.handle('desktop-activity:get-system-idle-time', (event) => {
   if (!controlledMainWindow(event)) return 0;
@@ -756,6 +932,7 @@ else {
     });
     configurePermissions();
     await showApp();
+    await initializeDesktopHotkeys();
     startGameActivityDetection();
     configureUpdates();
     app.on('activate', () => {
@@ -766,6 +943,7 @@ else {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (app.isReady()) globalShortcut.unregisterAll();
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
   if (updateIntervalTimer) clearInterval(updateIntervalTimer);
   if (gameActivityTimer) clearInterval(gameActivityTimer);

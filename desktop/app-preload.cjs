@@ -22,6 +22,22 @@ contextBridge.exposeInMainWorld('movaDesktopShell', {
   cancelSharePicker: (requestId) => ipcRenderer.send('desktop-share-picker:cancel', requestId),
   getAutoLaunch: () => ipcRenderer.invoke('desktop-settings:get-auto-launch'),
   setAutoLaunch: (enabled) => ipcRenderer.invoke('desktop-settings:set-auto-launch', enabled),
+  getHotkeys: () => ipcRenderer.invoke('desktop-hotkeys:get'),
+  setHotkeys: (settings) => ipcRenderer.invoke('desktop-hotkeys:set', settings),
+  setHotkeyCaptureActive: (active) => ipcRenderer.send('desktop-hotkeys:set-capture-active', active),
+  onHotkeyAction(callback) {
+    const listener = (_event, action) => callback(action);
+    ipcRenderer.on('desktop-hotkeys:action', listener);
+    return () => ipcRenderer.removeListener('desktop-hotkeys:action', listener);
+  },
+  getUpdateState: () => ipcRenderer.invoke('desktop-update:get-state'),
+  checkForUpdates: () => ipcRenderer.invoke('desktop-update:check'),
+  installUpdate: () => ipcRenderer.invoke('desktop-update:install'),
+  onUpdateStateChange(callback) {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('desktop-update:state', listener);
+    return () => ipcRenderer.removeListener('desktop-update:state', listener);
+  },
   getSystemIdleTime: () => ipcRenderer.invoke('desktop-activity:get-system-idle-time'),
   getGameActivity: () => ipcRenderer.invoke('desktop-activity:get-game'),
   getGameActivitySettings: () => ipcRenderer.invoke('desktop-activity:get-settings'),

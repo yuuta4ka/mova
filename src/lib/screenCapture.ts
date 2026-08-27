@@ -4,7 +4,13 @@ interface ScreenCaptureQuality {
   frameRate: number;
 }
 
-interface ExtendedDisplayMediaStreamOptions extends DisplayMediaStreamOptions {
+interface ScreenCaptureAudioConstraints extends MediaTrackConstraints {
+  restrictOwnAudio: boolean;
+}
+
+interface ExtendedDisplayMediaStreamOptions {
+  video: boolean | MediaTrackConstraints;
+  audio?: boolean | ScreenCaptureAudioConstraints;
   selfBrowserSurface?: 'exclude' | 'include';
   surfaceSwitching?: 'exclude' | 'include';
   systemAudio?: 'exclude' | 'include';
@@ -17,28 +23,31 @@ export function screenCaptureOptions(quality: ScreenCaptureQuality, desktop: boo
     height: { ideal: quality.height },
     frameRate: { ideal: quality.frameRate, max: quality.frameRate },
   };
-  if (desktop) return { video, audio: false };
+  const audio: ScreenCaptureAudioConstraints = { restrictOwnAudio: true };
+  if (desktop) return { video, audio };
   return {
     video,
-    audio: true,
-    // Capturing Mova itself or the complete system mix sends the call audio
-    // back to every participant. Other tabs/windows may still provide their
-    // own isolated audio track in browsers that support these hints.
+    audio,
+    // Ask Chromium to omit audio produced by Mova while retaining the shared
+    // tab, window, or system sound. The captured track is verified below.
     selfBrowserSurface: 'exclude',
-    systemAudio: 'exclude',
+    systemAudio: 'include',
     windowAudio: 'window',
     surfaceSwitching: 'include',
   };
 }
 
-export const shouldRemoveScreenAudio = (desktop: boolean, displaySurface?: string) =>
-  desktop || displaySurface === 'monitor';
+export const shouldRemoveScreenAudio = (desktop: boolean, displaySurface: string | undefined, restrictOwnAudio: boolean | undefined) =>
+  (desktop || displaySurface === 'monitor') && restrictOwnAudio !== true;
 
 export function removeUnsafeScreenAudio(stream: MediaStream, desktop: boolean, displaySurface?: string) {
-  if (!shouldRemoveScreenAudio(desktop, displaySurface)) return false;
+  let removed = false;
   for (const track of stream.getAudioTracks()) {
+    const settings = track.getSettings() as MediaTrackSettings & { restrictOwnAudio?: boolean };
+    if (!shouldRemoveScreenAudio(desktop, displaySurface, settings.restrictOwnAudio)) continue;
     stream.removeTrack(track);
     track.stop();
+    removed = true;
   }
-  return true;
+  return removed;
 }

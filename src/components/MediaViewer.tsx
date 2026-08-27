@@ -49,6 +49,7 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
   const [index, setIndex] = useState(initialIndex);
   const [zoom, setZoom] = useState(mediaViewerMinZoom);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [interacting, setInteracting] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [closing, setClosing] = useState(false);
   const compact = useMediaQuery('(max-width: 700px)');
@@ -63,7 +64,6 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
     | { kind: 'swipe'; startX: number; startY: number; startedAt: number; moved: boolean }
     | null
   >(null);
-  const lastTapAt = useRef(0);
   const lastPointerType = useRef('mouse');
   const consumedGesture = useRef(false);
   const current = items[index] || items[0];
@@ -113,11 +113,6 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
     setPan((currentPan) => clampPan(currentPan, value));
     revealControls();
   }, [clampPan, revealControls]);
-
-  const toggleZoom = useCallback(() => {
-    if (zoom > mediaViewerMinZoom) resetView();
-    else applyZoom(2);
-  }, [applyZoom, resetView, zoom]);
 
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
@@ -173,6 +168,7 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     lastPointerType.current = event.pointerType || 'mouse';
+    setInteracting(true);
     revealControls();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -219,16 +215,12 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
       if (Date.now() - activeGesture.startedAt < 700 && Math.abs(deltaX) > 55 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
         showItem(index + (deltaX < 0 ? 1 : -1));
         consumedGesture.current = true;
-      } else if (!activeGesture.moved) {
-        const now = Date.now();
-        if (now - lastTapAt.current < 320) {
-          toggleZoom();
-          consumedGesture.current = true;
-          lastTapAt.current = 0;
-        } else lastTapAt.current = now;
       }
     }
-    if (pointers.current.size === 0) gesture.current = null;
+    if (pointers.current.size === 0) {
+      gesture.current = null;
+      setInteracting(false);
+    }
   };
 
   if (!current) return null;
@@ -242,7 +234,7 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
       className={`mova-media-viewer${closing ? ' is-closing' : ''}${controlsVisible ? '' : ' are-controls-hidden'}`}
       role="dialog"
       aria-modal="true"
-      aria-label={`Просмотр изображения ${current.attachment.name}`}
+      aria-label="Просмотр изображения"
       data-layout={compact ? 'mobile' : 'desktop'}
       data-zoom={zoom.toFixed(2)}
       onWheel={wheel}
@@ -262,22 +254,27 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
         else requestClose();
       }}>
         <div
-          className="mova-media-viewer__surface"
+          className={`mova-media-viewer__surface${interacting ? ' is-interacting' : ''}`}
           style={{ transform: `translate3d(${pan.x}px,${pan.y}px,0) scale(${zoom})` }}
           onPointerDown={pointerDown}
           onPointerMove={pointerMove}
           onPointerUp={pointerUp}
           onPointerCancel={pointerUp}
-          onDoubleClick={toggleZoom}
-          onClick={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (consumedGesture.current) {
+              consumedGesture.current = false;
+              return;
+            }
+            requestClose();
+          }}
         >
-          <img src={source} alt={current.attachment.name} draggable={false} />
+          <img src={source} alt="" draggable={false} />
         </div>
       </div>
 
       <header className="mova-media-viewer__toolbar">
         <span>
-          <strong>{current.attachment.name}</strong>
           {items.length > 1 && <small>{index + 1} / {items.length}</small>}
         </span>
         <a href={attachmentDownloadSource(current.attachment)} download={current.attachment.name} aria-label="Скачать изображение" onClick={(event) => event.stopPropagation()}>
@@ -307,11 +304,17 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
         <button type="button" aria-label="Увеличить" disabled={zoom >= mediaViewerMaxZoom} onClick={() => applyZoom(zoom + 0.5)}>
           <Plus size={18} aria-hidden="true" />
         </button>
-        {transformed && (
-          <button type="button" aria-label="Сбросить масштаб" onClick={resetView}>
-            <RotateCcw size={17} aria-hidden="true" />
-          </button>
-        )}
+        <button
+          type="button"
+          className={`mova-media-viewer__reset${transformed ? ' is-visible' : ''}`}
+          aria-label="Сбросить масштаб"
+          aria-hidden={!transformed}
+          tabIndex={transformed ? 0 : -1}
+          disabled={!transformed}
+          onClick={resetView}
+        >
+          <RotateCcw size={17} aria-hidden="true" />
+        </button>
       </div>
     </div>
   );

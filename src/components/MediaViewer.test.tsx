@@ -48,42 +48,66 @@ describe('MediaViewer controls', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it('closes when the opened image is clicked', () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    const { container } = viewer({ onClose });
+
+    fireEvent.click(container.querySelector('.mova-media-viewer__surface img')!);
+    expect(screen.getByRole('dialog')).toHaveClass('is-closing');
+    act(() => vi.advanceTimersByTime(211));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('does not display the image filename in the viewer', () => {
+    viewer();
+
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Просмотр изображения');
+    expect(screen.queryByText('first.png')).not.toBeInTheDocument();
+  });
+
   it('clamps zoom and resets scale and pan state', () => {
     const { container } = viewer();
     const dialog = screen.getByRole('dialog');
     const zoomIn = screen.getByRole('button', { name: 'Увеличить' });
+    const reset = container.querySelector<HTMLButtonElement>('.mova-media-viewer__reset')!;
+
+    expect(reset).toBeDisabled();
+    expect(reset).not.toHaveClass('is-visible');
 
     for (let index = 0; index < 10; index += 1) fireEvent.click(zoomIn);
     expect(dialog).toHaveAttribute('data-zoom', mediaViewerMaxZoom.toFixed(2));
     expect(zoomIn).toBeDisabled();
+    expect(reset).toHaveClass('is-visible');
 
     fireEvent.pointerDown(container.querySelector('.mova-media-viewer__surface')!, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 100 });
     fireEvent.pointerMove(container.querySelector('.mova-media-viewer__surface')!, { pointerId: 1, pointerType: 'mouse', clientX: 180, clientY: 145 });
     fireEvent.pointerUp(container.querySelector('.mova-media-viewer__surface')!, { pointerId: 1, pointerType: 'mouse', clientX: 180, clientY: 145 });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Сбросить масштаб' }));
+    fireEvent.click(reset);
     expect(dialog).toHaveAttribute('data-zoom', mediaViewerMinZoom.toFixed(2));
-    expect(screen.queryByRole('button', { name: 'Сбросить масштаб' })).not.toBeInTheDocument();
+    expect(reset).toBeDisabled();
+    expect(reset).not.toHaveClass('is-visible');
   });
 
   it('moves to next and previous images with controls', () => {
     viewer();
 
     fireEvent.click(screen.getByRole('button', { name: 'Следующее изображение' }));
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('Просмотр изображения second.png');
+    expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'second.png');
     expect(screen.getByText('2 / 3')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Предыдущее изображение' }));
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('Просмотр изображения first.png');
+    expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'first.png');
   });
 
   it('supports keyboard gallery navigation', () => {
     viewer();
 
     fireEvent.keyDown(window, { key: 'ArrowRight' });
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('Просмотр изображения second.png');
+    expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'second.png');
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('Просмотр изображения first.png');
+    expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'first.png');
   });
 });
 
@@ -126,6 +150,6 @@ describe('MediaViewer gallery and mobile state', () => {
     fireEvent.pointerMove(surface, { pointerId: 7, pointerType: 'touch', clientX: 210, clientY: 304 });
     fireEvent.pointerUp(surface, { pointerId: 7, pointerType: 'touch', clientX: 210, clientY: 304 });
 
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('Просмотр изображения second.png');
+    expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'second.png');
   });
 });

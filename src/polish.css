@@ -114,7 +114,8 @@ html.mova-landing-document body { background: #0b0d12; }
 .mova-tg-sidebar>.mova-real-chat-list { padding:3px 0 76px; }
 .mova-tg-sidebar .mova-real-chat-list>button { gap:12px; height:70px; min-height:70px; padding:8px 10px; border-radius:15px; }
 .mova-tg-sidebar .mova-real-chat-list>button:hover { background:#20232a; }
-.mova-tg-sidebar .mova-real-chat-list>button.is-active { color:#fff; background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 19%,#20232a); box-shadow:inset 3px 0 0 var(--mova-accent-color,#8774e1); }
+.mova-tg-sidebar .mova-real-chat-list>button.is-active { color:#fff; background:color-mix(in srgb,var(--mova-accent-color,#8774e1) 19%,#20232a); box-shadow:none; }
+.mova-nav-channel.is-active,.mova-chat-row.is-active { box-shadow:none; }
 .mova-tg-sidebar .mova-real-chat-list>button>.mova-avatar,.mova-tg-sidebar .mova-real-chat-list>button>.mova-real-group-avatar { width:50px; height:50px; flex-basis:50px; }
 .mova-tg-sidebar .mova-real-chat-list strong { font-size:15px; font-weight:680; }
 .mova-tg-sidebar .mova-real-chat-list time { color:#7f8490; font-size:12px; }
@@ -156,7 +157,7 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-tg-sidebar>.mova-real-chat-list { padding-bottom:8px; }
   .mova-tg-sidebar .mova-real-chat-list>button { justify-content:center; width:100%; height:64px; min-height:64px; padding:7px 0; border-radius:14px; }
   .mova-tg-sidebar .mova-real-chat-list>button>span:not(.mova-avatar):not(.mova-real-group-avatar) { display:none; }
-  .mova-tg-sidebar .mova-real-chat-list>button.is-active { box-shadow:inset 3px 0 0 var(--mova-accent-color,#8774e1); }
+  .mova-tg-sidebar .mova-real-chat-list>button.is-active { box-shadow:none; }
   .mova-tg-sidebar .mova-real-chat-list>button>.mova-avatar,.mova-tg-sidebar .mova-real-chat-list>button>.mova-real-group-avatar { width:48px; height:48px; flex-basis:48px; }
   .mova-tg-compose { display:none; }
   .mova-compose-menu { display:none; }
@@ -180,7 +181,7 @@ html.mova-landing-document body { background: #0b0d12; }
   .mova-settings>aside>div { padding:0 8px 0 2px; }
   .mova-settings>aside>div>strong { display:none; }
   .mova-settings>aside>button { flex:0 0 auto; padding-inline:12px; }
-  .mova-settings>aside>button.is-active { box-shadow:inset 0 -3px 0 var(--mova-accent-color,#8774e1); }
+  .mova-settings>aside>button.is-active { box-shadow:none; }
   .mova-settings>main { padding:20px; }
 }
 

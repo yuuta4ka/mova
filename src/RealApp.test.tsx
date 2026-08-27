@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthScreen, formatPresenceStatus, loadConversationDrafts, mergeMessageHistory, PendingCallStage, presenceUpdateForSystemIdle, Product, ProfileEditor, RealMessages, reconcileClientMessage, SettingsModal, sortConversationsByActivity, updateConversationLastMessage, updateConversationUser } from './RealApp';
 import { api, realtime, type AppConversation, type AppMessage, type AppUser } from './lib/api';
 import { ToastProvider } from './components/Primitives';
+import type { DesktopUpdateState } from './DesktopTitlebar';
 
 afterEach(() => {
   delete window.movaDesktopShell;
@@ -90,6 +91,29 @@ describe('email authentication interface', () => {
 });
 
 describe('voice processing settings', () => {
+  it('uses a concise default label and hides USB hardware IDs in device names', async () => {
+    const devices = [
+      { kind: 'audioinput', deviceId: 'microphone-usb', label: 'USB Microphone (0c76:161f)' },
+      { kind: 'audiooutput', deviceId: 'speakers-usb', label: 'USB Speakers (1234:abcd)' },
+    ] as MediaDeviceInfo[];
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        enumerateDevices: vi.fn().mockResolvedValue(devices),
+      },
+    });
+
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    const microphone = screen.getByRole('combobox', { name: 'Устройство ввода' });
+    const output = screen.getByRole('combobox', { name: 'Наушники или динамики' });
+    expect(within(microphone).getByRole('option', { name: 'По умолчанию' })).toBeInTheDocument();
+    expect(within(output).getByRole('option', { name: 'По умолчанию' })).toBeInTheDocument();
+    expect(await within(microphone).findByRole('option', { name: 'USB Microphone' })).toBeInTheDocument();
+    expect(await within(output).findByRole('option', { name: 'USB Speakers' })).toBeInTheDocument();
+    expect(screen.queryByText(/0c76:161f|1234:abcd/iu)).not.toBeInTheDocument();
+  });
+
   it('changes the account email only after checking the password and code', async () => {
     sessionStorage.clear();
     const user = userEvent.setup();
@@ -101,6 +125,8 @@ describe('voice processing settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Аккаунт' }));
     expect(screen.getByText(currentUser.email)).toBeVisible();
+    expect(screen.queryByText('Подтверждена')).not.toBeInTheDocument();
+    expect(screen.queryByText('Требуется подтверждение')).not.toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Новая почта' }), changedUser.email);
     await user.type(screen.getByLabelText('Текущий пароль'), 'strongpass2');
     await user.click(screen.getByRole('button', { name: 'Отправить код' }));
@@ -182,6 +208,83 @@ describe('voice processing settings', () => {
     await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
 
     expect(setAutoLaunch).toHaveBeenCalledWith(false);
+  });
+
+  it('records and saves desktop hotkeys while their global actions are suspended', async () => {
+    const setHotkeys = vi.fn().mockImplementation(async (settings) => settings);
+    const setHotkeyCaptureActive = vi.fn();
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      getHotkeys: vi.fn().mockResolvedValue({ toggleMicrophone: '', toggleHeadphones: '' }),
+      setHotkeys,
+      setHotkeyCaptureActive,
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const user = userEvent.setup();
+    const view = render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Горячие клавиши' }));
+    expect(await screen.findByText('Хоткеи временно приостановлены')).toBeVisible();
+    expect(setHotkeyCaptureActive).toHaveBeenCalledWith(true);
+
+    await user.click(screen.getByRole('button', { name: 'Переключить микрофон: Не назначено' }));
+    fireEvent.keyDown(window, { key: 'm', code: 'KeyM', ctrlKey: true, shiftKey: true });
+    expect(screen.getByRole('button', { name: 'Переключить микрофон: Ctrl + Shift + M' })).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: 'Переключить наушники: Не назначено' }));
+    fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
+    await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
+
+    expect(setHotkeys).toHaveBeenCalledWith({
+      toggleMicrophone: 'CommandOrControl+Shift+M',
+      toggleHeadphones: 'CommandOrControl+Shift+D',
+    });
+    view.unmount();
+    expect(setHotkeyCaptureActive).toHaveBeenLastCalledWith(false);
+  });
+
+  it('shows the desktop client version and checks for updates from settings', async () => {
+    const idleUpdate: DesktopUpdateState = {
+      currentVersion: '0.1.10',
+      availableVersion: '',
+      phase: 'idle',
+      progress: 0,
+      lastResult: 'idle',
+      supported: true,
+    };
+    let publishUpdate = (_state: DesktopUpdateState) => undefined;
+    const checkForUpdates = vi.fn().mockResolvedValue({ ...idleUpdate, phase: 'checking' });
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      getUpdateState: vi.fn().mockResolvedValue(idleUpdate),
+      checkForUpdates,
+      onUpdateStateChange: vi.fn((callback) => {
+        publishUpdate = callback;
+        return () => undefined;
+      }),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const user = userEvent.setup();
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Приложение' }));
+    expect(await screen.findByText('Mova 0.1.10')).toBeVisible();
+    const check = screen.getByRole('button', { name: 'Проверить обновления' });
+    await user.click(check);
+    expect(checkForUpdates).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('button', { name: 'Проверяем…' })).toBeDisabled();
+
+    act(() => publishUpdate({ ...idleUpdate, lastResult: 'up-to-date' }));
+    expect(await screen.findByText('У вас установлена последняя версия.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Проверить обновления' })).toBeEnabled();
   });
 
   it('registers a currently running desktop application as a game', async () => {
@@ -1173,6 +1276,29 @@ function renderChat(messages: AppMessage[] = []) {
   return render(<RealMessages conversation={conversation} currentUser={currentUser} messages={messages} onSend={vi.fn().mockResolvedValue(undefined)} />);
 }
 
+describe('RealMessages avatar preview', () => {
+  it('opens a person avatar fullscreen and keeps the profile panel open after closing it', async () => {
+    const user = userEvent.setup();
+    const avatarDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const person = { ...friend, avatarDataUrl };
+    const avatarConversation = { ...conversation, members: [currentUser, person] };
+    render(<RealMessages conversation={avatarConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${avatarConversation.title}` }));
+    const profile = screen.getByRole('complementary', { name: `Информация о ${avatarConversation.title}` });
+    await user.click(within(profile).getByRole('button', { name: `Открыть аватар ${person.name}` }));
+
+    const viewer = screen.getByRole('dialog', { name: 'Просмотр изображения' });
+    expect(viewer).toBeVisible();
+    expect(viewer.parentElement).toBe(document.body);
+    expect(viewer.querySelector('.mova-media-viewer__surface > img')).toHaveAttribute('src', avatarDataUrl);
+
+    await user.click(viewer.querySelector('.mova-media-viewer__surface > img')!);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Просмотр изображения' })).not.toBeInTheDocument());
+    expect(profile).toBeVisible();
+  });
+});
+
 describe('RealMessages friendship controls', () => {
   const stranger: AppUser = { ...friend, id: 'stranger-controls', name: 'Незнакомец', relationship: 'none' };
   const strangerConversation: AppConversation = {
@@ -1228,6 +1354,20 @@ describe('RealMessages friendship controls', () => {
 
     await waitFor(() => expect(acceptFriend).toHaveBeenCalledWith(requester.id));
     expect(within(profile).getByRole('button', { name: 'Удалить из друзей' })).toBeVisible();
+  });
+
+  it('keeps the complete profile description readable in the contact panel', async () => {
+    const user = userEvent.setup();
+    const bio = 'Крутой парень который любит много путешествовать, готовить и собирать друзей вместе';
+    const contact = { ...friend, bio };
+    const contactConversation = { ...conversation, members: [currentUser, contact] };
+    const rendered = render(<RealMessages conversation={contactConversation} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${contactConversation.title}` }));
+
+    const bioRow = rendered.container.querySelector('.mova-contact-info__bio');
+    expect(bioRow).toHaveTextContent(bio);
+    expect(bioRow?.querySelector('strong')).toHaveTextContent(bio);
   });
 
   it('accepts an incoming request from its system card', async () => {
@@ -1397,7 +1537,8 @@ describe('RealMessages attachments', () => {
       },
     });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
-    expect(screen.getByText('pasted.png')).toBeVisible();
+    expect(screen.getByText('Фотография')).toBeVisible();
+    expect(screen.queryByText('pasted.png')).not.toBeInTheDocument();
   });
 
   it('attaches a dropped image and shows the drop target', async () => {
@@ -1412,7 +1553,34 @@ describe('RealMessages attachments', () => {
       dataTransfer: { types: ['Files'], files: [image] },
     });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
-    expect(screen.getByText('dropped.png')).toBeVisible();
+    expect(screen.getByText('Фотография')).toBeVisible();
+    expect(screen.queryByText('dropped.png')).not.toBeInTheDocument();
+  });
+
+  it('hides a video filename in the attachment draft and sent message', async () => {
+    const draftView = renderChat();
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: { files: [new File(['video'], 'summer-trip.mp4', { type: 'video/mp4' })] },
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
+    expect(screen.getByText('Видео')).toBeVisible();
+    expect(screen.queryByText('summer-trip.mp4')).not.toBeInTheDocument();
+
+    const videoMessage: AppMessage = {
+      id: 'video-message',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      author: friend,
+      content: '',
+      attachment: { name: 'private-name.mp4', type: 'video/mp4', size: 2048, url: '/uploads/video.mp4' },
+      createdAt: '2026-08-10T00:01:00.000Z',
+    };
+    draftView.unmount();
+    renderChat([videoMessage]);
+
+    expect(screen.getByText('Видео')).toBeVisible();
+    expect(screen.queryByText('private-name.mp4')).not.toBeInTheDocument();
   });
 
   it('removes a compact attachment draft without affecting the message text', async () => {
@@ -1486,12 +1654,13 @@ describe('RealMessages attachments', () => {
       author: friend,
     };
     renderChat([message]);
-    await user.click(screen.getByRole('button', { name: 'Открыть изображение photo.png' }));
+    await user.click(screen.getByRole('button', { name: 'Открыть изображение' }));
     const viewer = screen.getByRole('dialog', {
-      name: 'Просмотр изображения photo.png',
+      name: 'Просмотр изображения',
     });
     expect(viewer).toBeVisible();
     expect(viewer.parentElement).toBe(document.body);
+    expect(screen.queryByText('photo.png')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'photo.png');
     await user.click(screen.getByRole('button', { name: 'Закрыть изображение' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -2094,6 +2263,23 @@ describe('RealMessages group management', () => {
     members: [currentUser, teammate],
     memberRoles: { [currentUser.id]: 'owner', [teammate.id]: 'member' },
   };
+
+  it('opens a group avatar fullscreen from the information panel', async () => {
+    const user = userEvent.setup();
+    const avatarDataUrl = 'data:image/png;base64,Z3JvdXAtYXZhdGFy';
+    const groupWithAvatar = { ...groupConversation, avatarDataUrl };
+    render(<RealMessages conversation={groupWithAvatar} currentUser={currentUser} messages={[]} onSend={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: `Открыть информацию о ${groupWithAvatar.title}` }));
+    const info = screen.getByRole('complementary', { name: `Информация о ${groupWithAvatar.title}` });
+    await user.click(within(info).getByRole('button', { name: `Открыть аватар ${groupWithAvatar.title}` }));
+
+    const viewer = screen.getByRole('dialog', { name: 'Просмотр изображения' });
+    expect(viewer.querySelector('.mova-media-viewer__surface > img')).toHaveAttribute('src', avatarDataUrl);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Просмотр изображения' })).not.toBeInTheDocument());
+    expect(info).toBeVisible();
+  });
 
   it('shows the full member list without a duplicate owner card and edits the group in the side panel', async () => {
     const user = userEvent.setup();

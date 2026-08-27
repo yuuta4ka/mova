@@ -4,7 +4,7 @@
   "description": "Десктопный клиент мессенджера Mova",
   "author": "Mova",
   "private": true,
-  "version": "0.1.10",
+  "version": "0.1.11",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -59,7 +59,7 @@
     "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "latest",
     "concurrently": "latest",
-    "electron": "^43.3.0",
+    "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "latest",

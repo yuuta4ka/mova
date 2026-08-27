@@ -1516,6 +1516,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       });
   };
 
+  useEffect(() => window.movaDesktopShell?.onHotkeyAction?.((action) => {
+    if (!conversationId || !isJoinedCallState(stateRef.current)) return;
+    if (action === 'toggle-microphone') toggleMute();
+    if (action === 'toggle-headphones') toggleDeafen();
+  }), [conversationId]);
+
   const renegotiateAll = async () => {
     await Promise.all([...peers.current.keys()].map((userId) => negotiatePeer(userId)));
   };
@@ -1633,7 +1639,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       activeScreenQuality.current = { width, height, frameRate };
       const screenTrack = stream.getVideoTracks()[0];
       if (!screenTrack) throw new DOMException('Источник экрана не передал видеодорожку', 'NotReadableError');
-      removeUnsafeScreenAudio(stream, desktopCapture, screenTrack.getSettings().displaySurface);
+      const removedUnsafeScreenAudio = removeUnsafeScreenAudio(stream, desktopCapture, screenTrack.getSettings().displaySurface);
       screenTrack.contentHint = screenShareContentHint(frameRate);
       const old = screenStreamRef.current;
       if (old) {
@@ -1674,9 +1680,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       screenTrack.onended = () => void stopScreen();
       await renegotiateAll();
       await Promise.all(screenSenders.map((sender) => configureScreenShareSender(sender, activeScreenQuality.current).catch(() => false)));
-      if (!stream.getAudioTracks().length) setError(desktopCapture
-        ? 'Экран демонстрируется без звука. Системный звук отключён, чтобы голоса звонка не дублировались.'
-        : 'Экран демонстрируется без звука. В окне выбора включите «Поделиться аудио» (звук доступен не для всех источников).');
+      if (!stream.getAudioTracks().length) setError(removedUnsafeScreenAudio
+        ? 'Экран демонстрируется без звука: система не смогла исключить голоса Mova из аудиопотока.'
+        : 'Экран демонстрируется без звука. Захват аудио недоступен для выбранного источника или не был включён в окне выбора.');
       else setError('');
     } catch (screenError) {
       if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') return;

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'" />
+    <title>Обновление Mova</title>
+    <link rel="stylesheet" href="./update-dialog.css" />
+  </head>
+  <body>
+    <main class="update-dialog" data-tone="info" aria-labelledby="update-dialog-message" aria-describedby="update-dialog-detail">
+      <header class="update-dialog__titlebar">
+        <span class="update-dialog__brand" aria-hidden="true">M</span>
+        <strong class="update-dialog__title">Обновление Mova</strong>
+        <button type="button" class="update-dialog__close" aria-label="Закрыть">
+          <span></span><span></span>
+        </button>
+      </header>
+
+      <section class="update-dialog__content">
+        <span class="update-dialog__glow" aria-hidden="true"></span>
+        <span class="update-dialog__status" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="presentation">
+            <g class="icon-success"><path d="m14 24 7 7 14-15" /></g>
+            <g class="icon-update"><path d="M15 18a12 12 0 0 1 20 3" /><path d="m35 14 .5 7-7-.5" /><path d="M33 30a12 12 0 0 1-20-3" /><path d="m13 34-.5-7 7 .5" /></g>
+            <g class="icon-error"><path d="M17 17l14 14M31 17 17 31" /></g>
+            <g class="icon-info"><path d="M24 22v10" /><path d="M24 16h.01" /></g>
+          </svg>
+        </span>
+        <div class="update-dialog__copy">
+          <h1 id="update-dialog-message">Проверяем обновления</h1>
+          <p id="update-dialog-detail"></p>
+          <span class="update-dialog__meta" hidden></span>
+        </div>
+      </section>
+
+      <footer class="update-dialog__actions"></footer>
+    </main>
+    <script src="./update-dialog.js"></script>
+  </body>
+</html>

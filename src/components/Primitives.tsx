@@ -143,6 +143,8 @@ export interface AvatarProps {
   initialsLength?: 1 | 2;
   status?: 'online' | 'idle' | 'busy' | 'offline' | 'dnd' | 'invisible';
   speaking?: boolean;
+  actionLabel?: string;
+  onClick?: () => void;
 }
 
 export type PresenceStatus = NonNullable<AvatarProps['status']>;
@@ -162,14 +164,19 @@ export function StatusIndicator({ status, inline = false, className = '' }: { st
   return <span className={`mova-status-indicator mova-status-indicator--${visualStatus}${inline ? ' is-inline' : ''} ${className}`.trim()} role="img" aria-label={label} title={label} />;
 }
 
-export function Avatar({ name, src, color = '#9D7BFF', size = 'md', initialsLength = 2, status, speaking }: AvatarProps) {
+export function Avatar({ name, src, color = '#9D7BFF', size = 'md', initialsLength = 2, status, speaking, actionLabel, onClick }: AvatarProps) {
   const initials = name.trim().split(/\s+/).map((part) => Array.from(part)[0] || '').slice(0, initialsLength).join('').toUpperCase();
-  return (
-    <span className={`mova-avatar mova-avatar--${size} ${src ? 'has-image' : ''} ${speaking ? 'is-speaking' : ''}`} style={{ backgroundColor: color }} aria-label={name}>
+  const className = `mova-avatar mova-avatar--${size} ${src ? 'has-image' : ''} ${speaking ? 'is-speaking' : ''}`;
+  const content = (
+    <>
       {src ? <img src={src} alt="" loading="lazy" decoding="async" /> : initials}
       {status && <StatusIndicator status={status} />}
-    </span>
+    </>
   );
+  if (onClick) {
+    return <button type="button" className={className} style={{ backgroundColor: color }} aria-label={actionLabel || `Открыть аватар ${name}`} onClick={onClick}>{content}</button>;
+  }
+  return <span className={className} style={{ backgroundColor: color }} aria-label={name}>{content}</span>;
 }
 
 export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'mint' | 'violet' | 'danger' }) {

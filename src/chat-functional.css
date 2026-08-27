@@ -130,6 +130,9 @@
 .mova-contact-info.is-group>header h2{max-width:calc(100% - 120px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mova-contact-info.is-group>header>.mova-icon-button:last-child{margin-left:auto}
 .mova-contact-info.is-group .mova-contact-info__profile{padding-block:24px 21px}
+.mova-contact-info__card>div.mova-contact-info__bio{align-items:flex-start}
+.mova-contact-info__card>div.mova-contact-info__bio>svg{margin-top:2px}
+.mova-contact-info__card>div.mova-contact-info__bio strong{overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere}
 .mova-contact-info.is-group .mova-contact-info__card{flex:0 0 auto}
 .mova-group-info-members{display:grid;gap:2px;margin:0 12px 18px;padding:8px 8px 10px;background:#222;border-radius:24px}
 .mova-group-info-members>h3{display:flex;align-items:center;gap:6px;margin:0;padding:8px 10px 6px;color:var(--mova-accent-color,#8774e1);font-size:14px;font-weight:650}
