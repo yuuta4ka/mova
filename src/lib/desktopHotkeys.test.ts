@@ -19,9 +19,13 @@ describe('desktop hotkey recorder', () => {
       .toBe('CommandOrControl+Shift+M');
   });
 
-  it('rejects ordinary typing but permits function keys', () => {
-    expect(hotkeyAcceleratorFromEvent(event({ code: 'KeyM' }), 'win32')).toBe('');
+  it('permits ordinary, function, punctuation and numpad keys without modifiers', () => {
+    expect(hotkeyAcceleratorFromEvent(event({ code: 'KeyM' }), 'win32')).toBe('M');
     expect(hotkeyAcceleratorFromEvent(event({ code: 'F8' }), 'darwin')).toBe('F8');
+    expect(hotkeyAcceleratorFromEvent(event({ code: 'Escape' }), 'win32')).toBe('Escape');
+    expect(hotkeyAcceleratorFromEvent(event({ code: 'Slash' }), 'win32')).toBe('/');
+    expect(hotkeyAcceleratorFromEvent(event({ code: 'Numpad7' }), 'win32')).toBe('num7');
+    expect(hotkeyAcceleratorFromEvent(event({ code: 'MediaPlayPause' }), 'darwin')).toBe('MediaPlayPause');
   });
 
   it('formats shortcuts for each desktop platform', () => {

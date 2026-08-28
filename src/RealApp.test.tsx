@@ -210,6 +210,30 @@ describe('voice processing settings', () => {
     expect(setAutoLaunch).toHaveBeenCalledWith(false);
   });
 
+  it('shows and persists the desktop system-audio switch for screen sharing', async () => {
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const user = userEvent.setup();
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Демонстрация' }));
+    const systemAudio = screen.getByRole('checkbox', { name: /Передавать системный звук/ });
+    expect(systemAudio).toBeChecked();
+    await user.click(systemAudio);
+    await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
+
+    expect(JSON.parse(localStorage.getItem('mova-screen-share-settings') || '{}')).toMatchObject({
+      systemAudioEnabled: false,
+    });
+    localStorage.removeItem('mova-screen-share-settings');
+  });
+
   it('records and saves desktop hotkeys while their global actions are suspended', async () => {
     const setHotkeys = vi.fn().mockImplementation(async (settings) => settings);
     const setHotkeyCaptureActive = vi.fn();
@@ -232,15 +256,15 @@ describe('voice processing settings', () => {
     expect(setHotkeyCaptureActive).toHaveBeenCalledWith(true);
 
     await user.click(screen.getByRole('button', { name: 'Переключить микрофон: Не назначено' }));
-    fireEvent.keyDown(window, { key: 'm', code: 'KeyM', ctrlKey: true, shiftKey: true });
-    expect(screen.getByRole('button', { name: 'Переключить микрофон: Ctrl + Shift + M' })).toBeVisible();
+    fireEvent.keyDown(window, { key: 'm', code: 'KeyM' });
+    expect(screen.getByRole('button', { name: 'Переключить микрофон: M' })).toBeVisible();
 
     await user.click(screen.getByRole('button', { name: 'Переключить наушники: Не назначено' }));
     fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
     await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
 
     expect(setHotkeys).toHaveBeenCalledWith({
-      toggleMicrophone: 'CommandOrControl+Shift+M',
+      toggleMicrophone: 'M',
       toggleHeadphones: 'CommandOrControl+Shift+D',
     });
     view.unmount();
@@ -303,11 +327,11 @@ describe('voice processing settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
     expect(await screen.findByText('Mova 0.1.10')).toBeVisible();
-    expect(screen.getByText(/Доступна Mova 0\.1\.12/)).toBeVisible();
+    expect(screen.getByText(/Доступна Mova 0\.1\.13/)).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Скачать обновление' }));
 
     expect(open).toHaveBeenCalledWith(
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.12/Mova-0.1.12-arm64.dmg',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.13/Mova-0.1.13-arm64.dmg',
       '_blank',
       'noopener,noreferrer',
     );
@@ -1562,8 +1586,9 @@ describe('RealMessages attachments', () => {
         files: [image],
       },
     });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
-    expect(screen.getByText('Фотография')).toBeVisible();
+    const preview = await screen.findByRole('dialog', { name: 'Отправить 1 фото' });
+    expect(within(preview).getByRole('button', { name: 'Отправить 1 фото' })).toBeEnabled();
+    expect(within(preview).getByRole('textbox', { name: 'Подпись к фотографиям' })).toHaveAttribute('placeholder', 'Добавить подпись…');
     expect(screen.queryByText('pasted.png')).not.toBeInTheDocument();
   });
 
@@ -1578,9 +1603,67 @@ describe('RealMessages attachments', () => {
     fireEvent.drop(thread, {
       dataTransfer: { types: ['Files'], files: [image] },
     });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled());
-    expect(screen.getByText('Фотография')).toBeVisible();
+    const preview = await screen.findByRole('dialog', { name: 'Отправить 1 фото' });
+    expect(within(preview).getByRole('button', { name: 'Отправить 1 фото' })).toBeEnabled();
     expect(screen.queryByText('dropped.png')).not.toBeInTheDocument();
+  });
+
+  it('sends up to ten selected photos as one message with a shared caption', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={onSend} />);
+    const photos = Array.from({ length: 10 }, (_, index) => new File([`photo-${index}`], `photo-${index + 1}.png`, { type: 'image/png' }));
+
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: photos } });
+
+    const preview = await screen.findByRole('dialog', { name: 'Отправить 10 фото' });
+    expect(within(preview).getAllByRole('button', { name: /Убрать фотографию/ })).toHaveLength(10);
+    expect(within(preview).getByRole('button', { name: 'Добавить фотографии' })).toBeDisabled();
+    await user.type(within(preview).getByRole('textbox', { name: 'Подпись к фотографиям' }), 'Летняя поездка');
+    await user.click(within(preview).getByRole('button', { name: 'Отправить 10 фото' }));
+
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledWith('Летняя поездка', expect.objectContaining({
+      type: 'image/album',
+      items: expect.arrayContaining(photos.map((photo) => expect.objectContaining({ name: photo.name, type: photo.type }))),
+    }), undefined);
+    expect(screen.queryByRole('dialog', { name: 'Отправить 10 фото' })).not.toBeInTheDocument();
+  });
+
+  it('rejects an eleventh photo before opening the preview', async () => {
+    renderChat();
+    const photos = Array.from({ length: 11 }, (_, index) => new File([`photo-${index}`], `photo-${index + 1}.png`, { type: 'image/png' }));
+
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: photos } });
+
+    expect(await screen.findByText('В одном сообщении может быть не больше 10 фотографий')).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: /Отправить .* фото/ })).not.toBeInTheDocument();
+  });
+
+  it('renders an album as one bubble and opens each photo in the shared gallery', async () => {
+    const albumMessage: AppMessage = {
+      id: 'summer-album',
+      conversationId: conversation.id,
+      authorId: friend.id,
+      author: friend,
+      content: 'Три кадра',
+      attachment: {
+        name: '3 фотографии',
+        type: 'image/album',
+        size: 300,
+        items: [1, 2, 3].map((index) => ({ name: `photo-${index}.png`, type: 'image/png', size: 100, url: `/uploads/photo-${index}.png` })),
+      },
+      createdAt: '2026-08-10T00:01:00.000Z',
+    };
+    renderChat([albumMessage]);
+
+    const album = screen.getByLabelText('3 фото');
+    expect(within(album).getAllByRole('button', { name: /Открыть фотографию/ })).toHaveLength(3);
+    await userEvent.setup().click(within(album).getByRole('button', { name: 'Открыть фотографию 2 из 3' }));
+
+    expect(screen.getByRole('dialog', { name: 'Просмотр изображения' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'photo-2.png');
+    expect(screen.getByText('2 / 3')).toBeVisible();
   });
 
   it('hides a video filename in the attachment draft and sent message', async () => {
@@ -2554,6 +2637,34 @@ describe('RealMessages context actions and selection', () => {
     expect(browserWriteText).not.toHaveBeenCalled();
   });
 
+  it('copies an image attachment through the native desktop clipboard bridge', async () => {
+    const user = userEvent.setup();
+    const writeClipboardImage = vi.fn().mockResolvedValue(true);
+    window.movaDesktopShell = {
+      platform: 'win32',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      writeClipboardImage,
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const imageDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const imageMessage: AppMessage = {
+      ...incoming,
+      id: 'clipboard-image',
+      content: '',
+      attachment: { name: 'clipboard.png', type: 'image/png', size: 12, dataUrl: imageDataUrl },
+    };
+    const { container } = renderChat([imageMessage]);
+
+    fireEvent.contextMenu(container.querySelector('.mova-real-message')!);
+    expect(screen.queryByRole('menuitem', { name: 'Копировать' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('menuitem', { name: 'Копировать изображение' }));
+
+    expect(writeClipboardImage).toHaveBeenCalledWith(imageDataUrl);
+  });
+
   it('shows bottom bulk actions, deletes own selections for everyone and exits with Escape', async () => {
     const user = userEvent.setup();
     const onDeleteMessage = vi.fn().mockResolvedValue(undefined);
@@ -3179,6 +3290,45 @@ describe('Product message history errors', () => {
     expect(await screen.findByText(refreshedMessage.content)).toBeVisible();
     expect(messagesSpy).toHaveBeenCalledTimes(3);
     expect(screen.queryByText('Не удалось загрузить сообщения')).not.toBeInTheDocument();
+  });
+});
+
+describe('Product chat keyboard navigation', () => {
+  it('closes a nested chat surface first and exits the open chat with Escape', async () => {
+    const escapeUser: AppUser = { ...currentUser, id: 'escape-user', email: 'escape-user@mova.test' };
+    const escapeFriend: AppUser = { ...friend, id: 'escape-friend', email: 'escape-friend@mova.test' };
+    const escapeConversation: AppConversation = {
+      ...conversation,
+      id: 'escape-chat',
+      title: 'Чат по Escape',
+      members: [escapeUser, escapeFriend],
+    };
+    window.movaDesktopShell = {
+      platform: 'darwin',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
+    vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [escapeConversation] });
+    vi.spyOn(api, 'users').mockResolvedValue({ users: [escapeFriend] });
+    vi.spyOn(api, 'messages').mockResolvedValue({ messages: [] });
+    const rendered = render(<Product currentUser={escapeUser} onUserUpdate={vi.fn()} onLogout={vi.fn()} />);
+    expect(await screen.findByText(`Это начало вашей переписки с ${escapeFriend.name}.`)).toBeVisible();
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Поиск' }));
+    expect(screen.getByRole('textbox', { name: 'Поиск в переписке' })).toBeVisible();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Поиск в переписке' })).not.toBeInTheDocument());
+    expect(rendered.container.querySelector('.mova-real-thread')).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(await screen.findByText('Выберите разговор или создайте новый')).toBeVisible();
+    expect(rendered.container.querySelector('.mova-real-thread')).not.toBeInTheDocument();
+    expect(localStorage.getItem('mova-selected-conversation')).toBeNull();
   });
 });
 

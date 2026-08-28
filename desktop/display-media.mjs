@@ -7,3 +7,7 @@ export function desktopDisplayMediaStreams(source, audioRequested, platform = pr
     ...(audioRequested && safeLoopbackPlatforms.has(platform) ? { audio: 'loopback' } : {}),
   };
 }
+
+export function desktopDisplayMediaHandlerOptions(platform = process.platform) {
+  return { useSystemPicker: platform === 'darwin' };
+}

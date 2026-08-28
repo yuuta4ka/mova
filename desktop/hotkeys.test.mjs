@@ -7,7 +7,11 @@ describe('desktop hotkeys', () => {
     expect(isDesktopAccelerator('Alt+F12')).toBe(true);
     expect(isDesktopAccelerator('F8')).toBe(true);
     expect(isDesktopAccelerator('CommandOrControl+Space')).toBe(true);
-    expect(isDesktopAccelerator('M')).toBe(false);
+    expect(isDesktopAccelerator('M')).toBe(true);
+    expect(isDesktopAccelerator('Escape')).toBe(true);
+    expect(isDesktopAccelerator('/')).toBe(true);
+    expect(isDesktopAccelerator('num7')).toBe(true);
+    expect(isDesktopAccelerator('MediaPlayPause')).toBe(true);
     expect(isDesktopAccelerator('CommandOrControl+Unknown')).toBe(false);
   });
 

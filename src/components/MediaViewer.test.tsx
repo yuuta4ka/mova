@@ -134,6 +134,25 @@ describe('MediaViewer gallery and mobile state', () => {
     expect(gallery.map((item) => item.id)).toEqual(['image']);
   });
 
+  it('flattens every photo in one album into adjacent gallery items', () => {
+    const author: AppUser = { id: 'u', name: 'User', email: 'u@test', handle: '@u', color: '#000', presence: 'online', createdAt: '2026-08-12T00:00:00.000Z' };
+    const album: AppMessage = {
+      id: 'album',
+      conversationId: 'chat',
+      authorId: author.id,
+      author,
+      content: '',
+      attachment: { name: '3 фотографии', type: 'image/album', size: 384, items: [attachment('one.png'), attachment('two.png'), attachment('three.png')] },
+      createdAt: '2026-08-12T00:00:00.000Z',
+    };
+
+    expect(buildMediaGallery([album]).map((item) => [item.id, item.attachment.name])).toEqual([
+      ['album:0', 'one.png'],
+      ['album:1', 'two.png'],
+      ['album:2', 'three.png'],
+    ]);
+  });
+
   it('uses fullscreen mobile state and swipes between images', () => {
     vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
       matches: query === '(max-width: 700px)',

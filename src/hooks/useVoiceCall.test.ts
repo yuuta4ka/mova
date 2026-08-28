@@ -265,4 +265,41 @@ describe('voice call state model', () => {
     expect(result.current.state).toBe('ringing');
     expect(send).toHaveBeenCalledWith({ type: 'call:invite', conversationId: 'chat' });
   });
+
+  it('keeps an unanswered outgoing call open as a one-person room', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(realtime, 'subscribe').mockImplementation(() => () => undefined);
+    const send = vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    const microphoneTrack = { enabled: true, readyState: 'live', stop: vi.fn() } as unknown as MediaStreamTrack;
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          id: 'solo-microphone-stream',
+          getTracks: () => [microphoneTrack],
+          getAudioTracks: () => [microphoneTrack],
+        }),
+      },
+    });
+    const { result } = renderHook(() => useVoiceCall('chat', 'me', { direct: true }));
+
+    act(() => result.current.call());
+    expect(result.current.state).toBe('ringing');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    expect(result.current.state).toBe('connected');
+    expect(result.current.joined).toBe(true);
+    expect(result.current.participants).toEqual([]);
+    expect(result.current.startedAt).toBeTruthy();
+    expect(send).toHaveBeenCalledWith({ type: 'call:accept', conversationId: 'chat' });
+    expect(send).toHaveBeenCalledWith({ type: 'voice:join', conversationId: 'chat' });
+    expect(send).not.toHaveBeenCalledWith({ type: 'call:decline', conversationId: 'chat' });
+    expect(sessionStorage.getItem('mova-active-call')).toBe('chat');
+  });
 });

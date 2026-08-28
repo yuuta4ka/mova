@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('movaDesktopShell', {
   toggleMaximize: () => ipcRenderer.send('desktop-window:toggle-maximize'),
   close: () => ipcRenderer.send('desktop-window:close'),
   writeClipboardText: (text) => ipcRenderer.invoke('desktop-clipboard:write-text', text),
+  writeClipboardImage: (dataUrl) => ipcRenderer.invoke('desktop-clipboard:write-image', dataUrl),
   setCallStatus: (status) => ipcRenderer.send('desktop-call:status', status),
   showNotification: (notification) => ipcRenderer.send('desktop-notification:show', notification),
   onNotificationClick(callback) {

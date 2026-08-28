@@ -28,6 +28,7 @@ export interface ScreenShareQuality {
   width: number;
   height: number;
   frameRate: number;
+  systemAudioEnabled?: boolean;
 }
 export interface PeerCallDiagnostics {
   connectionState: RTCPeerConnectionState;
@@ -1454,8 +1455,13 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     stopTone.current = startRingtone('outgoing');
     realtime.send({ type: 'call:invite', conversationId });
     ringTimeout.current = window.setTimeout(() => {
-      realtime.send({ type: 'call:decline', conversationId });
-      leave(false);
+      ringTimeout.current = null;
+      if (stateRef.current !== 'ringing') return;
+      const callStartedAt = new Date().toISOString();
+      setStartedAt(callStartedAt);
+      stopTone.current();
+      realtime.send({ type: 'call:accept', conversationId });
+      void connectAudio();
     }, 30_000);
   };
   const accept = async () => {
@@ -1624,22 +1630,23 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     }
   };
   const shareScreen = async (
-    { width, height, frameRate }: ScreenShareQuality = {
+    { width, height, frameRate, systemAudioEnabled = true }: ScreenShareQuality = {
       width: 1920,
       height: 1080,
       frameRate: 30,
+      systemAudioEnabled: true,
     },
   ) => {
     if (!conversationId || !isJoinedCallState(stateRef.current)) return;
     try {
       const desktopCapture = Boolean(window.movaDesktopShell);
       const stream = await navigator.mediaDevices.getDisplayMedia(
-        screenCaptureOptions({ width, height, frameRate }, desktopCapture),
+        screenCaptureOptions({ width, height, frameRate }, desktopCapture, systemAudioEnabled),
       );
       activeScreenQuality.current = { width, height, frameRate };
       const screenTrack = stream.getVideoTracks()[0];
       if (!screenTrack) throw new DOMException('Источник экрана не передал видеодорожку', 'NotReadableError');
-      const removedUnsafeScreenAudio = removeUnsafeScreenAudio(stream, desktopCapture, screenTrack.getSettings().displaySurface);
+      removeUnsafeScreenAudio(stream, desktopCapture, screenTrack.getSettings().displaySurface);
       screenTrack.contentHint = screenShareContentHint(frameRate);
       const old = screenStreamRef.current;
       if (old) {
@@ -1680,9 +1687,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       screenTrack.onended = () => void stopScreen();
       await renegotiateAll();
       await Promise.all(screenSenders.map((sender) => configureScreenShareSender(sender, activeScreenQuality.current).catch(() => false)));
-      if (!stream.getAudioTracks().length) setError(removedUnsafeScreenAudio
-        ? 'Экран демонстрируется без звука: система не смогла исключить голоса Mova из аудиопотока.'
-        : 'Экран демонстрируется без звука. Захват аудио недоступен для выбранного источника или не был включён в окне выбора.');
+      const hasLiveScreenAudio = stream.getAudioTracks().some((track) => track.readyState !== 'ended');
+      if (systemAudioEnabled && !hasLiveScreenAudio) setError('Экран демонстрируется без звука. Не удалось запустить безопасный захват системного аудио.');
       else setError('');
     } catch (screenError) {
       if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') return;

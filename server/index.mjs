@@ -102,7 +102,9 @@ function messagePushNotification(message, recipientId) {
   const conversation = database.getConversation(message.conversationId);
   if (!author || !conversation || recipientId === message.authorId || (message.kind && message.kind !== 'user')) return null;
   const title = conversation.kind === 'group' ? `${author.name} · ${conversation.title}` : author.name;
-  const body = String(message.content || '').trim() || (message.attachment?.type?.startsWith('image/') ? 'Фотография' : message.attachment?.type?.startsWith('audio/') && message.attachment.durationMs ? 'Голосовое сообщение' : message.attachment ? `Файл: ${message.attachment.name}` : 'Новое сообщение');
+  const imageCount = message.attachment?.type === 'image/album' && Array.isArray(message.attachment.items) ? message.attachment.items.length : message.attachment?.type?.startsWith('image/') ? 1 : 0;
+  const imageLabel = imageCount === 1 ? 'Фотография' : imageCount > 1 ? `${imageCount} фото` : '';
+  const body = String(message.content || '').trim() || (imageLabel || (message.attachment?.type?.startsWith('audio/') && message.attachment.durationMs ? 'Голосовое сообщение' : message.attachment ? `Файл: ${message.attachment.name}` : 'Новое сообщение'));
   return {
     kind: 'message',
     title,

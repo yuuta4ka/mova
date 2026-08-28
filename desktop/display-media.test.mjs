@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { desktopDisplayMediaStreams } from './display-media.mjs';
+import { desktopDisplayMediaHandlerOptions, desktopDisplayMediaStreams } from './display-media.mjs';
 
 describe('desktop display media', () => {
   const source = { id: 'screen:1:0', name: 'Screen 1' };
@@ -15,5 +15,10 @@ describe('desktop display media', () => {
 
   it('cancels capture when no source was selected', () => {
     expect(desktopDisplayMediaStreams(null, true, 'win32')).toEqual({});
+  });
+
+  it('uses the native picker on macOS so CoreAudio capture is actually started', () => {
+    expect(desktopDisplayMediaHandlerOptions('darwin')).toEqual({ useSystemPicker: true });
+    expect(desktopDisplayMediaHandlerOptions('win32')).toEqual({ useSystemPicker: false });
   });
 });

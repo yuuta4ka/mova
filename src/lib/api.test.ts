@@ -81,6 +81,40 @@ describe('message attachments', () => {
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ content: 'Файл', attachment: uploadedAttachment, clientId: 'client-retry' });
   });
 
+  it('uploads every album item and posts one message containing their URLs', async () => {
+    const uploaded = [
+      { name: 'first.png', type: 'image/png', size: 5, url: '/uploads/first.png' },
+      { name: 'second.png', type: 'image/png', size: 6, url: '/uploads/second.png' },
+    ];
+    let uploadIndex = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _options?: RequestInit) => {
+      const target = String(input);
+      if (target.startsWith('data:image/')) return new Response(new Blob(['photo'], { type: 'image/png' }));
+      if (target === '/api/uploads') {
+        const attachment = uploaded[uploadIndex++];
+        return new Response(JSON.stringify({ attachment }), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ message: { id: 'album-message' } }), { status: 201, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const onAttachmentUploaded = vi.fn();
+
+    await api.sendMessage('chat', 'Два кадра', {
+      name: '2 фотографии',
+      type: 'image/album',
+      size: 11,
+      items: [
+        { name: 'first.png', type: 'image/png', size: 5, dataUrl: 'data:image/png;base64,Zmlyc3Q=' },
+        { name: 'second.png', type: 'image/png', size: 6, dataUrl: 'data:image/png;base64,c2Vjb25k' },
+      ],
+    }, undefined, 'client-album', onAttachmentUploaded);
+
+    const uploadedAlbum = { name: '2 фотографии', type: 'image/album', size: 11, items: uploaded };
+    expect(onAttachmentUploaded).toHaveBeenCalledWith(uploadedAlbum);
+    const messageRequest = fetchMock.mock.calls.find(([input]) => String(input) === '/api/conversations/chat/messages')!;
+    expect(JSON.parse(String(messageRequest[1]?.body))).toEqual({ content: 'Два кадра', attachment: uploadedAlbum, clientId: 'client-album' });
+  });
+
   it('preserves voice duration and waveform after the binary upload', async () => {
     const uploadedAttachment = { name: 'Голосовое сообщение.webm', type: 'audio/webm;codecs=opus', size: 5, url: '/uploads/voice.webm' };
     const voiceAttachment = { name: uploadedAttachment.name, type: uploadedAttachment.type, size: uploadedAttachment.size, dataUrl: 'data:audio/webm;base64,dm9pY2U=', durationMs: 1_800, waveform: [0.2, 0.8, 0.4, 0.7, 0.3, 0.9, 0.5, 0.6] };

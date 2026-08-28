@@ -1,4 +1,5 @@
 import { api, type AppConversation, type AppMessage, type AppUser } from './api';
+import { attachmentImages, photoCountLabel } from './messageAttachments';
 
 let serverPushActive = false;
 
@@ -6,10 +7,11 @@ export function messageNotificationCopy(message: AppMessage, conversation?: AppC
   const groupTitle = conversation?.kind === 'group' ? conversation.title : '';
   const title = groupTitle ? `${message.author.name} · ${groupTitle}` : message.author.name;
   const content = message.content.trim();
+  const images = attachmentImages(message.attachment);
   const body =
     content ||
-    (message.attachment?.type.startsWith('image/')
-      ? 'Фотография'
+    (images.length
+      ? images.length === 1 ? 'Фотография' : photoCountLabel(images.length)
       : message.attachment?.type.startsWith('audio/') && message.attachment.durationMs
         ? 'Голосовое сообщение'
       : message.attachment

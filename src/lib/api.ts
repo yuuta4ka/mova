@@ -22,6 +22,7 @@ export interface MessageAttachment {
   size: number;
   dataUrl?: string;
   url?: string;
+  items?: MessageAttachment[];
   durationMs?: number;
   waveform?: number[];
 }
@@ -166,6 +167,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 async function uploadAttachment(attachment: MessageAttachment): Promise<MessageAttachment> {
+  if (attachment.type === 'image/album') {
+    const items = Array.isArray(attachment.items) ? attachment.items : [];
+    if (items.length < 2 || items.length > 10 || items.some((item) => !item.type.startsWith('image/') || item.type === 'image/album')) {
+      throw new Error('В альбоме должно быть от 2 до 10 фотографий');
+    }
+    const uploadedItems = await Promise.all(items.map(uploadAttachment));
+    return {
+      name: attachment.name,
+      type: 'image/album',
+      size: uploadedItems.reduce((total, item) => total + item.size, 0),
+      items: uploadedItems,
+    };
+  }
   if (attachment.url) return attachment;
   if (!attachment.dataUrl) throw new Error('Не удалось подготовить файл');
   const token = session.get();

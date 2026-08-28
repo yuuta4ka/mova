@@ -8,7 +8,14 @@ export const defaultDesktopHotkeys = {
 const allowedModifiers = new Set(['CommandOrControl', 'Command', 'Control', 'Super', 'Alt', 'Shift']);
 const allowedNamedKeys = new Set([
   'Space', 'Tab', 'Enter', 'Backspace', 'Delete', 'Insert', 'Home', 'End',
-  'PageUp', 'PageDown', 'Up', 'Down', 'Left', 'Right',
+  'PageUp', 'PageDown', 'Up', 'Down', 'Left', 'Right', 'Escape',
+  'Capslock', 'Numlock', 'Scrolllock', 'VolumeUp', 'VolumeDown', 'VolumeMute',
+  'MediaNextTrack', 'MediaPreviousTrack', 'MediaStop', 'MediaPlayPause', 'PrintScreen',
+  'numdec', 'numadd', 'numsub', 'nummult', 'numdiv',
+]);
+const allowedPunctuationKeys = new Set([
+  ')', '!', '@', '#', '$', '%', '^', '&', '*', '(', ':', ';', '=', '<', ',', '_', '-',
+  '>', '.', '?', '/', '~', '`', '{', ']', '[', '|', '\\', '}', '"', "'", 'Plus',
 ]);
 
 export function normalizeDesktopHotkeys(value) {
@@ -24,11 +31,12 @@ export function isDesktopAccelerator(value) {
   if (parts.some((part) => !part)) return false;
   const key = parts.at(-1);
   const modifiers = parts.slice(0, -1);
-  if (!modifiers.length) return /^F(?:[1-9]|1[0-9]|2[0-4])$/u.test(key);
   if (new Set(modifiers).size !== modifiers.length || modifiers.some((part) => !allowedModifiers.has(part))) return false;
   return /^[A-Z0-9]$/u.test(key)
     || /^F(?:[1-9]|1[0-9]|2[0-4])$/u.test(key)
-    || allowedNamedKeys.has(key);
+    || /^num[0-9]$/u.test(key)
+    || allowedNamedKeys.has(key)
+    || allowedPunctuationKeys.has(key);
 }
 
 export function validateDesktopHotkeys(value) {

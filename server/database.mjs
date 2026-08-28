@@ -434,6 +434,24 @@ export class MovaDatabase {
 
   async normalizeAttachment(attachment, ownerId = null) {
     if (!attachment) return null;
+    if (attachment.type === 'image/album') {
+      const rawItems = Array.isArray(attachment.items) ? attachment.items : [];
+      if (rawItems.length < 2 || rawItems.length > 10 || rawItems.some((item) => !item || item.type === 'image/album')) {
+        throw Object.assign(new Error('В альбоме должно быть от 2 до 10 фотографий'), { statusCode: 400 });
+      }
+      const items = [];
+      for (const rawItem of rawItems) {
+        const item = await this.normalizeAttachment(rawItem, ownerId);
+        if (!item?.type?.startsWith('image/')) throw Object.assign(new Error('Альбом может содержать только фотографии'), { statusCode: 400 });
+        items.push(item);
+      }
+      return {
+        name: `${items.length} фото`,
+        type: 'image/album',
+        size: items.reduce((total, item) => total + Number(item.size || 0), 0),
+        items,
+      };
+    }
     if (attachment.url?.startsWith('/uploads/')) {
       const fileName = attachment.url.slice('/uploads/'.length);
       const upload = this.sqlite.prepare('SELECT owner_id, attached_message_id, original_name, mime_type, size FROM uploads WHERE file_name=?').get(fileName);
@@ -807,7 +825,12 @@ export class MovaDatabase {
         .prepare(`INSERT INTO messages(id,conversation_id,author_id,kind,content,attachment_json,reply_to_id,forward_json,call_json,friend_request_json,client_id,created_at,sent_at,edited_at,pinned_at,pinned_by_id)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(message.id, message.conversationId, message.authorId, message.kind || 'user', message.content || '', message.attachment ? JSON.stringify(message.attachment) : null, message.replyToId || null, message.forwardedFrom ? JSON.stringify(message.forwardedFrom) : null, message.call ? JSON.stringify(message.call) : null, message.friendRequest ? JSON.stringify(message.friendRequest) : null, message.clientId || null, message.createdAt, message.sentAt || message.createdAt, message.editedAt || null, message.pinnedAt || null, message.pinnedById || null);
-      if (message.attachment?.url?.startsWith('/uploads/')) this.sqlite.prepare("UPDATE uploads SET attached_message_id=?, purpose='message' WHERE file_name=?").run(message.id, message.attachment.url.slice('/uploads/'.length));
+      const attachments = message.attachment?.type === 'image/album' && Array.isArray(message.attachment.items)
+        ? message.attachment.items
+        : message.attachment ? [message.attachment] : [];
+      for (const attachment of attachments) {
+        if (attachment.url?.startsWith('/uploads/')) this.sqlite.prepare("UPDATE uploads SET attached_message_id=?, purpose='message' WHERE file_name=?").run(message.id, attachment.url.slice('/uploads/'.length));
+      }
     });
   }
 

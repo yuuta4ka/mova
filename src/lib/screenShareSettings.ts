@@ -2,12 +2,14 @@ export interface ScreenShareSettings {
   width: number;
   height: number;
   frameRate: number;
+  systemAudioEnabled: boolean;
 }
 
 export const defaultScreenShareSettings: ScreenShareSettings = {
   width: 1920,
   height: 1080,
   frameRate: 30,
+  systemAudioEnabled: true,
 };
 
 const key = 'mova-screen-share-settings';
@@ -22,6 +24,7 @@ function normalize(value: Partial<ScreenShareSettings>): ScreenShareSettings {
     width,
     height,
     frameRate: allowedFrameRates.has(frameRate) ? frameRate : defaultScreenShareSettings.frameRate,
+    systemAudioEnabled: value.systemAudioEnabled !== false,
   };
 }
 

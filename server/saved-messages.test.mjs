@@ -144,4 +144,46 @@ describe('saved messages', () => {
     expect((await request(`/api/conversations/${ownerSaved.id}`, { method: 'DELETE', token: owner.token })).result.error).toBe('Избранное нельзя удалить');
     expect((await request('/api/conversations', { token: owner.token })).result.conversations.filter((conversation) => conversation.kind === 'saved')).toHaveLength(1);
   });
+
+  it('stores several uploaded photos as one album message and enforces the ten-photo limit', async () => {
+    const owner = await register('Альбом');
+    const overview = await request('/api/conversations', { token: owner.token });
+    const saved = overview.result.conversations.find((conversation) => conversation.kind === 'saved');
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const photo = (index) => ({ name: `photo-${index}.png`, type: 'image/png', size: 68, dataUrl });
+
+    const sent = await request(`/api/conversations/${saved.id}/messages`, {
+      method: 'POST',
+      token: owner.token,
+      body: {
+        content: 'Три кадра',
+        attachment: { name: '3 фотографии', type: 'image/album', size: 204, items: [photo(1), photo(2), photo(3)] },
+      },
+    });
+
+    expect(sent.response.status).toBe(201);
+    expect(sent.result.message).toMatchObject({
+      content: 'Три кадра',
+      attachment: {
+        type: 'image/album',
+        size: 204,
+        items: [
+          expect.objectContaining({ name: 'photo-1.png', type: 'image/png', url: expect.stringMatching(/^\/uploads\//) }),
+          expect.objectContaining({ name: 'photo-2.png', type: 'image/png', url: expect.stringMatching(/^\/uploads\//) }),
+          expect.objectContaining({ name: 'photo-3.png', type: 'image/png', url: expect.stringMatching(/^\/uploads\//) }),
+        ],
+      },
+    });
+    const history = await request(`/api/conversations/${saved.id}/messages`, { token: owner.token });
+    expect(history.result.messages).toHaveLength(1);
+    expect(history.result.messages[0].attachment.items).toHaveLength(3);
+
+    const overLimit = await request(`/api/conversations/${saved.id}/messages`, {
+      method: 'POST',
+      token: owner.token,
+      body: { content: '', attachment: { name: '11 фото', type: 'image/album', size: 748, items: Array.from({ length: 11 }, (_, index) => photo(index + 1)) } },
+    });
+    expect(overLimit.response.status).toBe(400);
+    expect(overLimit.result.error).toBe('В альбоме должно быть от 2 до 10 фотографий');
+  });
 });

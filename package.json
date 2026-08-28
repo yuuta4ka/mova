@@ -4,7 +4,7 @@
   "description": "Десктопный клиент мессенджера Mova",
   "author": "Mova",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -89,7 +89,8 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Mova использует микрофон для голосовых сообщений и звонков.",
         "NSCameraUsageDescription": "Mova использует камеру для видеозвонков.",
-        "NSDesktopCaptureUsageDescription": "Mova использует запись экрана для демонстрации собеседникам."
+        "NSDesktopCaptureUsageDescription": "Mova использует запись экрана для демонстрации собеседникам.",
+        "NSAudioCaptureUsageDescription": "Mova использует системный звук для передачи аудио вместе с демонстрацией экрана."
       },
       "target": [
         "dmg",

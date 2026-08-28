@@ -9,6 +9,7 @@ import {
 import { ChevronLeft, ChevronRight, Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import type { AppMessage, MessageAttachment } from '../lib/api';
 import { attachmentDownloadSource } from '../lib/fileAttachments';
+import { attachmentImages } from '../lib/messageAttachments';
 
 export const mediaViewerMinZoom = 1;
 export const mediaViewerMaxZoom = 4;
@@ -24,8 +25,9 @@ export const mediaAttachmentSource = (attachment: MessageAttachment) => attachme
 
 export function buildMediaGallery(messages: AppMessage[]): MediaViewerItem[] {
   return messages.flatMap((message) => {
-    if (message.kind === 'call' || !message.attachment?.type.startsWith('image/') || !mediaAttachmentSource(message.attachment)) return [];
-    return [{ id: message.id, attachment: message.attachment }];
+    if (message.kind === 'call') return [];
+    const images = attachmentImages(message.attachment).filter((attachment) => mediaAttachmentSource(attachment));
+    return images.map((attachment, index) => ({ id: images.length === 1 ? message.id : `${message.id}:${index}`, attachment }));
   });
 }
 

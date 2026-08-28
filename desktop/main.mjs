@@ -19,7 +19,7 @@ import { desktopWindowFrameOptions } from './window-shell.mjs';
 import { gameActivityPollIntervalMs, installedGameRegistryRefreshMs, listDesktopProcesses, loadInstalledGameRegistry, loadRunningMacGameBundles, resolveGameFromProcesses, runningApplicationsFromProcesses } from './game-activity.mjs';
 import { desktopAppPageUrl, desktopAppUrlCandidates, isTrustedDesktopOrigin } from './app-server.mjs';
 import { desktopApplicationEditMenu, desktopEditContextMenuTemplate } from './edit-context-menu.mjs';
-import { desktopDisplayMediaStreams } from './display-media.mjs';
+import { desktopDisplayMediaHandlerOptions, desktopDisplayMediaStreams } from './display-media.mjs';
 import { defaultDesktopHotkeys, desktopHotkeyEntries, normalizeDesktopHotkeys, validateDesktopHotkeys } from './hotkeys.mjs';
 import { desktopAutoLaunchEnabled, desktopAutoLaunchError, desktopAutoLaunchQueryOptions, desktopAutoLaunchSettings } from './auto-launch.mjs';
 
@@ -85,7 +85,12 @@ function sendDesktopHotkeyAction(action) {
 function registerDesktopHotkeys(settings) {
   globalShortcut.unregisterAll();
   for (const [action, accelerator] of desktopHotkeyEntries(settings)) {
-    if (globalShortcut.register(accelerator, () => sendDesktopHotkeyAction(action))) continue;
+    try {
+      if (globalShortcut.register(accelerator, () => sendDesktopHotkeyAction(action))) continue;
+    } catch {
+      globalShortcut.unregisterAll();
+      return `Сочетание ${accelerator} не поддерживается системой.`;
+    }
     globalShortcut.unregisterAll();
     return `Сочетание ${accelerator} уже занято системой или другим приложением.`;
   }
@@ -444,15 +449,17 @@ function configurePermissions() {
           fetchWindowIcons: true,
         });
         const source = await chooseDesktopSource(sources);
-        // Electron 43.4+ honors the renderer's restrictOwnAudio constraint and
-        // turns this into loopbackWithoutChrome, so Mova's call output is not
-        // sent back while the rest of the shared system audio remains audible.
+        // Electron turns loopback into loopbackWithoutChrome when the renderer
+        // requests restrictOwnAudio, keeping Mova's call output out of the share.
         callback(desktopDisplayMediaStreams(source, request.audioRequested));
       } catch {
         callback({});
       }
     },
-    { useSystemPicker: false },
+    // Electron 43 currently produces a silent/dead macOS audio track when a
+    // custom picker supplies the source. The native macOS 15+ picker starts the
+    // CoreAudio capture session correctly and prompts for the required access.
+    desktopDisplayMediaHandlerOptions(),
   );
 }
 
@@ -916,6 +923,15 @@ ipcMain.handle('desktop-clipboard:write-text', (event, value) => {
   if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
   if (typeof value !== 'string') throw new TypeError('Текст для копирования должен быть строкой.');
   clipboard.writeText(value);
+  return true;
+});
+ipcMain.handle('desktop-clipboard:write-image', (event, value) => {
+  if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
+  if (typeof value !== 'string' || !/^data:image\/(?:png|jpe?g|webp);base64,/iu.test(value) || value.length > 45_000_000)
+    throw new TypeError('Изображение для копирования имеет неподдерживаемый формат.');
+  const image = nativeImage.createFromDataURL(value);
+  if (image.isEmpty()) throw new Error('Не удалось декодировать изображение.');
+  clipboard.writeImage(image);
   return true;
 });
 ipcMain.handle('desktop-settings:get-auto-launch', async (event) => {

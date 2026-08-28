@@ -8,6 +8,7 @@ import { Avatar, Button, ConfirmDialog, DialogSurface, IconButton, PopoverSurfac
 import { formatVoiceDuration, isVoiceAttachment, useVoiceMessagePlayer, VoiceMessage, VoiceMessagePlayerBar, VoicePlaybackAudio } from './components/VoiceMessage';
 import { AppleEmoji, isEmojiOnlyText } from './components/AppleEmoji';
 import { EmojiPicker } from './components/EmojiPicker';
+import { PhotoSendDialog } from './components/PhotoSendDialog';
 import { buildMediaGallery, MediaViewer, type MediaViewerItem } from './components/MediaViewer';
 import { defaultAudioSettings, loadAudioSettings, saveAudioSettings, withNoiseSuppressionMode, type AudioSettings, type NoiseSuppressionMode } from './lib/audioSettings';
 import { createMicrophonePipeline, type MicrophonePipeline } from './lib/microphoneProcessing';
@@ -21,6 +22,8 @@ import { clearPersistentUserData, deletePersistentConversation, loadPersistentCl
 import { buildCallDiagnosticReport, copyDiagnosticReport } from './lib/callDiagnostics';
 import { startUnreadTitleBlink } from './lib/documentTitle';
 import { attachmentDownloadSource, formatFileSize } from './lib/fileAttachments';
+import { copyImageToClipboard } from './lib/imageClipboard';
+import { attachmentImageSource, attachmentImages, attachmentSearchText, createImageAlbum, maximumAlbumImages, photoCountLabel } from './lib/messageAttachments';
 import { audioDeviceLabel } from './lib/audioDevices';
 import { DesktopHotkeySettingsPanel } from './components/DesktopHotkeySettings';
 import { defaultDesktopHotkeySettings } from './lib/desktopHotkeys';
@@ -28,10 +31,11 @@ import { desktopInstallerUrl, legacyDesktopUpdateState } from './lib/desktopUpda
 import type { DesktopGameActivity, DesktopGameActivitySettings, DesktopHotkeySettings, DesktopRegisteredGame, DesktopRunningApplication, DesktopUpdateState } from './DesktopTitlebar';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
-const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.url || attachment?.dataUrl || '';
+const attachmentSource = (attachment?: MessageAttachment | null) => attachment?.type.startsWith('image/') ? attachmentImageSource(attachment) : attachment?.url || attachment?.dataUrl || '';
 const attachmentLabel = (attachment?: MessageAttachment | null) => {
   if (isVoiceAttachment(attachment)) return 'Голосовое сообщение';
-  if (attachment?.type.startsWith('image/')) return 'Фотография';
+  const images = attachmentImages(attachment);
+  if (images.length) return images.length === 1 ? 'Фотография' : photoCountLabel(images.length);
   if (attachment?.type.startsWith('video/')) return 'Видео';
   return attachment?.name || '';
 };
@@ -257,7 +261,7 @@ const conversationPreviewText = (conversation: AppConversation, currentUserId: s
     if (message.friendRequest.status === 'cancelled') return 'Заявка в друзья отменена';
     return message.friendRequest.requestedBy === currentUserId ? 'Заявка в друзья отправлена' : 'Хочет добавить тебя в друзья';
   }
-  return message?.content || (message?.attachment ? (message.attachment.type.startsWith('image/') ? 'Фотография' : attachmentLabel(message.attachment)) : conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор');
+  return message?.content || (message?.attachment ? attachmentLabel(message.attachment) : conversation.kind === 'group' ? `${conversation.members.length} участников` : 'Начните разговор');
 };
 export const reconcileClientMessage = (items: AppMessage[], message: AppMessage) => {
   const matchingClientId = message.clientId ? items.findIndex((item) => item.clientId === message.clientId) : -1;
@@ -1444,7 +1448,7 @@ function BackgroundDefaults({ color, onChange, accentColor, onAccentChange }: { 
   );
 }
 
-function ScreenShareDefaults({ settings, onChange }: { settings: ScreenShareSettings; onChange: (settings: ScreenShareSettings) => void }) {
+export function ScreenShareDefaults({ settings, onChange }: { settings: ScreenShareSettings; onChange: (settings: ScreenShareSettings) => void }) {
   const resolution = `${settings.width}x${settings.height}`;
   return (
     <div className="mova-audio-settings mova-screen-defaults">
@@ -1476,6 +1480,14 @@ function ScreenShareDefaults({ settings, onChange }: { settings: ScreenShareSett
             <option value={60}>60 FPS — максимум плавности</option>
           </select>
         </label>
+        {window.movaDesktopShell && (
+          <ToggleSetting
+            label="Передавать системный звук"
+            description="Добавляет звук приложений к следующей демонстрации. Звук самого звонка Mova исключается."
+            checked={settings.systemAudioEnabled}
+            onChange={(systemAudioEnabled) => onChange({ ...settings, systemAudioEnabled })}
+          />
+        )}
         <small>Итоговое качество также зависит от выбранного окна, браузера и скорости сети.</small>
       </section>
     </div>
@@ -2369,7 +2381,7 @@ function ResizableSelfView({ children }: { children: ReactNode }) {
 
 const screenAudioWarningPrefix = 'Экран демонстрируется без звука.';
 const browserScreenAudioToastText = 'Демонстрация без звука. Включите «Поделиться аудио» при выборе экрана.';
-const desktopScreenAudioToastText = 'Системный звук отключён, чтобы голоса звонка не дублировались.';
+const desktopScreenAudioToastText = 'Демонстрация без системного звука. Проверьте разрешение на запись аудио и попробуйте снова.';
 const isScreenAudioWarning = (error: string) => error.startsWith(screenAudioWarningPrefix);
 type VoiceCallController = ReturnType<typeof useVoiceCall>;
 
@@ -3212,6 +3224,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [attachment, setAttachment] = useState<MessageAttachment | undefined>();
+  const [photoAttachments, setPhotoAttachments] = useState<MessageAttachment[]>([]);
   const [preparingAttachment, setPreparingAttachment] = useState<Pick<MessageAttachment, 'name' | 'size' | 'type'> | undefined>();
   const [attachmentError, setAttachmentError] = useState('');
   const retryingMessagesRef = useRef(new Set<string>());
@@ -3271,7 +3284,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const pinnedMessage = pinnedMessages[0] || null;
   const forwardDestinations = useMemo(() => availableConversations.filter((item) => item.id !== conversation.id).sort((left, right) => Number(right.kind === 'saved') - Number(left.kind === 'saved')), [availableConversations, conversation.id]);
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
-  const matchingMessages = useMemo(() => (normalizedSearch ? messages.filter((message) => message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)).reverse() : []), [messages, normalizedSearch]);
+  const matchingMessages = useMemo(() => (normalizedSearch ? messages.filter((message) => message.content.toLocaleLowerCase().includes(normalizedSearch) || attachmentSearchText(message.attachment).includes(normalizedSearch)).reverse() : []), [messages, normalizedSearch]);
   const selectedMessageItems = useMemo(() => messages.filter((message) => selectedMessages.includes(message.id)), [messages, selectedMessages]);
   const canDeleteSelectionForEveryone = selectedMessageItems.length > 0 && selectedMessageItems.every((message) => message.authorId === currentUser.id && (!message.kind || message.kind === 'user'));
   const activeMatchId = matchingMessages[activeMatchIndex]?.id || matchingMessages[0]?.id;
@@ -3456,6 +3469,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     setEditingMessage(message);
     setReplyingTo(null);
     setAttachment(undefined);
+    setPhotoAttachments([]);
     setValue(message.content);
     window.setTimeout(() => {
       const input = composerInput.current;
@@ -3484,6 +3498,17 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       toast.push('Сообщение скопировано.', 'success');
     } catch {
       toast.push('Не удалось скопировать сообщение.', 'danger');
+    }
+  };
+  const copyMessageImage = async (message: AppMessage) => {
+    setMessageMenu(null);
+    const images = attachmentImages(message.attachment);
+    const source = attachmentSource(images[0]);
+    try {
+      await copyImageToClipboard(source);
+      toast.push(images.length > 1 ? 'Первая фотография скопирована.' : 'Изображение скопировано.', 'success');
+    } catch {
+      toast.push('Не удалось скопировать изображение.', 'danger');
     }
   };
   const translateMessage = (message: AppMessage) => {
@@ -3664,26 +3689,26 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     return () => window.clearInterval(timer);
   }, [conversation.kind, other?.id, other?.isOnline, other?.presence]);
 
+  const sendNewMessage = async (content: string, outgoingAttachment?: MessageAttachment) => {
+    setSendError('');
+    announceTyping(false);
+    const replyToId = replyingTo?.id;
+    setValue('');
+    onDraftChange?.('');
+    setAttachment(undefined);
+    setPhotoAttachments([]);
+    setReplyingTo(null);
+    setEmojiOpen(false);
+    try {
+      await onSend(content, outgoingAttachment, replyToId);
+    } catch (sendFailure) {
+      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
+    }
+  };
   const send = async () => {
     const content = value.trim();
     if ((!content && !attachment) || preparingAttachment || (editingMessage && sending)) return;
-    setSendError('');
-    announceTyping(false);
-    if (!editingMessage) {
-      const outgoingAttachment = attachment;
-      const replyToId = replyingTo?.id;
-      setValue('');
-      onDraftChange?.('');
-      setAttachment(undefined);
-      setReplyingTo(null);
-      setEmojiOpen(false);
-      try {
-        await onSend(content, outgoingAttachment, replyToId);
-      } catch (sendFailure) {
-        setSendError(sendFailure instanceof Error ? sendFailure.message : 'Не удалось отправить сообщение');
-      }
-      return;
-    }
+    if (!editingMessage) return sendNewMessage(content, attachment);
     setSending(true);
     try {
       if (!onEdit) return;
@@ -3697,8 +3722,12 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       setSending(false);
     }
   };
+  const sendPhotos = async () => {
+    if (!photoAttachments.length || preparingAttachment) return;
+    await sendNewMessage(value.trim(), createImageAlbum(photoAttachments));
+  };
   const startVoiceRecording = async () => {
-    if (blocked || value.trim() || attachment || editingMessage) return;
+    if (blocked || value.trim() || attachment || photoAttachments.length || editingMessage) return;
     setSendError('');
     setAttachmentError('');
     setEmojiOpen(false);
@@ -3740,17 +3769,46 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       });
     }
   };
-  const chooseFile = async (file?: File) => {
-    if (!file) return;
+  const chooseFiles = async (files: File[]) => {
+    if (!files.length || preparingAttachment) return;
     setAttachmentError('');
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (files.length > 1 && imageFiles.length !== files.length) return setAttachmentError('Одним сообщением можно отправить несколько файлов, только если все они — фотографии');
+    if (imageFiles.length) {
+      if (photoAttachments.length + imageFiles.length > maximumAlbumImages) return setAttachmentError(`В одном сообщении может быть не больше ${maximumAlbumImages} фотографий`);
+      const oversized = imageFiles.find((file) => file.size > 30_000_000);
+      if (oversized) return setAttachmentError('Каждая фотография должна быть меньше 30 МБ');
+      const first = imageFiles[0];
+      setPreparingAttachment({ name: imageFiles.length > 1 ? `${imageFiles.length} фото` : first.name || 'Фотография', size: imageFiles.reduce((total, file) => total + file.size, 0), type: 'image/album' });
+      try {
+        const preparedImages = await Promise.all(imageFiles.map(async (file, index) => {
+          const clipboardName = `Изображение ${new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }).replace(':', '-')}${index ? `-${index + 1}` : ''}.png`;
+          const prepared = await prepareImageDataUrl(file);
+          if (prepared.file.size > 8_000_000) throw new Error('После обработки фотография всё ещё больше 8 МБ');
+          return {
+            name: prepared.file.name || clipboardName,
+            type: prepared.file.type || 'image/png',
+            size: prepared.file.size,
+            dataUrl: prepared.dataUrl,
+          } satisfies MessageAttachment;
+        }));
+        setAttachment(undefined);
+        setPhotoAttachments((current) => [...current, ...preparedImages]);
+      } catch (error) {
+        setAttachmentError(error instanceof Error ? error.message : 'Не удалось прочитать фотографию');
+      } finally {
+        setPreparingAttachment(undefined);
+      }
+      return;
+    }
+    const file = files[0];
     if (file.size > (file.type.startsWith('image/') ? 30_000_000 : 8_000_000)) return setAttachmentError(file.type.startsWith('image/') ? 'Фотография должна быть меньше 30 МБ' : 'Файл должен быть меньше 8 МБ');
     setPreparingAttachment({ name: file.name || 'Файл', size: file.size, type: file.type || 'application/octet-stream' });
     try {
-      const clipboardName = `Изображение ${new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }).replace(':', '-')}.png`;
-      const prepared = file.type.startsWith('image/') ? await prepareImageDataUrl(file) : { file, dataUrl: await fileToDataUrl(file) };
+      const prepared = { file, dataUrl: await fileToDataUrl(file) };
       if (prepared.file.size > 8_000_000) return setAttachmentError('После обработки файл всё ещё больше 8 МБ');
       setAttachment({
-        name: prepared.file.name || clipboardName,
+        name: prepared.file.name || 'Файл',
         type: prepared.file.type || 'application/octet-stream',
         size: prepared.file.size,
         dataUrl: prepared.dataUrl,
@@ -3762,13 +3820,14 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     }
   };
   const pasteFile = (event: ClipboardEvent) => {
-    const file =
-      Array.from(event.clipboardData.items)
-        .find((item) => item.kind === 'file')
-        ?.getAsFile() || event.clipboardData.files[0];
-    if (!file) return;
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (!files.length && event.clipboardData.files[0]) files.push(...Array.from(event.clipboardData.files));
+    if (!files.length) return;
     event.preventDefault();
-    void chooseFile(file);
+    void chooseFiles(files);
   };
   const enterFile = (event: DragEvent) => {
     if (!event.dataTransfer.types.includes('Files')) return;
@@ -3786,7 +3845,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     event.preventDefault();
     dragDepth.current = 0;
     setDraggingFile(false);
-    void chooseFile(event.dataTransfer.files[0]);
+    void chooseFiles(Array.from(event.dataTransfer.files));
   };
   useEffect(() => {
     setActiveMatchIndex(0);
@@ -4428,7 +4487,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               <time dateTime={structure.dayKey}>{structure.dayLabel}</time>
             </div>
           ) : null;
-          const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || message.attachment?.name.toLocaleLowerCase().includes(normalizedSearch)));
+          const matches = Boolean(normalizedSearch && (message.content.toLocaleLowerCase().includes(normalizedSearch) || attachmentSearchText(message.attachment).includes(normalizedSearch)));
           if (message.kind === 'friend_request' && message.friendRequest) {
             const requestStatus = friendRequestOverrides[message.id] || message.friendRequest.status;
             const sentByCurrentUser = message.friendRequest.requestedBy === currentUser.id;
@@ -4503,7 +4562,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           const grouped = !structure.startsGroup;
           const continuesGroup = !structure.endsGroup;
           const showGroupAvatarSlot = conversation.kind === 'group' && !own;
-          const imageAttachment = Boolean(message.attachment?.type.startsWith('image/'));
+          const messageImages = attachmentImages(message.attachment);
+          const imageAttachment = messageImages.length > 0;
           const voiceAttachment = isVoiceAttachment(message.attachment);
           const fileUploading = Boolean(message.attachment && !imageAttachment && !voiceAttachment && message.deliveryState === 'sending' && message.attachment.dataUrl && !message.attachment.url);
           const voiceRecipients = voiceAttachment ? conversation.members.filter((member) => member.id !== message.authorId) : [];
@@ -4586,10 +4646,10 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                     </button>
                   )}
                   {message.attachment &&
-                    (message.attachment.type.startsWith('image/') ? (
+                    (messageImages.length === 1 ? (
                       <button type="button" className="mova-message-image" onClick={() => setImagePreviewId(message.id)} aria-label="Открыть изображение">
                         <CachedImage
-                          src={attachmentSource(message.attachment)}
+                          src={attachmentSource(messageImages[0])}
                           alt=""
                           onLoad={() => {
                             if (!positionedAtBottom.current) return;
@@ -4600,6 +4660,29 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                           }}
                         />
                       </button>
+                    ) : messageImages.length > 1 ? (
+                      <div className="mova-message-album" data-count={messageImages.length} aria-label={`${messageImages.length} фото`}>
+                        {messageImages.map((image, imageIndex) => (
+                          <button
+                            type="button"
+                            key={`${image.url || image.dataUrl || image.name}-${imageIndex}`}
+                            onClick={() => setImagePreviewId(`${message.id}:${imageIndex}`)}
+                            aria-label={`Открыть фотографию ${imageIndex + 1} из ${messageImages.length}`}
+                          >
+                            <CachedImage
+                              src={attachmentSource(image)}
+                              alt=""
+                              onLoad={() => {
+                                if (!positionedAtBottom.current) return;
+                                window.requestAnimationFrame(() => {
+                                  const container = messagesContainer.current;
+                                  if (container) container.scrollTop = container.scrollHeight;
+                                });
+                              }}
+                            />
+                          </button>
+                        ))}
+                      </div>
                     ) : voiceAttachment ? (
                       <VoiceMessage
                         attachment={message.attachment}
@@ -4714,7 +4797,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
             </div>
           )}
           <div className={`mova-composer-input-row${voiceRecorder.state !== 'idle' ? ' is-recording' : ''}`}>
-            <input ref={fileInput} type="file" hidden onChange={(event) => { void chooseFile(event.target.files?.[0]); event.target.value = ''; }} />
+            <input ref={fileInput} type="file" multiple hidden onChange={(event) => { void chooseFiles(Array.from(event.target.files || [])); event.target.value = ''; }} />
             {voiceRecorder.state !== 'idle' ? (
               <div className="mova-voice-recorder" role="status" aria-label="Запись голосового сообщения">
                 <button type="button" className="mova-voice-recorder__cancel" aria-label="Удалить запись" disabled={voiceRecorder.state === 'stopping'} onClick={() => void voiceRecorder.cancel()}>
@@ -4730,7 +4813,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               </div>
             ) : (
               <>
-                <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage)} onClick={() => fileInput.current?.click()}>
+                <IconButton label="Прикрепить файл" disabled={Boolean(editingMessage || preparingAttachment)} onClick={() => fileInput.current?.click()}>
                   <Paperclip size={22} aria-hidden="true" />
                 </IconButton>
                 <div className={`mova-composer-textarea${value ? ' has-value' : ''}`}>
@@ -4822,6 +4905,19 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           {voiceRecorder.error && <span className="mova-send-error" role="alert">{voiceRecorder.error}</span>}
         </div>
       </form>
+      <PhotoSendDialog
+        photos={photoAttachments}
+        caption={value}
+        preparing={Boolean(preparingAttachment)}
+        onCaptionChange={(caption) => {
+          setValue(caption);
+          onDraftChange?.(caption);
+        }}
+        onAdd={(files) => void chooseFiles(files)}
+        onRemove={(index) => setPhotoAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))}
+        onClose={() => { if (!preparingAttachment) setPhotoAttachments([]); }}
+        onSend={() => void sendPhotos()}
+      />
       {imagePreviewId && mediaGallery.some((item) => item.id === imagePreviewId) &&
         createPortal(
           <MediaViewer items={mediaGallery} activeId={imagePreviewId} onClose={() => setImagePreviewId(null)} />,
@@ -4867,10 +4963,18 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
                 <Reply size={19} />
                 <span>Ответить</span>
               </button>
-              <button type="button" role="menuitem" onClick={() => messageMenu && void copyMessage(messageMenu.message)}>
-                <Copy size={18} />
-                <span>Копировать</span>
-              </button>
+              {(!messageMenu?.message.attachment?.type.startsWith('image/') || Boolean(messageMenu.message.content.trim())) && (
+                <button type="button" role="menuitem" onClick={() => messageMenu && void copyMessage(messageMenu.message)}>
+                  <Copy size={18} />
+                  <span>{messageMenu?.message.attachment?.type.startsWith('image/') ? 'Копировать текст' : 'Копировать'}</span>
+                </button>
+              )}
+              {messageMenu?.message.attachment?.type.startsWith('image/') && (
+                <button type="button" role="menuitem" onClick={() => messageMenu && void copyMessageImage(messageMenu.message)}>
+                  <Copy size={18} />
+                  <span>{attachmentImages(messageMenu.message.attachment).length > 1 ? 'Копировать первое фото' : 'Копировать изображение'}</span>
+                </button>
+              )}
               <button type="button" role="menuitem" onClick={() => messageMenu && translateMessage(messageMenu.message)}>
                 <Languages size={19} />
                 <span>Перевести</span>
@@ -5504,6 +5608,45 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
     window.localStorage.setItem('mova-selected-conversation', conversationId);
     showMobileConversation(conversationId);
   }, [showMobileConversation]);
+  const exitSelectedConversation = useCallback(() => {
+    if (!selectedIdRef.current) return;
+    if (mobileNavigationRef.current) {
+      navigateToMobileList();
+      return;
+    }
+    selectedIdRef.current = null;
+    setSelectedId(null);
+    setMessages([]);
+    setFocusedMessage(null);
+    setCallCanvasOpen(false);
+    window.localStorage.removeItem('mova-selected-conversation');
+  }, [navigateToMobileList]);
+  useEffect(() => {
+    const exitChatOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || !selectedIdRef.current || productOverlayOpenRef.current) return;
+      if (['ringing', 'incoming', 'connecting', 'available'].includes(voiceStateRef.current)) return;
+      const nestedSurface = document.querySelector([
+        '.mova-modal-backdrop:not(.is-closing)',
+        '.mova-media-viewer:not(.is-closing)',
+        '.mova-message-context-menu:not(.is-closing)',
+        '.mova-message-selection-bar',
+        '.mova-chat-search-panel',
+        '.mova-chat-actions-menu:not(.is-closing)',
+        '.mova-contact-info',
+        '.mova-emoji-picker',
+        '.mova-composer-context',
+        '.mova-call-tile.is-expanded',
+        '.mova-call-more',
+        '.mova-screen-menu',
+        '.mova-call-volume-menu',
+      ].join(','));
+      if (nestedSurface) return;
+      event.preventDefault();
+      exitSelectedConversation();
+    };
+    window.addEventListener('keydown', exitChatOnEscape);
+    return () => window.removeEventListener('keydown', exitChatOnEscape);
+  }, [exitSelectedConversation]);
   const clearFocusedMessage = useCallback(() => setFocusedMessage(null), []);
   useEffect(() => {
     const handleNotificationClick = (event: MessageEvent<{ type?: string; conversationId?: string }>) => {

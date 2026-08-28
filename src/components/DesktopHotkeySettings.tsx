@@ -19,21 +19,10 @@ export function DesktopHotkeySettingsPanel({ settings, platform, onChange }: {
       if (event.repeat) return;
       event.preventDefault();
       event.stopPropagation();
-      if (event.key === 'Escape') {
-        setRecording(null);
-        setError('');
-        return;
-      }
       const key = desktopHotkeySettingKey[recording];
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && ['Backspace', 'Delete'].includes(event.key)) {
-        onChange({ ...settings, [key]: '' });
-        setRecording(null);
-        setError('');
-        return;
-      }
       const accelerator = hotkeyAcceleratorFromEvent(event, platform);
       if (!accelerator) {
-        if (!['Control', 'Meta', 'Alt', 'Shift'].includes(event.key)) setError('Добавьте Ctrl, Alt, Shift или Command. Без модификатора можно использовать F1–F24.');
+        if (!['Control', 'Meta', 'Alt', 'AltGraph', 'Shift'].includes(event.key)) setError('Эту клавишу нельзя зарегистрировать как системный хоткей.');
         return;
       }
       const conflict = actions.find((action) => action !== recording && settings[desktopHotkeySettingKey[action]].toLowerCase() === accelerator.toLowerCase());
@@ -58,7 +47,7 @@ export function DesktopHotkeySettingsPanel({ settings, platform, onChange }: {
       <section>
         <header>
           <span><Keyboard size={19} aria-hidden="true" /><strong>Пользовательские горячие клавиши</strong></span>
-          <small>Сочетания работают во время звонка, даже если Mova свёрнута или находится в фоне.</small>
+          <small>Назначьте одну клавишу или сочетание. Хоткеи работают во время звонка, даже если Mova свёрнута или находится в фоне.</small>
         </header>
         <div className="mova-hotkey-list">
           {actions.map((action) => {

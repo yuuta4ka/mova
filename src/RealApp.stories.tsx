@@ -8,6 +8,7 @@ import './polish.css';
 import './composer.css';
 import './voice-message.css';
 import './common-ui.css';
+import './photo-send.css';
 
 const friends: AppUser[] = [
   {

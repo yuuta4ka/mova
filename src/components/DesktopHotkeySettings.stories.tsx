@@ -15,8 +15,8 @@ type Story = StoryObj<typeof meta>;
 export const Windows: Story = {
   render: function Render() {
     const [settings, setSettings] = useState<DesktopHotkeySettings>({
-      toggleMicrophone: 'CommandOrControl+Shift+M',
-      toggleHeadphones: 'CommandOrControl+Shift+D',
+      toggleMicrophone: 'M',
+      toggleHeadphones: 'F8',
     });
     return <div style={{ width: 'min(720px, calc(100vw - 48px))', minHeight: 520, padding: 24, color: '#f3f3f5', background: '#1a1c23', borderRadius: 22 }}><DesktopHotkeySettingsPanel settings={settings} platform="win32" onChange={setSettings} /></div>;
   },

@@ -21,6 +21,7 @@ const specialKeys: Record<string, string> = {
   Space: 'Space',
   Tab: 'Tab',
   Enter: 'Enter',
+  NumpadEnter: 'Enter',
   Backspace: 'Backspace',
   Delete: 'Delete',
   Insert: 'Insert',
@@ -32,6 +33,35 @@ const specialKeys: Record<string, string> = {
   ArrowDown: 'Down',
   ArrowLeft: 'Left',
   ArrowRight: 'Right',
+  Escape: 'Escape',
+  CapsLock: 'Capslock',
+  NumLock: 'Numlock',
+  ScrollLock: 'Scrolllock',
+  PrintScreen: 'PrintScreen',
+  AudioVolumeUp: 'VolumeUp',
+  AudioVolumeDown: 'VolumeDown',
+  AudioVolumeMute: 'VolumeMute',
+  MediaTrackNext: 'MediaNextTrack',
+  MediaTrackPrevious: 'MediaPreviousTrack',
+  MediaStop: 'MediaStop',
+  MediaPlayPause: 'MediaPlayPause',
+  Backquote: '`',
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  IntlBackslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  NumpadDecimal: 'numdec',
+  NumpadAdd: 'numadd',
+  NumpadSubtract: 'numsub',
+  NumpadMultiply: 'nummult',
+  NumpadDivide: 'numdiv',
 };
 
 export function hotkeyAcceleratorFromEvent(event: HotkeyKeyboardEvent, platform: string) {
@@ -46,10 +76,12 @@ export function hotkeyAcceleratorFromEvent(event: HotkeyKeyboardEvent, platform:
     ? event.code.slice(3)
     : /^Digit[0-9]$/u.test(event.code)
       ? event.code.slice(5)
-      : /^F(?:[1-9]|1[0-9]|2[0-4])$/u.test(event.code)
-        ? event.code
-        : specialKeys[event.code] || '';
-  if (!key || (!modifiers.length && !/^F/u.test(key))) return '';
+      : /^Numpad[0-9]$/u.test(event.code)
+        ? `num${event.code.slice(6)}`
+        : /^F(?:[1-9]|1[0-9]|2[0-4])$/u.test(event.code)
+          ? event.code
+          : specialKeys[event.code] || '';
+  if (!key) return '';
   return [...modifiers, key].join('+');
 }
 
@@ -66,6 +98,8 @@ export function formatDesktopHotkey(accelerator: string, platform: string) {
     Down: '↓',
     Left: '←',
     Right: '→',
+    Space: 'Пробел',
+    Escape: 'Esc',
   };
   const otherLabels: Record<string, string> = {
     CommandOrControl: 'Ctrl',
@@ -78,6 +112,8 @@ export function formatDesktopHotkey(accelerator: string, platform: string) {
     Down: '↓',
     Left: '←',
     Right: '→',
+    Space: 'Пробел',
+    Escape: 'Esc',
   };
   const labels = platform === 'darwin' ? macLabels : otherLabels;
   return accelerator.split('+').map((part) => labels[part] || part).join(platform === 'darwin' ? ' ' : ' + ');

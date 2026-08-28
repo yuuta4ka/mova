@@ -15,12 +15,12 @@ describe('Mova landing page', () => {
     expect(screen.queryByText(/для атмосферы/i)).not.toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: /Windows/i })[0]).toHaveAttribute(
       'href',
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.12/Mova.Setup.0.1.12.exe',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.13/Mova.Setup.0.1.13.exe',
     );
     expect(screen.getAllByRole('link', { name: /Открыть Mova/i })[0]).toHaveAttribute('href', '/app');
     expect(screen.getByRole('link', { name: /macOS/i })).toHaveAttribute(
       'href',
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.12/Mova-0.1.12-arm64.dmg',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.13/Mova-0.1.13-arm64.dmg',
     );
     expect(screen.getByAltText(/Диалог в Mova/i)).toHaveAttribute('src', '/mova-interface.png');
     expect(screen.getByAltText(/Активный голосовой звонок/i)).toHaveAttribute('src', '/mova-call.png');

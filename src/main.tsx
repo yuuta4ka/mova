@@ -17,6 +17,7 @@ import './composer.css';
 import './voice-message.css';
 import './media-viewer.css';
 import './common-ui.css';
+import './photo-send.css';
 import './maintenance.css';
 import { RealApp } from './RealApp';
 import { LandingPage } from './LandingPage';
