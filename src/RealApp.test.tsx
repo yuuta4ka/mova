@@ -287,6 +287,32 @@ describe('voice processing settings', () => {
     expect(screen.getByRole('button', { name: 'Проверить обновления' })).toBeEnabled();
   });
 
+  it('shows the installed version and a direct installer for a legacy desktop shell', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Electron/43.3.0 MovaDesktop/0.1.10');
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    window.movaDesktopShell = {
+      platform: 'darwin',
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn(),
+      close: vi.fn(),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(() => vi.fn()),
+    };
+    const user = userEvent.setup();
+    render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Приложение' }));
+    expect(await screen.findByText('Mova 0.1.10')).toBeVisible();
+    expect(screen.getByText(/Доступна Mova 0\.1\.12/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Скачать обновление' }));
+
+    expect(open).toHaveBeenCalledWith(
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.12/Mova-0.1.12-arm64.dmg',
+      '_blank',
+      'noopener,noreferrer',
+    );
+  });
+
   it('registers a currently running desktop application as a game', async () => {
     const registeredGame = { id: 'game-1', title: 'Tiny Indie', executableName: 'tiny-indie.exe' };
     const registerGame = vi.fn().mockResolvedValue({ enabled: true, registeredGames: [registeredGame] });

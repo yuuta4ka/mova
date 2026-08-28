@@ -29,27 +29,35 @@ export function desktopLocalArtifactNames(version) {
   ];
 }
 
-export function parseLandingVersions(source) {
-  const version = source.match(/const version = ['"]([^'"]+)['"]/u)?.[1] || '';
-  const releaseTag = source.match(/const releaseTag = ['"]([^'"]+)['"]/u)?.[1] || '';
-  return { version, releaseTag };
+export function parseDesktopReleaseMetadata(source) {
+  const parsed = JSON.parse(source);
+  return {
+    version: String(parsed?.version || '').trim(),
+    tag: String(parsed?.tag || '').trim(),
+    repository: String(parsed?.repository || '').trim(),
+  };
 }
 
 export async function readDesktopReleaseConfig(root = projectRoot) {
   const packagePath = join(root, 'package.json');
-  const landingPath = join(root, 'src', 'LandingPage.tsx');
+  const releaseMetadataPath = join(root, 'desktop', 'release.json');
   const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
-  const landingVersions = parseLandingVersions(await readFile(landingPath, 'utf8'));
+  const releaseMetadata = parseDesktopReleaseMetadata(await readFile(releaseMetadataPath, 'utf8'));
   const version = String(packageJson.version || '').trim();
   const owner = String(packageJson.build?.publish?.owner || '').trim();
   const repo = String(packageJson.build?.publish?.repo || '').trim();
 
   if (!version || /[\/\\\0]/u.test(version)) throw new Error('В package.json указана некорректная версия desktop-приложения.');
   if (!owner || !repo) throw new Error('В package.json не настроен GitHub-репозиторий для desktop-релизов.');
-  if (landingVersions.version !== version || landingVersions.releaseTag !== version) {
+  if (
+    releaseMetadata.version !== version ||
+    releaseMetadata.tag !== version ||
+    releaseMetadata.repository !== `${owner}/${repo}`
+  ) {
     throw new Error(
-      `Версия package.json (${version}) не совпадает с version/releaseTag в src/LandingPage.tsx ` +
-      `(${landingVersions.version || 'не указана'}/${landingVersions.releaseTag || 'не указана'}).`,
+      `Desktop-релиз в package.json (${version}, ${owner}/${repo}) не совпадает с desktop/release.json ` +
+      `(${releaseMetadata.version || 'не указана'}/${releaseMetadata.tag || 'не указана'}, ` +
+      `${releaseMetadata.repository || 'репозиторий не указан'}).`,
     );
   }
 

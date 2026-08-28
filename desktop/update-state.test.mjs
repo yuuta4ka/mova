@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, updateStartupDelayMs } from './update-state.mjs';
+import {
+  desktopReleaseDownloadUrl,
+  desktopUpdateAction,
+  desktopUpdateErrorKind,
+  normalizeUpdateProgress,
+  updateCheckIntervalMs,
+  updateCheckTimeoutMs,
+  updateStartupDelayMs,
+} from './update-state.mjs';
 
 describe('desktop update state', () => {
   it('describes each updater phase for the desktop menu', () => {
@@ -10,6 +18,9 @@ describe('desktop update state', () => {
     });
     expect(desktopUpdateAction({ phase: 'downloaded', version: '0.2.0' })).toEqual({
       label: 'Установить Mova 0.2.0…', enabled: true, action: 'install',
+    });
+    expect(desktopUpdateAction({ phase: 'available', version: '0.2.0' })).toEqual({
+      label: 'Скачать Mova 0.2.0…', enabled: true, action: 'download',
     });
   });
 
@@ -23,5 +34,19 @@ describe('desktop update state', () => {
   it('checks shortly after launch and then every four hours', () => {
     expect(updateStartupDelayMs).toBe(10_000);
     expect(updateCheckIntervalMs).toBe(14_400_000);
+    expect(updateCheckTimeoutMs).toBe(30_000);
+  });
+
+  it('builds safe manual update URLs and classifies updater failures', () => {
+    expect(desktopReleaseDownloadUrl('1.2.3', 'darwin')).toBe(
+      'https://github.com/yuuta4ka/mova/releases/download/v1.2.3/Mova-1.2.3-arm64.dmg',
+    );
+    expect(desktopReleaseDownloadUrl('1.2.3', 'win32')).toBe(
+      'https://github.com/yuuta4ka/mova/releases/download/v1.2.3/Mova.Setup.1.2.3.exe',
+    );
+    expect(desktopReleaseDownloadUrl('../../bad', 'darwin')).toBe('https://github.com/yuuta4ka/mova/releases/latest');
+    expect(desktopUpdateErrorKind(new Error('net::ERR_CONNECTION_TIMED_OUT'))).toBe('network');
+    expect(desktopUpdateErrorKind(new Error('code signature did not pass validation'))).toBe('installation');
+    expect(desktopUpdateErrorKind(new Error('unexpected updater failure'))).toBe('unknown');
   });
 });

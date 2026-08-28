@@ -6,7 +6,7 @@ import {
   createWindowsInstallerAliases,
   desktopLocalArtifactNames,
   desktopReleaseAssetNames,
-  parseLandingVersions,
+  parseDesktopReleaseMetadata,
   pruneDesktopReleaseDirectory,
   verifyDesktopReleaseArtifacts,
 } from './desktop-release.mjs';
@@ -25,10 +25,11 @@ describe('desktop release tooling', () => {
     ]);
   });
 
-  it('reads the two landing page version constants', () => {
-    expect(parseLandingVersions("const version = '1.2.3';\nconst releaseTag = '1.2.3';")).toEqual({
+  it('reads metadata shared by the landing page and desktop updater', () => {
+    expect(parseDesktopReleaseMetadata('{"version":"1.2.3","tag":"1.2.3","repository":"owner/repo"}')).toEqual({
       version: '1.2.3',
-      releaseTag: '1.2.3',
+      tag: '1.2.3',
+      repository: 'owner/repo',
     });
   });
 

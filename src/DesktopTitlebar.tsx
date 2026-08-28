@@ -51,10 +51,13 @@ export type DesktopGameActivity = {
 export type DesktopUpdateState = {
   currentVersion: string;
   availableVersion: string;
-  phase: 'idle' | 'checking' | 'downloading' | 'downloaded';
+  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded';
   progress: number;
   lastResult: 'idle' | 'up-to-date' | 'available' | 'error';
   supported: boolean;
+  installMode?: 'automatic' | 'manual';
+  downloadUrl?: string;
+  errorKind?: 'network' | 'installation' | 'unknown';
 };
 
 export type DesktopRegisteredGame = {

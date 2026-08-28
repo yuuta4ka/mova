@@ -6,7 +6,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { availableSharePickerTabs, buildSharePickerSources } from './share-picker-model.mjs';
 import { desktopCallStatusLabel, resolveDesktopCallStatus, shouldKeepDesktopWindowOpen } from './tray-status.mjs';
-import { desktopUpdateAction, normalizeUpdateProgress, updateCheckIntervalMs, updateStartupDelayMs } from './update-state.mjs';
+import {
+  desktopReleaseDownloadUrl,
+  desktopUpdateAction,
+  desktopUpdateErrorKind,
+  normalizeUpdateProgress,
+  updateCheckIntervalMs,
+  updateCheckTimeoutMs,
+  updateStartupDelayMs,
+} from './update-state.mjs';
 import { desktopWindowFrameOptions } from './window-shell.mjs';
 import { gameActivityPollIntervalMs, installedGameRegistryRefreshMs, listDesktopProcesses, loadInstalledGameRegistry, loadRunningMacGameBundles, resolveGameFromProcesses, runningApplicationsFromProcesses } from './game-activity.mjs';
 import { desktopAppPageUrl, desktopAppUrlCandidates, isTrustedDesktopOrigin } from './app-server.mjs';
@@ -31,6 +39,7 @@ let sharePickerSequence = 0;
 let activeSharePicker = null;
 let updateStartupTimer = null;
 let updateIntervalTimer = null;
+let updateCheckTimeoutTimer = null;
 let activeUpdateDialog = null;
 let gameActivityTimer = null;
 let gameActivityScanInFlight = false;
@@ -48,6 +57,7 @@ const desktopUpdateState = {
   version: '',
   progress: 0,
   lastResult: 'idle',
+  errorKind: '',
   manualRequest: false,
   promptOpen: false,
 };
@@ -267,6 +277,9 @@ function desktopUpdateSnapshot() {
     progress: normalizeUpdateProgress(desktopUpdateState.progress),
     lastResult: desktopUpdateState.lastResult,
     supported: app.isPackaged && desktopUpdateState.configured,
+    installMode: process.platform === 'darwin' ? 'manual' : 'automatic',
+    downloadUrl: desktopReleaseDownloadUrl(desktopUpdateState.version, process.platform),
+    errorKind: desktopUpdateState.errorKind || undefined,
   };
 }
 
@@ -281,6 +294,7 @@ function desktopUpdateMenuItem() {
     enabled: item.enabled,
     click: () => {
       if (item.action === 'install') void promptToInstallUpdate();
+      else if (item.action === 'download') void promptToDownloadUpdate();
       else if (item.action === 'check') void checkForDesktopUpdates({ manual: true });
     },
   };
@@ -686,6 +700,48 @@ async function promptToInstallUpdate() {
   }
 }
 
+async function promptToDownloadUpdate() {
+  if (desktopUpdateState.promptOpen) return;
+  desktopUpdateState.promptOpen = true;
+  const version = desktopUpdateState.version;
+  try {
+    const result = await updaterDialog({
+      tone: 'update',
+      title: 'Обновление Mova',
+      message: version ? `Доступна Mova ${version}` : 'Доступна новая версия Mova',
+      detail: process.platform === 'darwin'
+        ? 'Чтобы обновить Mova на macOS, скачайте DMG и перенесите приложение в папку «Программы».'
+        : 'Откройте страницу последнего релиза и скачайте установщик для своей системы.',
+      meta: process.platform === 'darwin' ? 'Ручная установка' : '',
+      buttons: ['Скачать установщик', 'Позже'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (result.response === 0) {
+      await shell.openExternal(desktopReleaseDownloadUrl(version, process.platform));
+    }
+  } finally {
+    desktopUpdateState.promptOpen = false;
+  }
+}
+
+function clearUpdateCheckTimeout() {
+  if (!updateCheckTimeoutTimer) return;
+  clearTimeout(updateCheckTimeoutTimer);
+  updateCheckTimeoutTimer = null;
+}
+
+function startUpdateCheckTimeout() {
+  clearUpdateCheckTimeout();
+  updateCheckTimeoutTimer = setTimeout(() => {
+    updateCheckTimeoutTimer = null;
+    if (desktopUpdateState.phase !== 'checking') return;
+    handleUpdateError(new Error('Desktop update check timed out.'));
+  }, updateCheckTimeoutMs);
+  updateCheckTimeoutTimer.unref?.();
+}
+
 async function checkForDesktopUpdates({ manual = false } = {}) {
   if (!app.isPackaged) {
     if (manual) {
@@ -704,7 +760,8 @@ async function checkForDesktopUpdates({ manual = false } = {}) {
     return;
   }
   if (desktopUpdateState.phase !== 'idle') return;
-  setDesktopUpdateState({ phase: 'checking', manualRequest: manual, progress: 0, lastResult: 'idle' });
+  setDesktopUpdateState({ phase: 'checking', manualRequest: manual, version: '', progress: 0, lastResult: 'idle', errorKind: '' });
+  startUpdateCheckTimeout();
   void autoUpdater.checkForUpdates().catch((error) => {
     if (desktopUpdateState.phase !== 'idle') handleUpdateError(error);
   });
@@ -713,15 +770,26 @@ async function checkForDesktopUpdates({ manual = false } = {}) {
 function handleUpdateError(error) {
   const showError = desktopUpdateState.manualRequest;
   const message = error instanceof Error ? error.message : String(error || 'Неизвестная ошибка');
-  setDesktopUpdateState({ phase: 'idle', manualRequest: false, progress: 0, lastResult: 'error' });
+  const errorKind = desktopUpdateErrorKind(error);
+  clearUpdateCheckTimeout();
+  setDesktopUpdateState({ phase: 'idle', manualRequest: false, progress: 0, lastResult: 'error', errorKind });
   console.warn('Desktop update check failed:', message);
   if (showError) {
     void updaterDialog({
       tone: 'error',
       title: 'Обновление Mova',
       message: 'Не удалось проверить обновления.',
-      detail: 'Проверьте подключение к интернету и попробуйте ещё раз.',
-      buttons: ['Понятно'],
+      detail: errorKind === 'network'
+        ? 'Сервер обновлений не ответил вовремя. Можно повторить проверку или скачать установщик вручную.'
+        : errorKind === 'installation'
+          ? 'Автоматическая установка недоступна. Скачайте установщик вручную.'
+          : 'Можно повторить проверку или скачать установщик вручную.',
+      buttons: ['Скачать установщик', 'Закрыть'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then((result) => {
+      if (result.response === 0) return shell.openExternal(desktopReleaseDownloadUrl(desktopUpdateState.version, process.platform));
+      return undefined;
     });
   }
 }
@@ -729,7 +797,9 @@ function handleUpdateError(error) {
 function configureUpdates() {
   if (!app.isPackaged || desktopUpdateState.configured) return;
   desktopUpdateState.configured = true;
-  autoUpdater.autoDownload = true;
+  // Unsigned/ad-hoc macOS builds cannot be replaced reliably by Squirrel.Mac.
+  // We still check the feed, then send the user to the verified DMG.
+  autoUpdater.autoDownload = process.platform !== 'darwin';
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.autoRunAppAfterInstall = true;
   autoUpdater.allowDowngrade = false;
@@ -738,14 +808,26 @@ function configureUpdates() {
     if (desktopUpdateState.phase !== 'checking') setDesktopUpdateState({ phase: 'checking', lastResult: 'idle' });
   });
   autoUpdater.on('update-available', (info) => {
-    setDesktopUpdateState({ phase: 'downloading', version: String(info?.version || ''), progress: 0 });
+    clearUpdateCheckTimeout();
+    const showDownload = desktopUpdateState.manualRequest && process.platform === 'darwin';
+    setDesktopUpdateState({
+      phase: process.platform === 'darwin' ? 'available' : 'downloading',
+      version: String(info?.version || ''),
+      progress: 0,
+      lastResult: 'available',
+      manualRequest: false,
+      errorKind: '',
+    });
+    if (showDownload) void promptToDownloadUpdate();
   });
   autoUpdater.on('download-progress', (progress) => {
-    setDesktopUpdateState({ phase: 'downloading', progress: normalizeUpdateProgress(progress?.percent) });
+    clearUpdateCheckTimeout();
+    setDesktopUpdateState({ phase: 'downloading', progress: normalizeUpdateProgress(progress?.percent), errorKind: '' });
   });
   autoUpdater.on('update-not-available', async () => {
     const showResult = desktopUpdateState.manualRequest;
-    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'up-to-date' });
+    clearUpdateCheckTimeout();
+    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'up-to-date', errorKind: '' });
     if (showResult) {
       await updaterDialog({
         tone: 'success',
@@ -758,17 +840,20 @@ function configureUpdates() {
     }
   });
   autoUpdater.on('update-downloaded', (info) => {
+    clearUpdateCheckTimeout();
     setDesktopUpdateState({
       phase: 'downloaded',
       version: String(info?.version || desktopUpdateState.version || ''),
       progress: 100,
       lastResult: 'available',
       manualRequest: false,
+      errorKind: '',
     });
     void promptToInstallUpdate();
   });
   autoUpdater.on('update-cancelled', () => {
-    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'idle' });
+    clearUpdateCheckTimeout();
+    setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'idle', errorKind: '' });
   });
   autoUpdater.on('error', handleUpdateError);
   refreshDesktopUpdateUi();
@@ -859,12 +944,13 @@ ipcMain.handle('desktop-update:get-state', (event) => {
 });
 ipcMain.handle('desktop-update:check', async (event) => {
   if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
-  await checkForDesktopUpdates();
+  await checkForDesktopUpdates({ manual: true });
   return desktopUpdateSnapshot();
 });
 ipcMain.handle('desktop-update:install', async (event) => {
   if (!controlledMainWindow(event)) throw new Error('Недоверенный источник.');
   if (desktopUpdateState.phase === 'downloaded') await promptToInstallUpdate();
+  else if (desktopUpdateState.phase === 'available') await promptToDownloadUpdate();
   return desktopUpdateSnapshot();
 });
 ipcMain.handle('desktop-activity:get-system-idle-time', (event) => {
@@ -946,5 +1032,6 @@ app.on('before-quit', () => {
   if (app.isReady()) globalShortcut.unregisterAll();
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
   if (updateIntervalTimer) clearInterval(updateIntervalTimer);
+  clearUpdateCheckTimeout();
   if (gameActivityTimer) clearInterval(gameActivityTimer);
 });

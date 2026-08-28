@@ -24,6 +24,7 @@ import { attachmentDownloadSource, formatFileSize } from './lib/fileAttachments'
 import { audioDeviceLabel } from './lib/audioDevices';
 import { DesktopHotkeySettingsPanel } from './components/DesktopHotkeySettings';
 import { defaultDesktopHotkeySettings } from './lib/desktopHotkeys';
+import { desktopInstallerUrl, legacyDesktopUpdateState } from './lib/desktopUpdates';
 import type { DesktopGameActivity, DesktopGameActivitySettings, DesktopHotkeySettings, DesktopRegisteredGame, DesktopRunningApplication, DesktopUpdateState } from './DesktopTitlebar';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
@@ -951,8 +952,18 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       if (window.movaDesktopShell?.getGameActivitySettings) {
         void window.movaDesktopShell.getGameActivitySettings().then(applyGameActivitySettings).catch(() => setDesktopSettingsError('Не удалось прочитать настройки игровой активности.'));
       }
-      if (window.movaDesktopShell?.getUpdateState) {
-        void window.movaDesktopShell.getUpdateState().then(setDesktopUpdate).catch(() => setDesktopSettingsError('Не удалось получить сведения о версии Mova.'));
+      const desktopShell = window.movaDesktopShell;
+      if (desktopShell) {
+        const fallbackUpdate = legacyDesktopUpdateState(desktopShell.platform, navigator.userAgent);
+        setDesktopUpdate(fallbackUpdate);
+        if (desktopShell.getUpdateState) {
+          void desktopShell.getUpdateState()
+            .then(setDesktopUpdate)
+            .catch(() => {
+              setDesktopUpdate(fallbackUpdate);
+              setDesktopSettingsError('Не удалось получить сведения о версии Mova.');
+            });
+        }
       }
       void refreshDevices(false);
     } else stopTest();
@@ -1067,7 +1078,15 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
     setDesktopUpdateActionPending(true);
     setDesktopSettingsError('');
     try {
-      const next = desktopUpdate?.phase === 'downloaded'
+      if (desktopUpdate?.phase === 'available' && !desktopShell.installUpdate) {
+        window.open(
+          desktopUpdate.downloadUrl || desktopInstallerUrl(desktopShell.platform, desktopUpdate.availableVersion || undefined),
+          '_blank',
+          'noopener,noreferrer',
+        );
+        return;
+      }
+      const next = desktopUpdate?.phase === 'downloaded' || desktopUpdate?.phase === 'available'
         ? await desktopShell.installUpdate?.()
         : await desktopShell.checkForUpdates?.();
       if (next) setDesktopUpdate(next);
@@ -1107,16 +1126,20 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       ? 'Проверка обновлений доступна в установленной версии Mova.'
       : desktopUpdate.phase === 'checking'
         ? 'Ищем новую версию…'
-        : desktopUpdate.phase === 'downloading'
-          ? `Загружаем обновление — ${desktopUpdate.progress}%`
-          : desktopUpdate.phase === 'downloaded'
-            ? `Mova ${desktopUpdate.availableVersion || 'новой версии'} готова к установке.`
-            : desktopUpdate.lastResult === 'up-to-date'
-              ? 'У вас установлена последняя версия.'
-              : desktopUpdate.lastResult === 'error'
-                ? 'Не удалось проверить обновления. Попробуйте ещё раз.'
-                : 'Автоматическая проверка обновлений включена.';
-  const desktopUpdateTone = desktopUpdate?.phase === 'downloaded'
+        : desktopUpdate.phase === 'available'
+          ? `Доступна Mova ${desktopUpdate.availableVersion || 'новой версии'}. Скачайте установщик, чтобы обновиться.`
+          : desktopUpdate.phase === 'downloading'
+            ? `Загружаем обновление — ${desktopUpdate.progress}%`
+            : desktopUpdate.phase === 'downloaded'
+              ? `Mova ${desktopUpdate.availableVersion || 'новой версии'} готова к установке.`
+              : desktopUpdate.lastResult === 'up-to-date'
+                ? 'У вас установлена последняя версия.'
+                : desktopUpdate.lastResult === 'error'
+                  ? desktopUpdate.errorKind === 'network'
+                    ? 'Сервер обновлений не ответил. Попробуйте ещё раз.'
+                    : 'Не удалось обновиться автоматически. Можно скачать установщик вручную.'
+                  : 'Автоматическая проверка обновлений включена.';
+  const desktopUpdateTone = desktopUpdate?.phase === 'downloaded' || desktopUpdate?.phase === 'available'
     ? 'update'
     : desktopUpdate?.lastResult === 'up-to-date'
       ? 'success'
@@ -1210,18 +1233,18 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
                   <span className="mova-client-version__mark" aria-hidden="true">M</span>
                   <span className="mova-client-version__copy">
                     <small>Версия клиента</small>
-                    <strong>Mova {desktopUpdate?.currentVersion || '—'}</strong>
+                    <strong>{desktopUpdate?.currentVersion ? `Mova ${desktopUpdate.currentVersion}` : 'Mova — старая сборка'}</strong>
                     <em className={`is-${desktopUpdateTone}`}>{desktopUpdateDescription}</em>
                   </span>
                   <Button
                     type="button"
                     size="sm"
                     variant="secondary"
-                    leadingIcon={desktopUpdateBusy ? <LoaderCircle className="mova-spin" size={15} /> : desktopUpdate?.phase === 'downloaded' ? <Upload size={15} /> : <RotateCcw size={15} />}
+                    leadingIcon={desktopUpdateBusy ? <LoaderCircle className="mova-spin" size={15} /> : desktopUpdate?.phase === 'downloaded' || desktopUpdate?.phase === 'available' ? <Upload size={15} /> : <RotateCcw size={15} />}
                     disabled={!desktopUpdate?.supported || desktopUpdateBusy}
                     onClick={() => void handleDesktopUpdate()}
                   >
-                    {desktopUpdate?.phase === 'downloaded' ? 'Установить обновление' : desktopUpdate?.phase === 'downloading' ? `${desktopUpdate.progress}%` : desktopUpdate?.phase === 'checking' ? 'Проверяем…' : 'Проверить обновления'}
+                    {desktopUpdate?.phase === 'downloaded' ? 'Установить обновление' : desktopUpdate?.phase === 'available' ? 'Скачать обновление' : desktopUpdate?.phase === 'downloading' ? `${desktopUpdate.progress}%` : desktopUpdate?.phase === 'checking' ? 'Проверяем…' : 'Проверить обновления'}
                   </Button>
                 </div>
                 <p>Проверяем новую версию после запуска Mova и затем каждые четыре часа.</p>

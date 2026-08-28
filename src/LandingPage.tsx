@@ -16,12 +16,13 @@ import {
   Video,
   X,
 } from 'lucide-react';
+import desktopRelease from '../desktop/release.json';
 
-const version = '0.1.11';
-const releaseTag = '0.1.11';
-const githubUrl = 'https://github.com/yuuta4ka/mova';
+const version = desktopRelease.version;
+const releaseTag = desktopRelease.tag;
+const githubUrl = `https://github.com/${desktopRelease.repository}`;
 const donationUrl = 'https://donatex.gg/donate/yuuta';
-const releaseBase = `https://github.com/yuuta4ka/mova/releases/download/v${releaseTag}`;
+const releaseBase = `${githubUrl}/releases/download/v${releaseTag}`;
 
 const downloads = [
   {
