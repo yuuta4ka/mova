@@ -271,9 +271,10 @@ describe('voice processing settings', () => {
     expect(setHotkeyCaptureActive).toHaveBeenLastCalledWith(false);
   });
 
-  it('shows the desktop client version and checks for updates from settings', async () => {
+  it('shows the desktop release date and relies on automatic update checks', async () => {
     const idleUpdate: DesktopUpdateState = {
       currentVersion: '0.1.10',
+      currentReleaseDate: '2026-08-22',
       availableVersion: '',
       phase: 'idle',
       progress: 0,
@@ -300,15 +301,21 @@ describe('voice processing settings', () => {
     render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
-    expect(await screen.findByText('Mova 0.1.10')).toBeVisible();
-    const check = screen.getByRole('button', { name: 'Проверить обновления' });
-    await user.click(check);
-    expect(checkForUpdates).toHaveBeenCalledOnce();
-    expect(await screen.findByRole('button', { name: 'Проверяем…' })).toBeDisabled();
+    expect(await screen.findByText('v0.1.10')).toBeVisible();
+    expect(screen.getByText('Текущая версия')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Проверить обновления' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/после запуска Mova/i)).not.toBeInTheDocument();
+    expect(document.querySelector('.mova-client-version__mark')).not.toBeInTheDocument();
+    expect(checkForUpdates).not.toHaveBeenCalled();
+
+    act(() => publishUpdate({ ...idleUpdate, phase: 'checking' }));
+    expect(await screen.findByText('Проверяем обновления…')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Проверить обновления' })).not.toBeInTheDocument();
 
     act(() => publishUpdate({ ...idleUpdate, lastResult: 'up-to-date' }));
-    expect(await screen.findByText('У вас установлена последняя версия.')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Проверить обновления' })).toBeEnabled();
+    expect(await screen.findByText('Установлена последняя версия')).toBeVisible();
+    expect(screen.getByText('(22 августа 2026)')).toHaveClass('mova-client-version__date');
+    expect(screen.queryByRole('button', { name: 'Проверить обновления' })).not.toBeInTheDocument();
   });
 
   it('shows the installed version and a direct installer for a legacy desktop shell', async () => {
@@ -326,8 +333,9 @@ describe('voice processing settings', () => {
     render(<SettingsModal user={currentUser} open onClose={vi.fn()} onEditProfile={vi.fn()} />);
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
-    expect(await screen.findByText('Mova 0.1.10')).toBeVisible();
-    expect(screen.getByText(/Доступна Mova 0\.1\.13/)).toBeVisible();
+    expect(await screen.findByText('v0.1.10')).toBeVisible();
+    expect(screen.getByText('v0.1.13')).toBeVisible();
+    expect(screen.getByText('Доступно обновление')).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Скачать обновление' }));
 
     expect(open).toHaveBeenCalledWith(
@@ -2660,7 +2668,7 @@ describe('RealMessages context actions and selection', () => {
 
     fireEvent.contextMenu(container.querySelector('.mova-real-message')!);
     expect(screen.queryByRole('menuitem', { name: 'Копировать' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('menuitem', { name: 'Копировать изображение' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Скопировать' }));
 
     expect(writeClipboardImage).toHaveBeenCalledWith(imageDataUrl);
   });

@@ -9,6 +9,7 @@ import './composer.css';
 import './voice-message.css';
 import './common-ui.css';
 import './photo-send.css';
+import './settings.css';
 
 const friends: AppUser[] = [
   {
@@ -153,6 +154,23 @@ const previewConversations: AppConversation[] = [
 ];
 
 const configureFullInterfacePreview = () => {
+  window.movaDesktopShell ||= {
+    platform: 'win32',
+    minimize: () => undefined,
+    toggleMaximize: () => undefined,
+    close: () => undefined,
+    getUpdateState: async () => ({
+      currentVersion: '0.1.13',
+      currentReleaseDate: '2026-08-28',
+      availableVersion: '',
+      phase: 'idle',
+      progress: 0,
+      lastResult: 'up-to-date',
+      supported: true,
+    }),
+    isMaximized: async () => false,
+    onMaximizedChange: () => () => undefined,
+  };
   api.conversations = async () => ({ conversations: previewConversations });
   api.users = async () => ({ users: [previewAlex, previewKatya] });
   api.messages = async (conversationId) => ({ messages: conversationId === 'preview-chat' ? previewMessages : [], hasMore: false, nextCursor: null });

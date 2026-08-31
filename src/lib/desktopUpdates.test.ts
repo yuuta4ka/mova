@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   compareDesktopVersions,
+  currentDesktopReleaseDate,
   currentDesktopReleaseVersion,
   desktopInstallerUrl,
   desktopVersionFromUserAgent,
+  formatDesktopReleaseDate,
   legacyDesktopUpdateState,
 } from './desktopUpdates';
 
@@ -17,6 +19,13 @@ describe('desktop update compatibility', () => {
     expect(compareDesktopVersions('0.1.9', '0.1.12')).toBe(-1);
     expect(compareDesktopVersions('0.1.12', '0.1.12')).toBe(0);
     expect(compareDesktopVersions('0.2.0', '0.1.12')).toBe(1);
+  });
+
+  it('formats the release date in Russian without timezone drift', () => {
+    expect(currentDesktopReleaseDate).toBe('2026-08-28');
+    expect(formatDesktopReleaseDate('2026-08-28')).toBe('28 августа 2026');
+    expect(formatDesktopReleaseDate('2026-02-29')).toBe('');
+    expect(formatDesktopReleaseDate('not-a-date')).toBe('');
   });
 
   it('builds direct installer links for both supported desktop platforms', () => {

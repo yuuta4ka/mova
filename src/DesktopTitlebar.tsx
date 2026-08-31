@@ -51,6 +51,7 @@ export type DesktopGameActivity = {
 
 export type DesktopUpdateState = {
   currentVersion: string;
+  currentReleaseDate?: string;
   availableVersion: string;
   phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded';
   progress: number;

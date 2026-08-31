@@ -26,10 +26,11 @@ describe('desktop release tooling', () => {
   });
 
   it('reads metadata shared by the landing page and desktop updater', () => {
-    expect(parseDesktopReleaseMetadata('{"version":"1.2.3","tag":"1.2.3","repository":"owner/repo"}')).toEqual({
+    expect(parseDesktopReleaseMetadata('{"version":"1.2.3","tag":"1.2.3","repository":"owner/repo","releasedOn":"2026-08-28"}')).toEqual({
       version: '1.2.3',
       tag: '1.2.3',
       repository: 'owner/repo',
+      releasedOn: '2026-08-28',
     });
   });
 

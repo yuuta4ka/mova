@@ -129,7 +129,7 @@ export function LandingPage() {
       '.mova-landing-timeline li',
       '.mova-landing-features>.mova-landing-section-heading',
       '.mova-landing-features article',
-      '.mova-landing-ai-scene>*',
+      '.mova-landing-process-scene>*',
       '.mova-landing-download>header',
       '.mova-landing-download__layout>*',
       '.mova-landing-support>article',
@@ -177,7 +177,7 @@ export function LandingPage() {
           <div className="mova-landing-hero__copy">
             <span className="mova-landing-eyebrow"><Sparkles size={14} /> Pet-project, который немного разросся</span>
             <h1 id="hero-title"><span>Mova</span>Мессенджер, сделанный по вечерам.</h1>
-            <p>Vibecode-проект, который за несколько недель вырос в рабочий мессенджер с чатами, звонками и демонстрацией экрана.</p>
+            <p>Pet-project, который за несколько недель вырос в рабочий мессенджер с чатами, звонками и демонстрацией экрана.</p>
             <p className="mova-landing-hero__note">Не полная замена Telegram или Discord. Просто нормальная альтернатива на случай проблем с доступом.</p>
             <div className="mova-landing-actions">
               <a className="is-primary" href="/app">Открыть Mova <ArrowRight size={17} /></a>
@@ -263,16 +263,16 @@ export function LandingPage() {
           </div>
         </section>
 
-        <section className="mova-landing-ai-scene" aria-labelledby="ai-title">
-          <div className="mova-landing-ai-scene__character">
+        <section className="mova-landing-process-scene" aria-labelledby="process-title">
+          <div className="mova-landing-process-scene__character">
             <img src="/mova-character-peek.png" alt="Мая выглядывает из-за блока о создании Mova" />
           </div>
-          <div className="mova-landing-ai">
-            <div className="mova-landing-ai__icon"><Sparkles size={24} /></div>
+          <div className="mova-landing-process">
+            <div className="mova-landing-process__icon"><Sparkles size={24} /></div>
             <div>
-              <span>Да, в основном через vibecoding</span>
-              <h2 id="ai-title">Сделано с AI. Серьёзно.</h2>
-              <p>Я описывал нейросетям, что хочу получить, запускал код, находил странности и переделывал интерфейс. Несколько недель вечерней возни с AI и Codex каким-то образом превратились в backend, realtime-чаты, звонки, screen sharing и desktop-клиент.</p>
+              <span>Сделано по вечерам</span>
+              <h2 id="process-title">От идеи до работающего приложения.</h2>
+              <p>Я начинал с небольшого запасного чата, проверял каждую новую функцию, находил странности и переделывал интерфейс. Несколько недель вечерней работы превратили простую идею в backend, realtime-чаты, звонки, screen sharing и desktop-клиент.</p>
               <p>Не технологический переворот. Просто забавно, что этой штукой теперь реально можно пользоваться.</p>
             </div>
             <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={17} /> Посмотреть код</a>
@@ -361,7 +361,9 @@ export function LandingPage() {
           </nav>
         </div>
         <div className="mova-landing-footer__meta"><span>© 2026 Mova</span><span>Общайтесь, созванивайтесь, оставайтесь на связи.</span></div>
-        <div className="mova-landing-footer__word" aria-hidden="true">Mova</div>
+        <div className="mova-landing-footer__word" aria-hidden="true">
+          <span>M</span><span>o</span><span>v</span><span>a</span>
+        </div>
       </footer>
 
       <div

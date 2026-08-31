@@ -109,6 +109,19 @@ describe('MediaViewer controls', () => {
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
     expect(screen.getByRole('link', { name: 'Скачать изображение' })).toHaveAttribute('download', 'first.png');
   });
+
+  it('copies the currently opened image from the toolbar and keyboard shortcut', () => {
+    const onCopy = vi.fn();
+    viewer({ onCopy });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Следующее изображение' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Скопировать изображение' }));
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+
+    expect(onCopy).toHaveBeenCalledTimes(2);
+    expect(onCopy).toHaveBeenNthCalledWith(1, items[1].attachment);
+    expect(onCopy).toHaveBeenNthCalledWith(2, items[1].attachment);
+  });
 });
 
 describe('MediaViewer gallery and mobile state', () => {

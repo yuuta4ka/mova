@@ -99,12 +99,14 @@ describe('call layout', () => {
     const getRemoteTile = () => screen.getByText(cameraUser.name, { selector: '.mova-call-label' }).closest('.mova-call-tile');
 
     expect(getRemoteTile()).toHaveClass('has-video', 'is-camera');
+    expect(screen.getByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` })).toBeInTheDocument();
     expect(getRemoteTile()?.querySelector('[aria-label="Камера включена"]')).not.toBeInTheDocument();
     expect(getRemoteTile()?.querySelector('[aria-label="Микрофон включён"]')).not.toBeInTheDocument();
     callMedia.remoteVideoStreams = [];
     view.rerender(<RealMessages conversation={{ ...conversation, id: 'group-2', kind: 'group', members: [currentUser, cameraUser] }} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(getRemoteTile()).toHaveClass('is-avatar');
+    expect(screen.queryByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` })).not.toBeInTheDocument();
     expect(view.container.querySelector('.mova-call-grid')).toHaveAttribute('data-participant-count', '2');
   });
 
@@ -678,17 +680,18 @@ describe('call layout', () => {
     expect(screen.queryByRole('button', { name: 'Открыть Юта · вы на весь экран' })).not.toBeInTheDocument();
   });
 
-  it('can expand a remote avatar tile and adjust that participant from its context menu', async () => {
+  it('does not expand a remote avatar tile and keeps its participant controls available', async () => {
     callMedia.participants = ['friend'];
-    const user = userEvent.setup();
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    await user.click(await screen.findByRole('button', { name: 'Открыть Друг на весь экран' }));
-    expect(document.body.querySelector('.mova-call-tile.is-avatar.is-expanded')).not.toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Закрыть полноэкранный режим' }));
-
     const friendLabel = screen.getByText('Друг', { selector: '.mova-call-label' });
-    fireEvent.contextMenu(friendLabel.closest('article')! , { clientX: 80, clientY: 90 });
+    const friendTile = friendLabel.closest('article')!;
+    expect(screen.queryByRole('button', { name: 'Открыть Друг на весь экран' })).not.toBeInTheDocument();
+    fireEvent.doubleClick(friendTile);
+    expect(friendTile).not.toHaveClass('is-expanded');
+    expect(document.body.querySelector('.mova-call-tile.is-avatar.is-expanded')).toBeNull();
+
+    fireEvent.contextMenu(friendTile, { clientX: 80, clientY: 90 });
     const volume = await screen.findByRole('slider', { name: 'Громкость Друг' });
     fireEvent.change(volume, { target: { value: '65' } });
     expect(callMedia.setParticipantVolume).toHaveBeenCalledWith('friend', 65);

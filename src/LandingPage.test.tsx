@@ -9,7 +9,8 @@ describe('Mova landing page', () => {
     expect(screen.getByRole('heading', { name: /Mova.*Мессенджер, сделанный по вечерам/i })).toBeVisible();
     expect(screen.getByRole('heading', { name: /Зачем ещё один мессенджер/i })).toBeVisible();
     expect(screen.getByRole('heading', { name: /От маленького чата до полноценной Mova/i })).toBeVisible();
-    expect(screen.getByRole('heading', { name: /Сделано с AI/i })).toBeVisible();
+    expect(screen.getByRole('heading', { name: /От идеи до работающего приложения/i })).toBeVisible();
+    expect(document.querySelector('.mova-landing')).not.toHaveTextContent(/нейросет|vibecod|codex|\bAI\b/i);
     expect(screen.getByAltText(/Фрагмент настоящего интерфейса Mova/i)).toHaveAttribute('src', '/mova-interface.png');
     expect(screen.getByAltText(/Мая выглядывает/i)).toHaveAttribute('src', '/mova-character-peek.png');
     expect(screen.queryByText(/для атмосферы/i)).not.toBeInTheDocument();
@@ -32,7 +33,9 @@ describe('Mova landing page', () => {
     expect(screen.getByText('@yuuta4ka', { selector: '.mova-landing-support__username' })).toBeVisible();
     expect(screen.queryByRole('link', { name: /@yuuta4ka/i })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /пролистали сайт до самого конца/i })).toBeVisible();
-    expect(document.querySelector('.mova-landing-footer__word')).toHaveTextContent('Mova');
+    const footerWord = document.querySelector('.mova-landing-footer__word');
+    expect(footerWord).toHaveTextContent('Mova');
+    expect(Array.from(footerWord?.children ?? [], (letter) => letter.textContent)).toEqual(['M', 'o', 'v', 'a']);
   });
 
   it('opens and closes the secret video', () => {

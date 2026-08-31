@@ -64,9 +64,9 @@ export async function copyImageToClipboard(source: string) {
   const desktopClipboard = window.movaDesktopShell?.writeClipboardImage;
   if (desktopClipboard) {
     const sourceBlob = await imageBlobFromSource(source);
-    const nativeBlob = ['image/png', 'image/jpeg', 'image/webp'].includes(sourceBlob.type) ? sourceBlob : await pngBlob(sourceBlob);
-    const dataUrl = await blobToDataUrl(nativeBlob);
-    await desktopClipboard(dataUrl);
+    const dataUrl = await blobToDataUrl(await pngBlob(sourceBlob));
+    const copied = await desktopClipboard(dataUrl);
+    if (!copied) throw new Error('Системный буфер обмена не принял изображение');
     return;
   }
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('Копирование изображений недоступно');

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  desktopCurrentReleaseDate,
   desktopReleaseDownloadUrl,
   desktopUpdateAction,
   desktopUpdateErrorKind,
   normalizeUpdateProgress,
   updateCheckIntervalMs,
   updateCheckTimeoutMs,
+  updateRetryDelayMs,
   updateStartupDelayMs,
 } from './update-state.mjs';
 
@@ -32,9 +34,11 @@ describe('desktop update state', () => {
   });
 
   it('checks shortly after launch and then every four hours', () => {
+    expect(desktopCurrentReleaseDate).toBe('2026-08-28');
     expect(updateStartupDelayMs).toBe(10_000);
     expect(updateCheckIntervalMs).toBe(14_400_000);
     expect(updateCheckTimeoutMs).toBe(30_000);
+    expect(updateRetryDelayMs).toBe(300_000);
   });
 
   it('builds safe manual update URLs and classifies updater failures', () => {

@@ -1,7 +1,12 @@
+.mova-real-thread>.mova-modal-backdrop:has(.mova-photo-send-dialog) {
+  position:absolute;
+  box-sizing:border-box;
+  padding:24px 24px clamp(96px,12vh,140px);
+}
 .mova-photo-send-dialog {
   position:relative;
-  width:min(620px,calc(100vw - 32px));
-  max-height:min(780px,calc(100dvh - 32px));
+  width:min(620px,100%);
+  max-height:min(780px,100%);
   overflow:hidden;
   color:#f7f7f8;
   background:#171719;
@@ -37,7 +42,7 @@
 .mova-photo-send-dialog .mova-emoji-picker { right:70px;bottom:70px; }
 
 @media(max-width:600px) {
-  .mova-modal-backdrop:has(.mova-photo-send-dialog) { padding:0;background:#171719; }
+  .mova-real-thread>.mova-modal-backdrop:has(.mova-photo-send-dialog) { position:fixed;padding:0;background:#171719; }
   .mova-photo-send-dialog { width:100%;height:100dvh;max-height:none;border:0;border-radius:0; }
   .mova-photo-send-dialog header { padding-top:env(safe-area-inset-top);min-height:calc(66px + env(safe-area-inset-top)); }
   .mova-photo-send-preview { flex:1;padding:8px; }

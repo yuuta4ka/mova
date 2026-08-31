@@ -7,11 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { availableSharePickerTabs, buildSharePickerSources } from './share-picker-model.mjs';
 import { desktopCallStatusLabel, resolveDesktopCallStatus, shouldKeepDesktopWindowOpen } from './tray-status.mjs';
 import {
+  desktopCurrentReleaseDate,
   desktopReleaseDownloadUrl,
   desktopUpdateAction,
   desktopUpdateErrorKind,
   normalizeUpdateProgress,
   updateCheckIntervalMs,
+  updateRetryDelayMs,
   updateCheckTimeoutMs,
   updateStartupDelayMs,
 } from './update-state.mjs';
@@ -39,6 +41,7 @@ let sharePickerSequence = 0;
 let activeSharePicker = null;
 let updateStartupTimer = null;
 let updateIntervalTimer = null;
+let updateRetryTimer = null;
 let updateCheckTimeoutTimer = null;
 let activeUpdateDialog = null;
 let gameActivityTimer = null;
@@ -277,6 +280,7 @@ function setUpdateProgressBar() {
 function desktopUpdateSnapshot() {
   return {
     currentVersion: app.getVersion(),
+    currentReleaseDate: desktopCurrentReleaseDate || undefined,
     availableVersion: desktopUpdateState.version,
     phase: desktopUpdateState.phase,
     progress: normalizeUpdateProgress(desktopUpdateState.progress),
@@ -749,6 +753,20 @@ function startUpdateCheckTimeout() {
   updateCheckTimeoutTimer.unref?.();
 }
 
+function clearUpdateRetry() {
+  if (updateRetryTimer) clearTimeout(updateRetryTimer);
+  updateRetryTimer = null;
+}
+
+function scheduleUpdateRetry() {
+  clearUpdateRetry();
+  updateRetryTimer = setTimeout(() => {
+    updateRetryTimer = null;
+    void checkForDesktopUpdates();
+  }, updateRetryDelayMs);
+  updateRetryTimer.unref?.();
+}
+
 async function checkForDesktopUpdates({ manual = false } = {}) {
   if (!app.isPackaged) {
     if (manual) {
@@ -767,6 +785,7 @@ async function checkForDesktopUpdates({ manual = false } = {}) {
     return;
   }
   if (desktopUpdateState.phase !== 'idle') return;
+  clearUpdateRetry();
   setDesktopUpdateState({ phase: 'checking', manualRequest: manual, version: '', progress: 0, lastResult: 'idle', errorKind: '' });
   startUpdateCheckTimeout();
   void autoUpdater.checkForUpdates().catch((error) => {
@@ -780,6 +799,7 @@ function handleUpdateError(error) {
   const errorKind = desktopUpdateErrorKind(error);
   clearUpdateCheckTimeout();
   setDesktopUpdateState({ phase: 'idle', manualRequest: false, progress: 0, lastResult: 'error', errorKind });
+  if (errorKind !== 'installation') scheduleUpdateRetry();
   console.warn('Desktop update check failed:', message);
   if (showError) {
     void updaterDialog({
@@ -816,6 +836,7 @@ function configureUpdates() {
   });
   autoUpdater.on('update-available', (info) => {
     clearUpdateCheckTimeout();
+    clearUpdateRetry();
     const showDownload = desktopUpdateState.manualRequest && process.platform === 'darwin';
     setDesktopUpdateState({
       phase: process.platform === 'darwin' ? 'available' : 'downloading',
@@ -834,6 +855,7 @@ function configureUpdates() {
   autoUpdater.on('update-not-available', async () => {
     const showResult = desktopUpdateState.manualRequest;
     clearUpdateCheckTimeout();
+    clearUpdateRetry();
     setDesktopUpdateState({ phase: 'idle', manualRequest: false, version: '', progress: 0, lastResult: 'up-to-date', errorKind: '' });
     if (showResult) {
       await updaterDialog({
@@ -848,6 +870,7 @@ function configureUpdates() {
   });
   autoUpdater.on('update-downloaded', (info) => {
     clearUpdateCheckTimeout();
+    clearUpdateRetry();
     setDesktopUpdateState({
       phase: 'downloaded',
       version: String(info?.version || desktopUpdateState.version || ''),
@@ -1048,6 +1071,7 @@ app.on('before-quit', () => {
   if (app.isReady()) globalShortcut.unregisterAll();
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
   if (updateIntervalTimer) clearInterval(updateIntervalTimer);
+  clearUpdateRetry();
   clearUpdateCheckTimeout();
   if (gameActivityTimer) clearInterval(gameActivityTimer);
 });

@@ -6,7 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
-import { ChevronLeft, ChevronRight, Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Copy, Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import type { AppMessage, MessageAttachment } from '../lib/api';
 import { attachmentDownloadSource } from '../lib/fileAttachments';
 import { attachmentImages } from '../lib/messageAttachments';
@@ -46,7 +46,7 @@ function useMediaQuery(query: string) {
 
 const clampZoom = (value: number) => Math.min(mediaViewerMaxZoom, Math.max(mediaViewerMinZoom, value));
 
-export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerItem[]; activeId: string; onClose: () => void }) {
+export function MediaViewer({ items, activeId, onClose, onCopy }: { items: MediaViewerItem[]; activeId: string; onClose: () => void; onCopy?: (attachment: MessageAttachment) => void | Promise<void> }) {
   const initialIndex = Math.max(0, items.findIndex((item) => item.id === activeId));
   const [index, setIndex] = useState(initialIndex);
   const [zoom, setZoom] = useState(mediaViewerMinZoom);
@@ -150,11 +150,14 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
       } else if (event.key === '0') {
         event.preventDefault();
         resetView();
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'c' && onCopy && current) {
+        event.preventDefault();
+        void onCopy(current.attachment);
       }
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [applyZoom, index, requestClose, resetView, showItem, zoom]);
+  }, [applyZoom, current, index, onCopy, requestClose, resetView, showItem, zoom]);
 
   useEffect(() => {
     const next = items[index + 1];
@@ -279,6 +282,11 @@ export function MediaViewer({ items, activeId, onClose }: { items: MediaViewerIt
         <span>
           {items.length > 1 && <small>{index + 1} / {items.length}</small>}
         </span>
+        {onCopy && (
+          <button type="button" aria-label="Скопировать изображение" onClick={(event) => { event.stopPropagation(); void onCopy(current.attachment); }}>
+            <Copy size={18} aria-hidden="true" />
+          </button>
+        )}
         <a href={attachmentDownloadSource(current.attachment)} download={current.attachment.name} aria-label="Скачать изображение" onClick={(event) => event.stopPropagation()}>
           <Download size={18} aria-hidden="true" />
         </a>

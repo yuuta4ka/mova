@@ -35,6 +35,7 @@ export function parseDesktopReleaseMetadata(source) {
     version: String(parsed?.version || '').trim(),
     tag: String(parsed?.tag || '').trim(),
     repository: String(parsed?.repository || '').trim(),
+    releasedOn: String(parsed?.releasedOn || '').trim(),
   };
 }
 
@@ -49,6 +50,9 @@ export async function readDesktopReleaseConfig(root = projectRoot) {
 
   if (!version || /[\/\\\0]/u.test(version)) throw new Error('В package.json указана некорректная версия desktop-приложения.');
   if (!owner || !repo) throw new Error('В package.json не настроен GitHub-репозиторий для desktop-релизов.');
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(releaseMetadata.releasedOn) || Number.isNaN(Date.parse(`${releaseMetadata.releasedOn}T00:00:00Z`))) {
+    throw new Error('В desktop/release.json должна быть указана корректная дата релиза в формате YYYY-MM-DD.');
+  }
   if (
     releaseMetadata.version !== version ||
     releaseMetadata.tag !== version ||
@@ -65,6 +69,7 @@ export async function readDesktopReleaseConfig(root = projectRoot) {
     version,
     tag: `v${version}`,
     repository: `${owner}/${repo}`,
+    releasedOn: releaseMetadata.releasedOn,
     releaseDir: join(root, 'release'),
     assets: desktopReleaseAssetNames(version),
   };

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Bookmark, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Keyboard, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, AtSign, Ban, Bell, BellOff, Bookmark, Camera, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, CloudOff, Copy, Download, FileText, Forward, Gamepad2, HeadphoneOff, Headphones, Info, Keyboard, Languages, Link2, LoaderCircle, LogOut, Maximize2, Megaphone, Menu, MessageCircle, Mic, MicOff, Minimize2, MonitorUp, Moon, MoreHorizontal, MoreVertical, Palette, Paperclip, Pencil, Phone, PhoneCall, PhoneOff, Pin, Plus, Power, Reply, RotateCcw, Search, Send, Settings, ShieldCheck, Smile, Sparkles, Trash2, Upload, UserMinus, UserPlus, UserRound, Users, Video, VideoOff, Volume2, X } from 'lucide-react';
 import { api, realtime, session, type AppConversation, type AppMessage, type AppUser, type EmailChallenge, type ForwardedMessageSource, type MessageAttachment, type RealtimeEvent } from './lib/api';
 import { isJoinedCallState, normalizeCallState, useVoiceCall, type ScreenShareQuality } from './hooks/useVoiceCall';
 import { useVoiceRecorder } from './hooks/useVoiceRecorder';
@@ -27,7 +27,7 @@ import { attachmentImageSource, attachmentImages, attachmentSearchText, createIm
 import { audioDeviceLabel } from './lib/audioDevices';
 import { DesktopHotkeySettingsPanel } from './components/DesktopHotkeySettings';
 import { defaultDesktopHotkeySettings } from './lib/desktopHotkeys';
-import { desktopInstallerUrl, legacyDesktopUpdateState } from './lib/desktopUpdates';
+import { currentDesktopReleaseDate, currentDesktopReleaseVersion, desktopInstallerUrl, formatDesktopReleaseDate, legacyDesktopUpdateState } from './lib/desktopUpdates';
 import type { DesktopGameActivity, DesktopGameActivitySettings, DesktopHotkeySettings, DesktopRegisteredGame, DesktopRunningApplication, DesktopUpdateState } from './DesktopTitlebar';
 
 const avatarStatus = (presence: AppUser['presence'], isOnline?: boolean) => (isOnline === false ? 'offline' : presence);
@@ -1078,7 +1078,7 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
   };
   const handleDesktopUpdate = async () => {
     const desktopShell = window.movaDesktopShell;
-    if (!desktopShell) return;
+    if (!desktopShell || (desktopUpdate?.phase !== 'available' && desktopUpdate?.phase !== 'downloaded')) return;
     setDesktopUpdateActionPending(true);
     setDesktopSettingsError('');
     try {
@@ -1090,12 +1090,10 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
         );
         return;
       }
-      const next = desktopUpdate?.phase === 'downloaded' || desktopUpdate?.phase === 'available'
-        ? await desktopShell.installUpdate?.()
-        : await desktopShell.checkForUpdates?.();
+      const next = await desktopShell.installUpdate?.();
       if (next) setDesktopUpdate(next);
     } catch {
-      setDesktopSettingsError('Не удалось проверить обновления Mova.');
+      setDesktopSettingsError('Не удалось открыть обновление Mova.');
     } finally {
       setDesktopUpdateActionPending(false);
     }
@@ -1123,26 +1121,24 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
     stopTest();
     onClose();
   };
-  const desktopUpdateBusy = desktopUpdateActionPending || desktopUpdate?.phase === 'checking' || desktopUpdate?.phase === 'downloading';
-  const desktopUpdateDescription = !desktopUpdate
+  const desktopUpdateBusy = desktopUpdateActionPending;
+  const desktopUpdateStatus = !desktopUpdate
     ? 'Получаем сведения о версии…'
     : !desktopUpdate.supported
-      ? 'Проверка обновлений доступна в установленной версии Mova.'
+      ? 'Сведения об обновлениях недоступны'
       : desktopUpdate.phase === 'checking'
-        ? 'Ищем новую версию…'
+        ? 'Проверяем обновления…'
         : desktopUpdate.phase === 'available'
-          ? `Доступна Mova ${desktopUpdate.availableVersion || 'новой версии'}. Скачайте установщик, чтобы обновиться.`
+          ? 'Доступно обновление'
           : desktopUpdate.phase === 'downloading'
             ? `Загружаем обновление — ${desktopUpdate.progress}%`
             : desktopUpdate.phase === 'downloaded'
-              ? `Mova ${desktopUpdate.availableVersion || 'новой версии'} готова к установке.`
+              ? 'Обновление готово к установке'
               : desktopUpdate.lastResult === 'up-to-date'
-                ? 'У вас установлена последняя версия.'
+                ? 'Установлена последняя версия'
                 : desktopUpdate.lastResult === 'error'
-                  ? desktopUpdate.errorKind === 'network'
-                    ? 'Сервер обновлений не ответил. Попробуйте ещё раз.'
-                    : 'Не удалось обновиться автоматически. Можно скачать установщик вручную.'
-                  : 'Автоматическая проверка обновлений включена.';
+                  ? 'Не удалось проверить обновления'
+                  : 'Текущая версия';
   const desktopUpdateTone = desktopUpdate?.phase === 'downloaded' || desktopUpdate?.phase === 'available'
     ? 'update'
     : desktopUpdate?.lastResult === 'up-to-date'
@@ -1150,6 +1146,17 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
       : desktopUpdate?.lastResult === 'error'
         ? 'error'
         : 'idle';
+  const desktopUpdateHasTarget = Boolean(
+    desktopUpdate?.availableVersion &&
+    (desktopUpdate.phase === 'available' || desktopUpdate.phase === 'downloading' || desktopUpdate.phase === 'downloaded'),
+  );
+  const desktopUpdateCurrentVersion = desktopUpdate?.currentVersion || '';
+  const desktopUpdateCurrentReleaseDate = desktopUpdate?.currentReleaseDate ||
+    (desktopUpdateCurrentVersion === currentDesktopReleaseVersion ? currentDesktopReleaseDate : '');
+  const desktopUpdateDateLabel = desktopUpdate?.lastResult === 'up-to-date'
+    ? formatDesktopReleaseDate(desktopUpdateCurrentReleaseDate)
+    : '';
+  const desktopUpdateActionVisible = desktopUpdate?.phase === 'available' || desktopUpdate?.phase === 'downloaded';
   return (
     <DialogSurface open={open} onClose={onClose} className="mova-settings" labelledBy="settings-title">
         <aside>
@@ -1232,26 +1239,38 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
           ) : section === 'application' ? (
             <div className="mova-audio-settings mova-application-settings">
               <section className="mova-client-version">
-                <h3><Info size={18} /> Версия и обновления</h3>
+                <h3>Версия и обновления</h3>
                 <div className="mova-client-version__row">
-                  <span className="mova-client-version__mark" aria-hidden="true">M</span>
                   <span className="mova-client-version__copy">
-                    <small>Версия клиента</small>
-                    <strong>{desktopUpdate?.currentVersion ? `Mova ${desktopUpdate.currentVersion}` : 'Mova — старая сборка'}</strong>
-                    <em className={`is-${desktopUpdateTone}`}>{desktopUpdateDescription}</em>
+                    <em className={`is-${desktopUpdateTone}`}>{desktopUpdateStatus}</em>
+                    <strong className="mova-client-version__versions">
+                      {desktopUpdateHasTarget ? (
+                        <>
+                          <span className="mova-client-version__current">{desktopUpdateCurrentVersion ? `v${desktopUpdateCurrentVersion}` : 'Старая сборка'}</span>
+                          <i aria-hidden="true">→</i>
+                          <span>{`v${desktopUpdate?.availableVersion}`}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>{desktopUpdateCurrentVersion ? `v${desktopUpdateCurrentVersion}` : 'Старая сборка'}</span>
+                          {desktopUpdateDateLabel && <small className="mova-client-version__date">({desktopUpdateDateLabel})</small>}
+                        </>
+                      )}
+                    </strong>
                   </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    leadingIcon={desktopUpdateBusy ? <LoaderCircle className="mova-spin" size={15} /> : desktopUpdate?.phase === 'downloaded' || desktopUpdate?.phase === 'available' ? <Upload size={15} /> : <RotateCcw size={15} />}
-                    disabled={!desktopUpdate?.supported || desktopUpdateBusy}
-                    onClick={() => void handleDesktopUpdate()}
-                  >
-                    {desktopUpdate?.phase === 'downloaded' ? 'Установить обновление' : desktopUpdate?.phase === 'available' ? 'Скачать обновление' : desktopUpdate?.phase === 'downloading' ? `${desktopUpdate.progress}%` : desktopUpdate?.phase === 'checking' ? 'Проверяем…' : 'Проверить обновления'}
-                  </Button>
+                  {desktopUpdateActionVisible && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      leadingIcon={desktopUpdateBusy ? <LoaderCircle className="mova-spin" size={15} /> : <Download size={15} />}
+                      disabled={desktopUpdateBusy}
+                      onClick={() => void handleDesktopUpdate()}
+                    >
+                      {desktopUpdate?.phase === 'downloaded' ? 'Установить обновление' : 'Скачать обновление'}
+                    </Button>
+                  )}
                 </div>
-                <p>Проверяем новую версию после запуска Mova и затем каждые четыре часа.</p>
               </section>
               <section>
                 <h3><Power size={18} /> Запуск системы</h3>
@@ -3130,9 +3149,8 @@ function CallVideoTile({ participantId, stream, label, kind, mirrored = false, m
   );
 }
 function CallAvatarTile({ participantId, user, label, muted = false, deafened = false, speaking = false, connectionState, screenSharing = false, selfView = false, volume }: { participantId: string; user: AppUser; label: string; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <CallTileShell className={`is-avatar${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screenSharing={screenSharing} speaking={speaking} connectionState={connectionState} expandable={!selfView} expanded={expanded} onExpandedChange={setExpanded} volume={volume}>
+    <CallTileShell className={`is-avatar${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screenSharing={screenSharing} speaking={speaking} connectionState={connectionState} expandable={false} expanded={false} onExpandedChange={() => undefined} volume={volume}>
       <Avatar name={user.name} src={user.avatarDataUrl} color={user.color} size="xl" initialsLength={1} />
     </CallTileShell>
   );
@@ -3500,16 +3518,19 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       toast.push('Не удалось скопировать сообщение.', 'danger');
     }
   };
-  const copyMessageImage = async (message: AppMessage) => {
-    setMessageMenu(null);
-    const images = attachmentImages(message.attachment);
-    const source = attachmentSource(images[0]);
+  const copyImageAttachment = async (attachment: MessageAttachment, albumFirst = false) => {
+    const source = attachmentSource(attachment);
     try {
       await copyImageToClipboard(source);
-      toast.push(images.length > 1 ? 'Первая фотография скопирована.' : 'Изображение скопировано.', 'success');
+      toast.push(albumFirst ? 'Первая фотография скопирована.' : 'Изображение скопировано.', 'success');
     } catch {
       toast.push('Не удалось скопировать изображение.', 'danger');
     }
+  };
+  const copyMessageImage = async (message: AppMessage) => {
+    setMessageMenu(null);
+    const images = attachmentImages(message.attachment);
+    await copyImageAttachment(images[0], images.length > 1);
   };
   const translateMessage = (message: AppMessage) => {
     setMessageMenu(null);
@@ -4920,12 +4941,12 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       />
       {imagePreviewId && mediaGallery.some((item) => item.id === imagePreviewId) &&
         createPortal(
-          <MediaViewer items={mediaGallery} activeId={imagePreviewId} onClose={() => setImagePreviewId(null)} />,
+          <MediaViewer items={mediaGallery} activeId={imagePreviewId} onClose={() => setImagePreviewId(null)} onCopy={copyImageAttachment} />,
           document.body,
         )}
       {avatarPreview &&
         createPortal(
-          <MediaViewer items={[avatarPreview]} activeId={avatarPreview.id} onClose={() => setAvatarPreview(null)} />,
+          <MediaViewer items={[avatarPreview]} activeId={avatarPreview.id} onClose={() => setAvatarPreview(null)} onCopy={copyImageAttachment} />,
           document.body,
         )}
       <DialogSurface open={Boolean(forwardingMessages)} onClose={() => !messageActionBusy && setForwardingMessages(null)} className="mova-forward-message-dialog" labelledBy="mova-forward-message-title">
@@ -4972,7 +4993,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
               {messageMenu?.message.attachment?.type.startsWith('image/') && (
                 <button type="button" role="menuitem" onClick={() => messageMenu && void copyMessageImage(messageMenu.message)}>
                   <Copy size={18} />
-                  <span>{attachmentImages(messageMenu.message.attachment).length > 1 ? 'Копировать первое фото' : 'Копировать изображение'}</span>
+                  <span>Скопировать</span>
                 </button>
               )}
               <button type="button" role="menuitem" onClick={() => messageMenu && translateMessage(messageMenu.message)}>

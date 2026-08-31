@@ -2,7 +2,11 @@ import desktopRelease from './release.json' with { type: 'json' };
 
 export const updateStartupDelayMs = 10_000;
 export const updateCheckIntervalMs = 4 * 60 * 60 * 1_000;
+export const updateRetryDelayMs = 5 * 60 * 1_000;
 export const updateCheckTimeoutMs = 30_000;
+export const desktopCurrentReleaseDate = /^\d{4}-\d{2}-\d{2}$/u.test(String(desktopRelease.releasedOn || ''))
+  ? desktopRelease.releasedOn
+  : '';
 
 export function desktopReleaseDownloadUrl(version, platform) {
   const normalizedVersion = String(version || '').trim();

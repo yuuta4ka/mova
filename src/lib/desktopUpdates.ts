@@ -2,7 +2,34 @@ import desktopRelease from '../../desktop/release.json';
 import type { DesktopUpdateState } from '../DesktopTitlebar';
 
 export const currentDesktopReleaseVersion = desktopRelease.version;
+export const currentDesktopReleaseDate = desktopRelease.releasedOn;
 export const desktopReleasePageUrl = `https://github.com/${desktopRelease.repository}/releases/latest`;
+
+const russianMonthNames = [
+  'января',
+  'февраля',
+  'марта',
+  'апреля',
+  'мая',
+  'июня',
+  'июля',
+  'августа',
+  'сентября',
+  'октября',
+  'ноября',
+  'декабря',
+];
+
+export function formatDesktopReleaseDate(value?: string) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/u);
+  if (!match) return '';
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
+  return `${day} ${russianMonthNames[month - 1]} ${year}`;
+}
 
 const releaseBaseUrl = (version: string) =>
   `https://github.com/${desktopRelease.repository}/releases/download/v${version}`;
@@ -37,6 +64,7 @@ export function legacyDesktopUpdateState(platform: string, userAgent: string): D
   const updateAvailable = !currentVersion || compareDesktopVersions(currentVersion, currentDesktopReleaseVersion) < 0;
   return {
     currentVersion,
+    currentReleaseDate: updateAvailable ? undefined : currentDesktopReleaseDate,
     availableVersion: updateAvailable ? currentDesktopReleaseVersion : '',
     phase: updateAvailable ? 'available' : 'idle',
     progress: 0,
