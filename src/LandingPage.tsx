@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ArrowRight,
-  CheckCircle2,
-  Download,
+  ChevronDown,
   Code2,
+  Download,
   Globe2,
   Heart,
   Laptop,
@@ -12,7 +12,6 @@ import {
   Play,
   Radio,
   ScreenShare,
-  Sparkles,
   Video,
   X,
 } from 'lucide-react';
@@ -24,66 +23,42 @@ const githubUrl = `https://github.com/${desktopRelease.repository}`;
 const donationUrl = 'https://donatex.gg/donate/yuuta';
 const releaseBase = `${githubUrl}/releases/download/v${releaseTag}`;
 
+export type DesktopPlatform = 'windows' | 'macos' | 'other';
+
 const downloads = [
   {
+    platform: 'windows' as const,
     name: 'Windows',
     detail: 'Windows 10 и 11 · x64',
-    meta: `Версия ${version} · EXE`,
+    format: 'EXE',
     href: `${releaseBase}/Mova.Setup.${version}.exe`,
     icon: MonitorDown,
   },
   {
+    platform: 'macos' as const,
     name: 'macOS',
     detail: 'Mac с Apple Silicon',
-    meta: `Версия ${version} · DMG`,
+    format: 'DMG',
     href: `${releaseBase}/Mova-${version}-arm64.dmg`,
     icon: Laptop,
   },
 ];
 
-const featureGroups = [
-  {
-    icon: MessageCircleMore,
-    title: 'Переписка',
-    description: 'Личные и групповые чаты без лишней сложности.',
-    items: ['Ответы и редактирование', 'Emoji, изображения и файлы', 'Сообщения в реальном времени'],
-  },
-  {
-    icon: Video,
-    title: 'Созвоны',
-    description: 'Когда текста уже мало, можно просто позвонить.',
-    items: ['Голос и видео', 'Демонстрация экрана', 'Чат прямо во время звонка'],
-  },
-  {
-    icon: Laptop,
-    title: 'На нужном устройстве',
-    description: 'Открывается в браузере или отдельным приложением.',
-    items: ['Desktop-клиент', 'Web-версия', 'Статусы пользователей'],
-  },
-];
+export function detectDesktopPlatform(userAgent = '', platform = '', maxTouchPoints = 0): DesktopPlatform {
+  const agent = userAgent.toLowerCase();
+  const source = `${userAgent} ${platform}`.toLowerCase();
+  const isIPadDesktopMode = /mac/.test(platform.toLowerCase()) && maxTouchPoints > 1;
 
-const projectTimeline = [
-  {
-    icon: MessageCircleMore,
-    title: 'Сначала — чат',
-    description: 'Запасное место для переписки со своей компанией.',
-  },
-  {
-    icon: Video,
-    title: 'Потом — звонки',
-    description: 'Голос и видео появились, когда одного текста стало мало.',
-  },
-  {
-    icon: ScreenShare,
-    title: 'Следом — экран',
-    description: 'Демонстрация экрана превратила чат в место для совместных дел.',
-  },
-  {
-    icon: Laptop,
-    title: 'И desktop-клиент',
-    description: 'В итоге Mova вышла из вкладки браузера в отдельное приложение.',
-  },
-];
+  if (/android|iphone|ipad|ipod/.test(agent) || isIPadDesktopMode) return 'other';
+  if (/windows|win32|win64/.test(source)) return 'windows';
+  if (/macintosh|mac os x|macintel|macppc/.test(source)) return 'macos';
+  return 'other';
+}
+
+function getBrowserPlatform(): DesktopPlatform {
+  if (typeof navigator === 'undefined') return 'other';
+  return detectDesktopPlatform(navigator.userAgent, navigator.platform, navigator.maxTouchPoints);
+}
 
 function Brand() {
   return (
@@ -94,9 +69,63 @@ function Brand() {
   );
 }
 
+function PlatformDownload({ platform, id }: { platform: DesktopPlatform; id?: string }) {
+  const preferred = downloads.find((download) => download.platform === platform);
+  const PreferredIcon = preferred?.icon ?? Download;
+  const primaryLabel = preferred ? `Скачать для ${preferred.name}` : 'Выбрать версию';
+  const alternativesRef = useRef<HTMLDetailsElement>(null);
+  const primaryContent = (
+    <>
+      <span className="mova-platform-download__icon"><PreferredIcon size={20} /></span>
+      <span className="mova-platform-download__copy">
+        <small>{preferred ? 'Для вашего устройства' : 'Windows или macOS'}</small>
+        <strong>{primaryLabel}</strong>
+      </span>
+      {preferred ? <Download className="mova-platform-download__action" size={19} /> : <ArrowRight className="mova-platform-download__action" size={19} />}
+    </>
+  );
+
+  const openPlatformMenu = () => {
+    if (!alternativesRef.current) return;
+    alternativesRef.current.open = true;
+    alternativesRef.current.querySelector('summary')?.focus();
+  };
+
+  return (
+    <div className="mova-platform-download" id={id} data-detected-platform={platform}>
+      {preferred ? (
+        <a className="mova-platform-download__primary" href={preferred.href}>{primaryContent}</a>
+      ) : (
+        <button className="mova-platform-download__primary" type="button" onClick={openPlatformMenu}>{primaryContent}</button>
+      )}
+
+      <details className="mova-platform-download__alternatives" ref={alternativesRef}>
+        <summary>
+          <span>Другие платформы</span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </summary>
+        <div className="mova-platform-download__menu">
+          {downloads.map(({ name, detail, href, icon: Icon }) => (
+            <a key={name} href={href}>
+              <Icon size={18} />
+              <span><strong>{name}</strong><small>{detail}</small></span>
+              <Download size={16} />
+            </a>
+          ))}
+          <a href="/app">
+            <Globe2 size={18} />
+            <span><strong>Web-версия</strong><small>Без установки</small></span>
+            <ArrowRight size={16} />
+          </a>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export function LandingPage() {
   const [isVideoOpen, setIsVideoOpen] = useState(false);
-  const landingRef = useRef<HTMLDivElement>(null);
+  const [platform] = useState<DesktopPlatform>(getBrowserPlatform);
   const secretVideoRef = useRef<HTMLVideoElement>(null);
 
   const openSecretVideo = () => {
@@ -118,233 +147,141 @@ export function LandingPage() {
     setIsVideoOpen(false);
   };
 
-  useEffect(() => {
-    const root = landingRef.current;
-    if (!root) return;
-    const targets = [...root.querySelectorAll<HTMLElement>([
-      '.mova-landing-showcase>header',
-      '.mova-landing-showcase figure',
-      '.mova-landing-why>*',
-      '.mova-landing-timeline>.mova-landing-section-heading',
-      '.mova-landing-timeline li',
-      '.mova-landing-features>.mova-landing-section-heading',
-      '.mova-landing-features article',
-      '.mova-landing-process-scene>*',
-      '.mova-landing-download>header',
-      '.mova-landing-download__layout>*',
-      '.mova-landing-support>article',
-      '.mova-landing-finale>*',
-    ].join(','))];
-    targets.forEach((target, index) => {
-      target.classList.add('mova-landing-reveal');
-      target.style.setProperty('--mova-reveal-delay', `${(index % 4) * 55}ms`);
-    });
-
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    if (reducedMotion || !('IntersectionObserver' in window)) {
-      targets.forEach((target) => target.classList.add('is-revealed'));
-      return;
-    }
-
-    root.classList.add('is-reveal-ready');
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        entry.target.classList.add('is-revealed');
-        observer.unobserve(entry.target);
-      });
-    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
-    targets.forEach((target) => observer.observe(target));
-    return () => observer.disconnect();
-  }, []);
-
   return (
-    <div className="mova-landing" ref={landingRef}>
+    <div className="mova-landing">
       <header className="mova-landing-header">
         <nav className="mova-landing-nav" aria-label="Основная навигация">
           <Brand />
           <div className="mova-landing-nav__links">
             <a href="#features">Возможности</a>
+            <a href="#download">Скачать</a>
             <a href="#story">О проекте</a>
             <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={15} /> GitHub</a>
           </div>
-          <a className="mova-landing-nav__app" href="/app">Открыть Mova <ArrowRight size={15} /></a>
         </nav>
       </header>
 
       <main>
         <section className="mova-landing-hero" aria-labelledby="hero-title">
           <div className="mova-landing-hero__copy">
-            <span className="mova-landing-eyebrow"><Sparkles size={14} /> Pet-project, который немного разросся</span>
-            <h1 id="hero-title"><span>Mova</span>Мессенджер, сделанный по вечерам.</h1>
-            <p>Pet-project, который за несколько недель вырос в рабочий мессенджер с чатами, звонками и демонстрацией экрана.</p>
-            <p className="mova-landing-hero__note">Не полная замена Telegram или Discord. Просто нормальная альтернатива на случай проблем с доступом.</p>
+            <span className="mova-landing-eyebrow"><Radio size={14} /> Mova · web и desktop</span>
+            <h1 id="hero-title">Общайтесь.<br />Созванивайтесь.<br /><span>Делитесь экраном.</span></h1>
+            <p>Личные и групповые чаты, голосовые и видеозвонки — в браузере и отдельном приложении.</p>
             <div className="mova-landing-actions">
-              <a className="is-primary" href="/app">Открыть Mova <ArrowRight size={17} /></a>
-              <a href="#download"><Download size={17} /> Скачать приложение</a>
+              <a className="mova-landing-action-primary" href="/app">Открыть Mova <ArrowRight size={18} /></a>
+              <PlatformDownload platform={platform} id="download" />
             </div>
+            <ul className="mova-landing-hero__facts" aria-label="Основные возможности Mova">
+              <li><MessageCircleMore size={15} /> Личные и групповые чаты</li>
+              <li><Video size={15} /> Голос и видео</li>
+              <li><ScreenShare size={15} /> Демонстрация экрана</li>
+            </ul>
           </div>
 
           <figure className="mova-landing-hero__product">
-            <div className="mova-landing-hero__product-bar">
-              <span><i /><i /><i /> mova · диалог</span>
-              <small><Radio size={12} /> Настоящий интерфейс</small>
+            <div className="mova-landing-product-window">
+              <div className="mova-landing-product-window__bar">
+                <span><i /><i /><i /></span>
+                <small>mova · диалог</small>
+                <em><Radio size={12} /> Настоящий интерфейс</em>
+              </div>
+              <img src="/mova-interface.png" alt="Настоящий интерфейс диалога в Mova" />
             </div>
-            <div className="mova-landing-hero__product-image">
-              <img src="/mova-interface.png" alt="Фрагмент настоящего интерфейса Mova в первом экране" />
+            <div className="mova-landing-hero__call-preview">
+              <img src="/mova-call.png" alt="Настоящий интерфейс голосового звонка в Mova" />
+              <span><i /> Звонок в Mova</span>
             </div>
-            <figcaption><MessageCircleMore size={17} /><span><strong>Переписка без лишнего шума</strong><small>Сообщения, изображения, ссылки и emoji</small></span></figcaption>
+            <figcaption><MessageCircleMore size={17} /><span><strong>Разговор остаётся в центре</strong><small>Сообщения, изображения, файлы и звонки — без лишнего шума.</small></span></figcaption>
           </figure>
         </section>
 
-        <section className="mova-landing-showcase" aria-labelledby="showcase-title">
-          <header>
-            <div><span>Настоящий интерфейс</span><h2 id="showcase-title">Диалоги и звонки в Mova</h2></div>
-            <p>Оба скриншота сняты в текущей версии приложения на локальных демонстрационных аккаунтах.</p>
-          </header>
-          <div className="mova-landing-showcase__grid">
-            <figure>
-              <img src="/mova-interface.png" alt="Диалог в Mova с текстом, ссылкой, изображением и эмодзи" />
-              <figcaption><i /> Диалог · ссылки, изображения и emoji</figcaption>
-            </figure>
-            <figure>
-              <img src="/mova-call.png" alt="Активный голосовой звонок между двумя пользователями Mova" />
-              <figcaption><i /> Голосовой звонок · текущий интерфейс</figcaption>
-            </figure>
-          </div>
-        </section>
-
-        <section className="mova-landing-why" id="story" aria-labelledby="why-title">
-          <div className="mova-landing-section-heading">
-            <span>О проекте</span>
-            <h2 id="why-title">Зачем ещё один мессенджер?</h2>
-          </div>
-          <div className="mova-landing-why__copy">
-            <p className="is-lead">Не потому, что Telegram или Discord плохие. Они отличные.</p>
-            <p>Просто привычный сервис сегодня может работать нормально, а завтра им уже сложно пользоваться. Mova появилась как запасной вариант для своей компании: переписываться, созваниваться и показывать экран, когда основной мессенджер недоступен или работает нестабильно.</p>
-            <p>Это не полная замена Telegram или Discord и пока не пытается ею быть.</p>
-          </div>
-          <blockquote>«Сделаю небольшой запасной чат для своих». Несколько недель спустя у него появились видеозвонки и desktop-клиент.</blockquote>
-        </section>
-
-        <section className="mova-landing-timeline" aria-labelledby="timeline-title">
-          <div className="mova-landing-section-heading">
-            <span>Как всё разрослось</span>
-            <h2 id="timeline-title">От маленького чата до полноценной Mova</h2>
-            <p>Без большого плана и презентаций для инвесторов. Просто одна полезная вещь постепенно потянула за собой следующую.</p>
-          </div>
-          <ol>
-            {projectTimeline.map(({ icon: Icon, title, description }, index) => (
-              <li key={title}>
-                <i><Icon size={19} /></i>
-                <span>0{index + 1}</span>
-                <h3>{title}</h3>
-                <p>{description}</p>
-              </li>
-            ))}
-          </ol>
-        </section>
-
         <section className="mova-landing-features" id="features" aria-labelledby="features-title">
-          <div className="mova-landing-section-heading">
-            <span>Что уже работает</span>
-            <h2 id="features-title">Всё основное уже на месте</h2>
-            <p>Без обещаний на десять лет вперёд. Только то, чем в Mova можно пользоваться сейчас.</p>
-          </div>
-          <div className="mova-landing-features__grid">
-            {featureGroups.map(({ icon: Icon, title, description, items }) => (
-              <article key={title}>
-                <i><Icon size={21} /></i>
-                <h3>{title}</h3>
-                <p>{description}</p>
-                <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="mova-landing-process-scene" aria-labelledby="process-title">
-          <div className="mova-landing-process-scene__character">
-            <img src="/mova-character-peek.png" alt="Мая выглядывает из-за блока о создании Mova" />
-          </div>
-          <div className="mova-landing-process">
-            <div className="mova-landing-process__icon"><Sparkles size={24} /></div>
-            <div>
-              <span>Сделано по вечерам</span>
-              <h2 id="process-title">От идеи до работающего приложения.</h2>
-              <p>Я начинал с небольшого запасного чата, проверял каждую новую функцию, находил странности и переделывал интерфейс. Несколько недель вечерней работы превратили простую идею в backend, realtime-чаты, звонки, screen sharing и desktop-клиент.</p>
-              <p>Не технологический переворот. Просто забавно, что этой штукой теперь реально можно пользоваться.</p>
-            </div>
-            <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={17} /> Посмотреть код</a>
-          </div>
-        </section>
-
-        <section className="mova-landing-download" id="download" aria-labelledby="download-title">
-          <header>
-            <div className="mova-landing-section-heading">
-              <span>Попробовать Mova</span>
-              <h2 id="download-title">В браузере или отдельным приложением</h2>
-            </div>
-            <p>Для быстрого старта откройте web-версию. Для постоянного использования есть приложения для Windows и Mac.</p>
+          <header className="mova-landing-section-heading is-centered">
+            <span>Настоящий продукт</span>
+            <h2 id="features-title">Всё нужное для разговора</h2>
+            <p>Показываем текущий интерфейс Mova и только те возможности, которыми уже можно пользоваться.</p>
           </header>
 
-          <div className="mova-landing-download__layout">
-            <a className="mova-landing-web-card" href="/app">
-              <i><Globe2 size={25} /></i>
-              <span><small>Установка не нужна</small><strong>Открыть Mova в браузере</strong><em>Web-версия работает прямо на этом сайте.</em></span>
-              <ArrowRight size={20} />
-            </a>
-
-            <div className="mova-landing-download__desktop" aria-label="Desktop-приложения">
-              {downloads.map(({ name, detail, meta, href, icon: Icon }) => (
-                <a key={name} href={href}>
-                  <i><Icon size={22} /></i>
-                  <span><strong>{name}</strong><small>{detail}</small></span>
-                  <em>{meta}</em>
-                  <Download size={18} />
-                </a>
-              ))}
+          <article className="mova-landing-feature-scene">
+            <div className="mova-landing-feature-scene__copy">
+              <i><MessageCircleMore size={23} /></i>
+              <span>Переписка</span>
+              <h3>Сообщения без лишней сложности</h3>
+              <p>Личные и групповые чаты с ответами, редактированием, изображениями, файлами, ссылками и emoji.</p>
+              <ul>
+                <li>Сообщения приходят в реальном времени</li>
+                <li>Медиа и файлы остаются внутри диалога</li>
+                <li>Статусы помогают понять, кто сейчас на связи</li>
+              </ul>
             </div>
-          </div>
+            <figure className="mova-landing-feature-scene__media">
+              <img src="/mova-interface.png" alt="Диалог в Mova с сообщениями, изображениями и ссылками" />
+            </figure>
+          </article>
 
-          <p className="mova-landing-download__release"><Radio size={14} /> Установщики ведут на опубликованный релиз Mova {version} в GitHub.</p>
+          <article className="mova-landing-feature-scene is-reversed">
+            <div className="mova-landing-feature-scene__copy">
+              <i><Video size={23} /></i>
+              <span>Созвоны</span>
+              <h3>От текста к голосу — в том же приложении</h3>
+              <p>Голосовые и видеозвонки, демонстрация экрана и чат во время разговора собраны в одном пространстве.</p>
+              <ul>
+                <li>Голосовые и видеозвонки</li>
+                <li>Демонстрация экрана собеседникам</li>
+                <li>Переписка доступна прямо во время звонка</li>
+              </ul>
+            </div>
+            <figure className="mova-landing-feature-scene__media">
+              <img src="/mova-call.png" alt="Активный голосовой звонок между двумя пользователями Mova" />
+            </figure>
+          </article>
+
+          <ul className="mova-landing-capabilities" aria-label="Дополнительные возможности">
+            <li><MessageCircleMore size={21} /><span><strong>Групповые чаты</strong><small>Один диалог для всей компании.</small></span></li>
+            <li><ScreenShare size={21} /><span><strong>Демонстрация экрана</strong><small>Показывайте собеседникам, что происходит у вас.</small></span></li>
+            <li><Laptop size={21} /><span><strong>Web и desktop</strong><small>Открывайте Mova там, где удобнее.</small></span></li>
+          </ul>
         </section>
 
-        <section className="mova-landing-support" aria-label="Поддержка и обратная связь">
-          <article className="mova-landing-support__donation">
-            <i><Heart size={22} /></i>
+        <section className="mova-landing-story" id="story" aria-labelledby="story-title">
+          <article className="mova-landing-story__main">
             <div>
+              <span>О проекте</span>
+              <h2 id="story-title">Небольшая идея стала рабочей Mova</h2>
+              <p>Mova начиналась как запасной чат для своей компании. Постепенно появились группы, файлы, звонки, демонстрация экрана и отдельный desktop-клиент.</p>
+              <p>Проект остаётся независимым: без громких обещаний — только понятные функции, которыми уже можно пользоваться.</p>
+              <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={17} /> Посмотреть проект на GitHub</a>
+            </div>
+            <figure><img src="/mova-character-peek.png" alt="Мая — персонаж проекта Mova" /></figure>
+          </article>
+
+          <div className="mova-landing-story__side">
+            <article className="mova-landing-support-card">
+              <i><Heart size={21} /></i>
               <span>Поддержка проекта</span>
-              <h2>Поддержать Mova</h2>
-              <p>Mova — независимый pet-project. Поддержка помогает оплачивать серверы, продолжать развитие и сохранять базовое использование без обязательных подписок.</p>
-            </div>
-            <a href={donationUrl} target="_blank" rel="noreferrer">Поддержать проект <ArrowRight size={16} /></a>
-          </article>
+              <h3>Помочь Mova развиваться</h3>
+              <p>Поддержка помогает оплачивать серверы и сохранять базовое использование без обязательной подписки.</p>
+              <a href={donationUrl} target="_blank" rel="noreferrer">Поддержать проект <ArrowRight size={16} /></a>
+            </article>
 
-          <article className="mova-landing-support__feedback">
-            <div>
-              <span>Обратная связь</span>
-              <h2>Нашли баг или есть идея?</h2>
-              <p>Напишите об ошибке, предложите новую функцию или поделитесь впечатлениями о проекте.</p>
-            </div>
-            <div className="mova-landing-support__links">
-              <span className="mova-landing-support__username"><MessageCircleMore size={16} /> @yuuta4ka</span>
-              <a href={githubUrl} target="_blank" rel="noreferrer"><Code2 size={15} /> GitHub</a>
-            </div>
-          </article>
+            <button className="mova-landing-secret-card" type="button" onClick={openSecretVideo} aria-label="Открыть секретное видео">
+              <img src="/mova-secret-poster.png" alt="" />
+              <span className="mova-landing-secret-card__play"><Play size={19} fill="currentColor" /></span>
+              <span><small>Небольшая пасхалка</small><strong>12 секунд отдыха</strong></span>
+            </button>
+          </div>
         </section>
 
-        <section className="mova-landing-finale" aria-labelledby="finale-title">
-          <div className="mova-landing-finale__copy">
-            <span><CheckCircle2 size={15} /> Финишная прямая пройдена</span>
-            <h2 id="finale-title">Поздравляем — вы пролистали сайт до самого конца.</h2>
-            <p>За такое полагается маленькая награда. Нажмите на карточку, чтобы посмотреть секретное видео.</p>
+        <section className="mova-landing-cta" aria-labelledby="cta-title">
+          <div>
+            <span>Можно начинать</span>
+            <h2 id="cta-title">Откройте Mova там, где вам удобно</h2>
+            <p>Браузер — для быстрого старта. Desktop-приложение — когда Mova нужна каждый день.</p>
           </div>
-          <button className="mova-landing-finale__video" type="button" onClick={openSecretVideo} aria-label="Открыть секретное видео">
-            <img src="/mova-secret-poster.png" alt="Кадр из секретного видео с котом" />
-            <span className="mova-landing-finale__play"><Play size={24} fill="currentColor" /></span>
-            <span className="mova-landing-finale__caption"><strong>Посмотреть видео</strong><small>12 секунд заслуженного отдыха</small></span>
-          </button>
+          <div className="mova-landing-cta__actions">
+            <a className="mova-landing-action-primary" href="/app">Открыть web-версию <ArrowRight size={18} /></a>
+            <PlatformDownload platform={platform} />
+          </div>
         </section>
       </main>
 
@@ -352,7 +289,7 @@ export function LandingPage() {
         <div className="mova-landing-footer__top">
           <div className="mova-landing-footer__about">
             <Brand />
-            <p>Небольшой независимый мессенджер. Сделан по вечерам.</p>
+            <p>Чаты, звонки и демонстрация экрана — в браузере и desktop-приложении.</p>
           </div>
           <nav className="mova-landing-footer__links" aria-label="Навигация в подвале">
             <div><strong>Продукт</strong><a href="/app">Web-версия</a><a href="#download">Скачать</a><a href="#features">Возможности</a></div>
@@ -361,9 +298,7 @@ export function LandingPage() {
           </nav>
         </div>
         <div className="mova-landing-footer__meta"><span>© 2026 Mova</span><span>Общайтесь, созванивайтесь, оставайтесь на связи.</span></div>
-        <div className="mova-landing-footer__word" aria-hidden="true">
-          <span>M</span><span>o</span><span>v</span><span>a</span>
-        </div>
+        <div className="mova-landing-footer__word" aria-hidden="true">Mova</div>
       </footer>
 
       <div
@@ -383,7 +318,7 @@ export function LandingPage() {
         <div className="mova-landing-video-modal__panel">
           <header><div><span>Ваша награда</span><h2 id="video-modal-title">Секретное видео</h2></div><button type="button" onClick={closeSecretVideo} aria-label="Закрыть видео"><X size={20} /></button></header>
           <video ref={secretVideoRef} controls playsInline preload="metadata" poster="/mova-secret-poster.png">
-              <source src="/mova-secret-mobile-v2.mp4" type="video/mp4" />
+            <source src="/mova-secret-mobile-v2.mp4" type="video/mp4" />
             <source src="/mova-secret.mp4" type="video/mp4" />
             Ваш браузер не поддерживает видео. <a href="/mova-secret.mp4">Открыть файл</a>.
           </video>

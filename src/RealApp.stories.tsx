@@ -160,7 +160,7 @@ const configureFullInterfacePreview = () => {
     toggleMaximize: () => undefined,
     close: () => undefined,
     getUpdateState: async () => ({
-      currentVersion: '0.1.13',
+      currentVersion: '0.1.14',
       currentReleaseDate: '2026-08-28',
       availableVersion: '',
       phase: 'idle',

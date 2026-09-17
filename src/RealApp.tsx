@@ -2530,14 +2530,21 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     return bannerHost
       ? createPortal(
           <section className="mova-active-call-banner" aria-label={`Активный звонок с ${callConversation.title}`}>
-            <span className="mova-active-call-banner__details">
-              <strong><AppleEmoji text={callConversation.title} /></strong>
-              <small><i aria-hidden="true" />Звонок идёт · {formatCallDuration(activeSeconds)}</small>
-            </span>
-            {call.error && <small className="mova-active-call-banner__error">Не удалось подключить микрофон</small>}
-            <button type="button" title={call.error || undefined} aria-label={call.error ? `Повторить подключение. ${call.error}` : 'Подключиться к звонку'} onClick={() => { onOpenCanvas(); void call.accept(); }}>
-              <Phone size={16} />
-              <span>{call.error ? 'Повторить' : 'Подключиться'}</span>
+            <button
+              type="button"
+              className="mova-active-call-banner__action"
+              title={call.error || undefined}
+              aria-label={call.error ? `Повторить подключение к звонку с ${callConversation.title}. ${call.error}` : `Вернуться в звонок с ${callConversation.title}`}
+              onClick={() => { onOpenCanvas(); void call.accept(); }}
+            >
+              <span className="mova-active-call-banner__icon" aria-hidden="true"><PhoneCall size={18} /></span>
+              <span className="mova-active-call-banner__details">
+                <strong>{call.error ? 'Не удалось подключиться' : 'Звонок идёт'}</strong>
+                <small>
+                  {call.error ? 'Нажмите, чтобы повторить' : <><AppleEmoji text={callConversation.title} /> · {formatCallDuration(activeSeconds)}</>}
+                </small>
+              </span>
+              <span className="mova-active-call-banner__chevron" aria-hidden="true"><ChevronRight size={19} /></span>
             </button>
           </section>,
           bannerHost,
@@ -2585,9 +2592,9 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const networkTooltip = [latencyLabel, routeLabel, screenTelemetryLabel].filter(Boolean).join(' · ');
     const networkLabel = networkQuality === 'good' ? '4 полосы' : networkQuality === 'fair' ? '3 полосы' : networkQuality === 'poor' ? '1 полоса' : 'нет данных';
     const participantConnectionState = (userId: string): ParticipantConnectionState => {
-      if (call.reconnectingUsers[userId]) return 'reconnecting';
       const connectionState = call.diagnostics[userId]?.connectionState;
       if (connectionState === 'connected') return 'connected';
+      if (call.reconnectingUsers[userId]) return 'reconnecting';
       if (connectionState === 'disconnected' || connectionState === 'failed' || connectionState === 'closed') return 'reconnecting';
       return 'connecting';
     };
@@ -2821,7 +2828,22 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                 </div>
               </CallFloatingLayer>
             )}
-            {call.error && !isScreenAudioWarning(call.error) && <div className="mova-call-error">{call.error}</div>}
+            <div className="mova-call-notices">
+              {call.error && !isScreenAudioWarning(call.error) && (
+                <div className={`mova-call-error${callState === 'reconnecting' ? ' is-recovering' : ''}`} role="status">
+                  <span>{call.error}</span>
+                  {callState === 'connected' && <button type="button" aria-label="Закрыть предупреждение" onClick={call.dismissError}><X size={16} /></button>}
+                </div>
+              )}
+              {call.connectionNotice && <div className="mova-call-connection-notice" role="status">{call.connectionNotice}</div>}
+            </div>
+            {call.silentMicrophone && !call.muted && (
+              <div className="mova-call-microphone-warning" role="status">
+                <MicOff size={19} aria-hidden="true" />
+                <span><strong>Нет сигнала с микрофона</strong><small>Проверьте устройство и аппаратную кнопку выключения микрофона.</small></span>
+                <button type="button" onClick={onOpenSettings}>Настройки</button>
+              </div>
+            )}
             {screenAudioToast && (
               <div className={`mova-call-toast${screenAudioToastVisible ? ' is-visible' : ' is-hiding'}`} role="status" aria-live="polite">
                 {screenAudioToast}

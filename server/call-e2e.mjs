@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const testDirectory = await mkdtemp(join(tmpdir(), 'mova-call-e2e-'));
@@ -9,7 +10,7 @@ const port = 8792;
 const base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ['server/index.mjs'], {
   cwd: new URL('..', import.meta.url),
-  env: { ...process.env, MOVA_PORT: String(port), MOVA_DATABASE_PATH: join(testDirectory, 'db.json'), MOVA_AUTH_TEST_BYPASS: '1' },
+  env: { ...process.env, MOVA_PORT: String(port), MOVA_DATABASE_PATH: join(testDirectory, 'db.json'), MOVA_MAINTENANCE_PATH: join(testDirectory, 'maintenance.json'), MOVA_AUTH_TEST_BYPASS: '1' },
   stdio: ['ignore', 'ignore', 'inherit'],
 });
 
@@ -45,10 +46,30 @@ try {
   let executablePath;
   for (const candidate of browserCandidates) { try { await access(candidate); executablePath = candidate; break; } catch {} }
   if (!executablePath) throw new Error('Chromium not found. Run `pnpm exec playwright install chromium` or set MOVA_BROWSER_PATH.');
-  browser = await chromium.launch({ executablePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
+  browser = await chromium.launch({ executablePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', `--use-file-for-fake-audio-capture=${process.env.MOVA_TEST_AUDIO_FILE || fileURLToPath(new URL('./fixtures/call-speech.wav', import.meta.url))}`] });
   const openUser = async (token) => {
     const context = await browser.newContext({ permissions: ['microphone', 'camera'], baseURL: base, ...(process.env.MOVA_MOBILE_CALL_QA === '1' ? { viewport: { width: 390, height: 844 } } : {}) });
-    await context.addInitScript((sessionToken) => sessionStorage.setItem('mova-session', sessionToken), token);
+    await context.addInitScript(({ sessionToken, conversationId }) => { sessionStorage.setItem('mova-session', sessionToken); localStorage.setItem('mova-selected-conversation', conversationId); }, { sessionToken: token, conversationId: conversation.conversation.id });
+    // Control a real Web Audio capture track to test digital silence and recovery.
+    await context.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(...args) { super(...args); window.__callTestSocket = this; }
+      };
+      const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (constraints) => {
+        const stream = await capture(constraints);
+        if (!constraints?.audio || constraints.video) return stream;
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const gain = audioContext.createGain();
+        const output = audioContext.createMediaStreamDestination();
+        source.connect(gain).connect(output);
+        await audioContext.resume();
+        window.__callTestCapture = { gain, audioContext };
+        return output.stream;
+      };
+    });
     const page = await context.newPage();
     const frames = [];
     const realtimeReady = new Promise((resolve) => page.on('websocket', (socket) => {
@@ -57,7 +78,8 @@ try {
       socket.on('framereceived', ({ payload }) => { frames.push(`received:${String(payload)}`); if (String(payload).includes('"type":"ready"')) resolve(); });
     }));
     await page.goto(`${base}/app`);
-    await page.getByRole('button', { name: 'Позвонить' }).waitFor();
+    if (process.env.MOVA_MOBILE_CALL_QA === '1') await page.locator('.mova-real-chat-list>button').filter({ hasText: token === first.token ? second.user.name : first.user.name }).click();
+    try { await page.getByRole('button', { name: 'Позвонить' }).waitFor({ timeout: 10_000 }); } catch (error) { console.error((await page.locator('body').innerText()).slice(0, 2500)); await page.screenshot({ path: '/tmp/mova-call-start-failure.png' }); throw error; }
     await Promise.race([realtimeReady, new Promise((_, reject) => setTimeout(() => reject(new Error('Realtime socket was not ready')), 5_000))]);
     return { context, page, frames };
   };
@@ -65,7 +87,7 @@ try {
   const callee = await openUser(second.token);
 
   const initialMessage = `До звонка ${suffix}`;
-  await caller.page.getByPlaceholder('Сообщение...').fill(initialMessage);
+  await caller.page.getByRole('textbox', { name: /^Сообщение в / }).fill(initialMessage);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
   await callee.page.locator('.mova-real-message').getByText(initialMessage, { exact: true }).waitFor({ timeout: 5_000 });
   await caller.page.locator('.mova-real-message').filter({ hasText: initialMessage }).waitFor({ timeout: 5_000 });
@@ -78,11 +100,38 @@ try {
   await caller.page.getByRole('button', { name: 'Позвонить' }).click();
   try { await callee.page.getByRole('button', { name: 'Принять', exact: true }).click({ timeout: 5_000 }); }
   catch (error) { console.error(JSON.stringify({ callerFrames: caller.frames, calleeFrames: callee.frames }, null, 2)); throw error; }
+  await caller.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
+  await caller.page.evaluate(() => localStorage.setItem('mova-audio-settings', JSON.stringify({ inputDeviceId: 'default', outputDeviceId: 'default' })));
+  await caller.page.getByRole('button', { name: /Повторить подключение/ }).click();
   const healthyCall = '.mova-call-stage[data-call-connected="true"][data-audio-sending="true"][data-audio-receiving="true"]';
   await Promise.all([
     caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
     callee.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
-  ]);
+  ]).catch(async (error) => {
+    console.error(JSON.stringify(await Promise.all([caller.page, callee.page].map(async (page) => ({ text: (await page.locator('body').innerText()).slice(-1800), call: await page.locator('.mova-call-stage').evaluateAll((elements) => elements.map((element) => ({ connected: element.dataset.callConnected, sending: element.dataset.audioSending, receiving: element.dataset.audioReceiving }))) })))));
+    throw error;
+  });
+
+  const readyBefore = caller.frames.filter((frame) => frame.includes('received:') && frame.includes('"type":"ready"')).length;
+  await caller.page.evaluate(() => window.__callTestSocket.close(4000, 'Call regression test'));
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (caller.frames.filter((frame) => frame.includes('received:') && frame.includes('"type":"ready"')).length > readyBefore) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (caller.frames.filter((frame) => frame.includes('received:') && frame.includes('"type":"ready"')).length <= readyBefore) throw new Error('Signalling failed to reconnect');
+  await caller.page.locator(healthyCall).waitFor({ timeout: 10_000 });
+  await caller.page.locator('.mova-call-participant-state.is-reconnecting').waitFor({ state: 'hidden' });
+  await callee.page.locator('.mova-call-participant-state.is-reconnecting').waitFor({ state: 'hidden' });
+
+  await caller.page.evaluate(() => { window.__callTestCapture.gain.gain.value = 0; });
+  await caller.page.getByText('Нет сигнала с микрофона', { exact: true }).waitFor({ timeout: 16_000 });
+  if (process.env.MOVA_CALL_SCREENSHOT) await caller.page.screenshot({ path: process.env.MOVA_CALL_SCREENSHOT.replace(/\.png$/i, '') + '-silent.png' });
+  await caller.page.getByRole('button', { name: 'Выключить микрофон', exact: true }).click();
+  await caller.page.getByText('Нет сигнала с микрофона', { exact: true }).waitFor({ state: 'hidden' });
+  await caller.page.getByRole('button', { name: 'Включить микрофон', exact: true }).click();
+  await caller.page.evaluate(() => { window.__callTestCapture.gain.gain.value = 1; });
+  await caller.page.locator(healthyCall).waitFor({ timeout: 10_000 });
+  await caller.page.getByText('Нет сигнала с микрофона', { exact: true }).waitFor({ state: 'hidden' });
 
   await Promise.all([
     caller.page.getByRole('button', { name: 'Включить камеру' }).click(),
@@ -104,17 +153,17 @@ try {
   }
 
   await caller.page.getByRole('button', { name: 'Выйти из звонка' }).click();
-  await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).waitFor({ timeout: 5_000 });
+  await caller.page.getByRole('button', { name: `Вернуться в звонок с ${second.user.name}` }).waitFor({ timeout: 5_000 });
   await callee.page.locator('.mova-call-stage').waitFor({ state: 'visible' });
 
   const messageWhileCallContinues = `Звонок продолжается ${suffix}`;
-  await caller.page.getByPlaceholder('Сообщение...').fill(messageWhileCallContinues);
+  await caller.page.getByRole('textbox', { name: /^Сообщение в / }).fill(messageWhileCallContinues);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
   await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
   await callee.page.locator('.mova-real-message').getByText(messageWhileCallContinues, { exact: true }).waitFor({ timeout: 5_000 });
   if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: 'Закрыть чат' }).click();
 
-  await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).click();
+  await caller.page.getByRole('button', { name: `Вернуться в звонок с ${second.user.name}` }).click();
   await Promise.all([
     caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
     callee.page.locator(healthyCall).waitFor({ timeout: 20_000 }),
@@ -126,20 +175,22 @@ try {
       throw new DOMException('Permission denied by regression test', 'NotAllowedError');
     };
   });
-  await caller.page.getByRole('button', { name: 'Подключиться к звонку' }).click();
+  await caller.page.getByRole('button', { name: `Вернуться в звонок с ${second.user.name}` }).click();
   await caller.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
 
   const messageAfterMicFailure = `После ошибки микрофона ${suffix}`;
-  await caller.page.getByPlaceholder('Сообщение...').fill(messageAfterMicFailure);
+  await caller.page.getByRole('textbox', { name: /^Сообщение в / }).fill(messageAfterMicFailure);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
+  if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
   await callee.page.locator('.mova-real-message').getByText(messageAfterMicFailure, { exact: true }).waitFor({ timeout: 5_000 });
+  if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: 'Закрыть чат' }).click();
 
   await callee.page.getByRole('button', { name: 'Выйти из звонка' }).click();
   await caller.page.getByRole('button', { name: 'Позвонить' }).waitFor({ timeout: 5_000 });
   await caller.page.locator('.mova-call-system-message').filter({ hasText: 'Звонок завершён' }).waitFor({ timeout: 5_000 });
 
   const storedMessages = await api(`/api/conversations/${conversation.conversation.id}/messages`, 'GET', undefined, first.token);
-  console.log(JSON.stringify({ connected: true, callerAudio: true, calleeAudio: true, returnedToCall: true, micFailureDoesNotBlockChat: true, messagesSent: storedMessages.messages.length }));
+  console.log(JSON.stringify({ connected: true, signalingRecovered: true, missingMicrophoneDoesNotFallback: true, silentMicrophoneWarning: true, callerAudio: true, calleeAudio: true, returnedToCall: true, micFailureDoesNotBlockChat: true, messagesSent: storedMessages.messages.length }));
   await caller.context.close();
   await callee.context.close();
 } finally {

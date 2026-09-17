@@ -56,3 +56,10 @@ export function saveAudioSettings(settings: AudioSettings) {
   const normalized = normalize(settings); localStorage.setItem(key, JSON.stringify(normalized));
   window.dispatchEvent(new CustomEvent<AudioSettings>('mova-audio-settings', { detail: normalized }));
 }
+
+export const microphoneConstraints = (settings: AudioSettings): MediaTrackConstraints => ({
+  ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
+  echoCancellation: settings.echoCancellation,
+  noiseSuppression: settings.noiseSuppression,
+  autoGainControl: settings.autoGainControl,
+});

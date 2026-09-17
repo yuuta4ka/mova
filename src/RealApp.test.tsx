@@ -334,12 +334,12 @@ describe('voice processing settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
     expect(await screen.findByText('v0.1.10')).toBeVisible();
-    expect(screen.getByText('v0.1.13')).toBeVisible();
+    expect(screen.getByText('v0.1.14')).toBeVisible();
     expect(screen.getByText('Доступно обновление')).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Скачать обновление' }));
 
     expect(open).toHaveBeenCalledWith(
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.13/Mova-0.1.13-arm64.dmg',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.14/Mova-0.1.14-arm64.dmg',
       '_blank',
       'noopener,noreferrer',
     );
@@ -965,6 +965,7 @@ describe('Product global voice dock', () => {
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
     vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
     vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'isConnected').mockReturnValue(true);
     vi.spyOn(realtime, 'connect').mockImplementation(() => undefined);
     vi.spyOn(realtime, 'close').mockImplementation(() => undefined);
     const send = vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
@@ -1026,7 +1027,7 @@ describe('Product global voice dock', () => {
       room: [{ userId: firstFriend.id, connectionState: 'connected', muted: false, deafened: false, media: {} }],
       joined: false,
     })));
-    expect(await screen.findByRole('button', { name: 'Подключиться к звонку' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: `Вернуться в звонок с ${firstFriend.name}` })).toBeVisible();
     rendered.unmount();
   });
 });

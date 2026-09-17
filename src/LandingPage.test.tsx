@@ -1,44 +1,89 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import { LandingPage } from './LandingPage';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { detectDesktopPlatform, LandingPage } from './LandingPage';
+
+const windowsHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.14/Mova.Setup.0.1.14.exe';
+const macHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.14/Mova-0.1.14-arm64.dmg';
+const initialMaxTouchPoints = Object.getOwnPropertyDescriptor(window.navigator, 'maxTouchPoints');
+
+function mockNavigator(userAgent: string, platform: string, maxTouchPoints = 0) {
+  vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(userAgent);
+  vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue(platform);
+  Object.defineProperty(window.navigator, 'maxTouchPoints', { configurable: true, value: maxTouchPoints });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  if (initialMaxTouchPoints) {
+    Object.defineProperty(window.navigator, 'maxTouchPoints', initialMaxTouchPoints);
+  } else {
+    delete (window.navigator as unknown as { maxTouchPoints?: number }).maxTouchPoints;
+  }
+});
 
 describe('Mova landing page', () => {
-  it('explains the project and offers verified desktop downloads and web access', () => {
+  it('puts the working product first and keeps all manual download options available', () => {
+    mockNavigator('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64');
     render(<LandingPage />);
 
-    expect(screen.getByRole('heading', { name: /Mova.*Мессенджер, сделанный по вечерам/i })).toBeVisible();
-    expect(screen.getByRole('heading', { name: /Зачем ещё один мессенджер/i })).toBeVisible();
-    expect(screen.getByRole('heading', { name: /От маленького чата до полноценной Mova/i })).toBeVisible();
-    expect(screen.getByRole('heading', { name: /От идеи до работающего приложения/i })).toBeVisible();
+    expect(screen.getByRole('heading', { name: /Общайтесь.*Созванивайтесь.*Делитесь экраном/i })).toBeVisible();
+    expect(screen.getByRole('heading', { name: /Всё нужное для разговора/i })).toBeVisible();
+    expect(screen.getByRole('heading', { name: /Небольшая идея стала рабочей Mova/i })).toBeVisible();
     expect(document.querySelector('.mova-landing')).not.toHaveTextContent(/нейросет|vibecod|codex|\bAI\b/i);
-    expect(screen.getByAltText(/Фрагмент настоящего интерфейса Mova/i)).toHaveAttribute('src', '/mova-interface.png');
-    expect(screen.getByAltText(/Мая выглядывает/i)).toHaveAttribute('src', '/mova-character-peek.png');
-    expect(screen.queryByText(/для атмосферы/i)).not.toBeInTheDocument();
-    expect(screen.getAllByRole('link', { name: /Windows/i })[0]).toHaveAttribute(
-      'href',
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.13/Mova.Setup.0.1.13.exe',
-    );
+
+    expect(screen.getByAltText(/Настоящий интерфейс диалога в Mova/i)).toHaveAttribute('src', '/mova-interface.png');
+    expect(screen.getByAltText(/Настоящий интерфейс голосового звонка/i)).toHaveAttribute('src', '/mova-call.png');
+    expect(screen.getByAltText(/Мая — персонаж проекта Mova/i)).toHaveAttribute('src', '/mova-character-peek.png');
     expect(screen.getAllByRole('link', { name: /Открыть Mova/i })[0]).toHaveAttribute('href', '/app');
-    expect(screen.getByRole('link', { name: /macOS/i })).toHaveAttribute(
-      'href',
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.13/Mova-0.1.13-arm64.dmg',
-    );
-    expect(screen.getByAltText(/Диалог в Mova/i)).toHaveAttribute('src', '/mova-interface.png');
-    expect(screen.getByAltText(/Активный голосовой звонок/i)).toHaveAttribute('src', '/mova-call.png');
-    expect(screen.getByRole('link', { name: /Поддержать проект/i })).toHaveAttribute(
-      'href',
-      'https://donatex.gg/donate/yuuta',
-    );
-    expect(screen.getByRole('heading', { name: /Нашли баг или есть идея/i })).toBeVisible();
-    expect(screen.getByText('@yuuta4ka', { selector: '.mova-landing-support__username' })).toBeVisible();
-    expect(screen.queryByRole('link', { name: /@yuuta4ka/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /пролистали сайт до самого конца/i })).toBeVisible();
-    const footerWord = document.querySelector('.mova-landing-footer__word');
-    expect(footerWord).toHaveTextContent('Mova');
-    expect(Array.from(footerWord?.children ?? [], (letter) => letter.textContent)).toEqual(['M', 'o', 'v', 'a']);
+
+    const platformChooser = screen.getAllByRole('button', { name: /Выбрать версию/i })[0];
+    fireEvent.click(platformChooser);
+    expect(platformChooser.closest('.mova-platform-download')?.querySelector('details')).toHaveAttribute('open');
+    expect(screen.getAllByText('Другие платформы').length).toBeGreaterThan(0);
+    expect(document.querySelector(`a[href="${windowsHref}"]`)).toBeInTheDocument();
+    expect(document.querySelector(`a[href="${macHref}"]`)).toBeInTheDocument();
+    expect(document.querySelector('[data-detected-platform="other"]')).toBeInTheDocument();
+
+    expect(screen.getByRole('link', { name: /Поддержать проект/i })).toHaveAttribute('href', 'https://donatex.gg/donate/yuuta');
+    expect(screen.getByText('@yuuta4ka')).toBeVisible();
+    expect(document.querySelector('.mova-landing-footer__word')).toHaveTextContent('Mova');
+  });
+
+  it.each([
+    {
+      label: 'Windows',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      navigatorPlatform: 'Win32',
+      detectedPlatform: 'windows',
+      href: windowsHref,
+    },
+    {
+      label: 'macOS',
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+      navigatorPlatform: 'MacIntel',
+      detectedPlatform: 'macos',
+      href: macHref,
+    },
+  ])('automatically offers the $label installer', ({ label, userAgent, navigatorPlatform, detectedPlatform, href }) => {
+    mockNavigator(userAgent, navigatorPlatform);
+    render(<LandingPage />);
+
+    const primaryDownloads = screen.getAllByRole('link', { name: new RegExp(`Скачать для ${label}`, 'i') });
+    expect(primaryDownloads[0]).toHaveAttribute('href', href);
+    expect(document.querySelector(`[data-detected-platform="${detectedPlatform}"]`)).toBeInTheDocument();
+    expect(screen.getAllByText('Другие платформы').length).toBeGreaterThan(0);
+  });
+
+  it('does not treat mobile and unsupported systems as a desktop platform', () => {
+    expect(detectDesktopPlatform('Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Win32')).toBe('windows');
+    expect(detectDesktopPlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 'MacIntel')).toBe('macos');
+    expect(detectDesktopPlatform('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', 'iPhone')).toBe('other');
+    expect(detectDesktopPlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 'MacIntel', 5)).toBe('other');
+    expect(detectDesktopPlatform('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64')).toBe('other');
   });
 
   it('opens and closes the secret video', () => {
+    mockNavigator('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64');
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
     const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
     render(<LandingPage />);
@@ -55,7 +100,5 @@ describe('Mova landing page', () => {
     fireEvent.click(screen.getByRole('button', { name: /Закрыть видео/i }));
     expect(pause).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog', { name: /Секретное видео/i })).not.toBeInTheDocument();
-    play.mockRestore();
-    pause.mockRestore();
   });
 });

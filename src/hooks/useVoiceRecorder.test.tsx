@@ -1,8 +1,10 @@
+import { defaultAudioSettings, saveAudioSettings } from '../lib/audioSettings';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizeVoiceWaveform, useVoiceRecorder, type VoiceRecording } from './useVoiceRecorder';
 
 afterEach(() => {
+  localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined });
@@ -46,9 +48,11 @@ describe('voice recorder', () => {
     let now = 100;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
 
+    saveAudioSettings({ ...defaultAudioSettings, inputDeviceId: 'selected-usb-microphone' });
     const { result } = renderHook(() => useVoiceRecorder());
     await act(async () => { await result.current.start(); });
     expect(result.current.state).toBe('recording');
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ deviceId: { exact: 'selected-usb-microphone' } }), video: false });
     now = 1_450;
 
     let finishResult: VoiceRecording | null | undefined;

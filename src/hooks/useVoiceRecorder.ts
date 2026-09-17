@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { loadAudioSettings, microphoneConstraints } from '../lib/audioSettings';
 import type { MessageAttachment } from '../lib/api';
 import { normalizeVoiceWaveform } from '../lib/voiceWaveform';
 
@@ -81,7 +82,7 @@ export function useVoiceRecorder() {
     setState('requesting');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        audio: { ...microphoneConstraints(loadAudioSettings()), channelCount: 1 },
         video: false,
       });
       const mimeType = supportedMimeType();

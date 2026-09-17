@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, realtime, type AppUser, type RealtimeEvent, type VoiceRoomParticipant } from '../lib/api';
-import { loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
+import { microphoneConstraints, loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
+import { monitorMicrophoneSignal } from '../lib/microphoneSignal';
 import { createMicrophonePipeline, type MicrophonePipeline } from '../lib/microphoneProcessing';
 import { configureScreenShareSender, screenShareContentHint } from '../lib/screenShareEncoding';
 import { removeUnsafeScreenAudio, screenCaptureOptions } from '../lib/screenCapture';
@@ -97,6 +98,8 @@ interface RemoteAudioEntry {
   source: MediaStreamAudioSourceNode | null;
   gain: GainNode | null;
   stopMonitor: () => void;
+  removePlaybackRetry?: () => void;
+  playbackBlocked?: boolean;
 }
 
 const incomingRingtoneUrl = new URL('../../ringtone.mp3', import.meta.url).href;
@@ -117,13 +120,6 @@ const screenVolumeKey = 'mova-call-screen-volumes';
 const reconnectTimeoutMs = 12_000;
 const ringtoneFadeInMs = 2_000;
 const ringtoneVolumeScale = 0.7;
-
-const microphoneConstraints = (settings: AudioSettings): MediaTrackConstraints => ({
-  ...(settings.inputDeviceId !== 'default' ? { deviceId: { exact: settings.inputDeviceId } } : {}),
-  echoCancellation: settings.echoCancellation,
-  noiseSuppression: settings.noiseSuppression,
-  autoGainControl: settings.autoGainControl,
-});
 
 const microphoneSwitchError = (error: unknown) => {
   const name = error instanceof DOMException ? error.name : '';
@@ -285,6 +281,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const [joined, setJoined] = useState(false);
   const [participants, setParticipants] = useState<string[]>([]);
   const [error, setError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
+  const [signalingInterrupted, setSignalingInterrupted] = useState(false);
+  const [silentMicrophone, setSilentMicrophone] = useState(false);
+  const [recoveringAudio, setRecoveringAudio] = useState<Record<string, boolean>>({});
   const [incomingFrom, setIncomingFrom] = useState<AppUser | null>(null);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
@@ -310,6 +310,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const microphoneSwitchGeneration = useRef(0);
   const localAudioContext = useRef<AudioContext | null>(null);
   const localGain = useRef<GainNode | null>(null);
+  const localSignalMonitor = useRef<(() => void) | null>(null);
   const localVoiceMonitor = useRef<(() => void) | null>(null);
   const localSpeakingRef = useRef(false);
   const outgoingAudioBytes = useRef(new Map<string, number>());
@@ -318,6 +319,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const screenStreamRef = useRef<MediaStream | null>(null);
   const activeScreenQuality = useRef<ScreenShareQuality>({ width: 1920, height: 1080, frameRate: 30 });
   const peers = useRef(new Map<string, RTCPeerConnection>());
+  const lastIceRestartAt = useRef(new Map<string, number>());
   const configuredIceServers = useRef<RTCIceServer[]>(fallbackIceServers);
   const iceConfigPromise = useRef<Promise<void> | null>(null);
   const remoteAudio = useRef(new Map<string, RemoteAudioEntry>());
@@ -371,20 +373,28 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const markConnected = useCallback(() => {
     clearReconnectTimeout();
     updateState('connected');
-    setError((value) => (value.startsWith('Восстанавливаем соединение') || value.startsWith('Соединение потеряно') ? '' : value));
+    setConnectionError('');
   }, [clearReconnectTimeout, updateState]);
   const beginReconnect = useCallback(() => {
-    if (!isJoinedCallState(stateRef.current)) return;
-    if (stateRef.current !== 'disconnected') updateState('reconnecting');
-    setError('Восстанавливаем соединение…');
+    if (!isJoinedCallState(stateRef.current) || stateRef.current === 'disconnected') return;
+    updateState('reconnecting');
+    setConnectionError('Восстанавливаем голосовое соединение…');
     if (reconnectTimeout.current === null)
       reconnectTimeout.current = window.setTimeout(() => {
         reconnectTimeout.current = null;
         if (!isJoinedCallState(stateRef.current) || stateRef.current === 'connected') return;
         updateState('disconnected');
-        setError('Соединение потеряно. Пытаемся подключиться снова…');
+        setConnectionError('Голосовое соединение потеряно. Проверьте интернет или переподключитесь к звонку.');
       }, reconnectTimeoutMs);
   }, [clearReconnectTimeout, updateState]);
+  const reconcileConnection = useCallback(() => {
+    if (!localStream.current || !isJoinedCallState(stateRef.current)) return;
+    const connections = [...peers.current.values()];
+    // The signalling socket and the media transport have independent lifetimes.
+    if ((connections.length || realtime.isConnected()) && connections.every((peer) => peer.connectionState === 'connected')) markConnected();
+    else beginReconnect();
+  }, [beginReconnect, markConnected]);
+
   const updateRemoteMedia = useCallback((updater: (items: Record<string, { camera?: string; screen?: string }>) => Record<string, { camera?: string; screen?: string }>) => {
     setRemoteMedia((items) => {
       const next = updater(items);
@@ -427,17 +437,24 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (setSinkId) void setSinkId.call(entry.element, sinkId).catch(() => undefined);
   }, []);
 
+  const refreshPlaybackWarning = useCallback(() => {
+    const blocked = [...remoteAudio.current.values()].some((entry) => entry.playbackBlocked);
+    setError((value) => blocked ? 'Браузер заблокировал звук. Нажмите в любом месте страницы, чтобы включить его.' : value.startsWith('Браузер заблокировал звук') ? '' : value);
+  }, []);
+
   const removeRemoteAudio = useCallback((key: string) => {
     const entry = remoteAudio.current.get(key);
     if (!entry) return;
     entry.stopMonitor();
+    entry.removePlaybackRetry?.();
     entry.source?.disconnect();
     entry.gain?.disconnect();
     entry.element.pause();
     entry.element.srcObject = null;
     entry.element.remove();
     remoteAudio.current.delete(key);
-  }, []);
+    refreshPlaybackWarning();
+  }, [refreshPlaybackWarning]);
 
   const attachRemoteTrack = useCallback(
     (userId: string, event: RTCTrackEvent) => {
@@ -487,13 +504,24 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       const play = () =>
         void element
           .play()
-          .then(() => setError((value) => (value.startsWith('Браузер заблокировал звук') ? '' : value)))
-          .catch(() => setError('Браузер заблокировал звук. Нажмите в любом месте страницы, чтобы включить его.'));
+          .then(() => {
+            if (remoteAudio.current.get(key) !== entry) return;
+            entry.playbackBlocked = false;
+            entry.removePlaybackRetry?.();
+            refreshPlaybackWarning();
+          })
+          .catch((playbackError) => {
+            if (remoteAudio.current.get(key) !== entry || playbackError?.name !== 'NotAllowedError') return;
+            if (entry.gain && localAudioContext.current?.state === 'running' && !document.hidden) return;
+            entry.playbackBlocked = true;
+            refreshPlaybackWarning();
+          });
       const retry = () => {
         void localAudioContext.current?.resume().catch(() => undefined);
         play();
       };
-      document.addEventListener('pointerdown', retry, { once: true });
+      document.addEventListener('pointerdown', retry);
+      entry.removePlaybackRetry = () => document.removeEventListener('pointerdown', retry);
       event.track.onended = () => {
         document.removeEventListener('pointerdown', retry);
         removeRemoteAudio(key);
@@ -501,7 +529,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       };
       play();
     },
-    [applyRemoteVolume, removeRemoteAudio],
+    [applyRemoteVolume, removeRemoteAudio, refreshPlaybackWarning],
   );
 
   const addMissingLocalTracks = useCallback((peer: RTCPeerConnection) => {
@@ -545,21 +573,18 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       };
       peer.ontrack = (event) => attachRemoteTrack(userId, event);
       peer.onconnectionstatechange = () => {
-        if (peer.connectionState === 'connected') {
-          const allConnected = [...peers.current.values()].every((item) => ['connected', 'closed'].includes(item.connectionState));
-          if (allConnected && realtime.isConnected() && isJoinedCallState(stateRef.current)) markConnected();
-        }
+        if (peers.current.get(userId) !== peer) return;
+        reconcileConnection();
         if (peer.connectionState === 'failed') {
-          beginReconnect();
           void negotiateRef.current(userId, true).catch(() => {
-            updateState('disconnected');
-            setError('Не удалось восстановить медиасоединение. Проверьте сеть или настройте TURN-сервер.');
+            if (peers.current.get(userId) !== peer || peer.connectionState === 'connected') return;
+            setConnectionError('Не удалось восстановить голосовое соединение. Проверьте интернет или переподключитесь к звонку.');
           });
         }
         if (peer.connectionState === 'disconnected') {
-          beginReconnect();
           window.setTimeout(() => {
-            if (peer.connectionState === 'disconnected') void negotiateRef.current(userId, true);
+            if (peers.current.get(userId) === peer && peer.connectionState === 'disconnected')
+              void negotiateRef.current(userId, true).catch(() => reconcileConnection());
           }, 2_500);
         }
       };
@@ -567,7 +592,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setParticipants((items) => [...new Set([...items, userId])]);
       return peer;
     },
-    [addMissingLocalTracks, attachRemoteTrack, beginReconnect, conversationId, markConnected, updateState],
+    [addMissingLocalTracks, attachRemoteTrack, conversationId, reconcileConnection],
   );
 
   const negotiatePeer = useCallback(
@@ -578,12 +603,18 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         .then(async () => {
           const peer = peers.current.get(userId);
           if (!peer || !conversationId || peer.signalingState === 'closed') return;
-          if (peer.signalingState !== 'stable') return;
+          if (restartIce && peer.signalingState === 'have-local-offer') {
+            // An offer sent before the signalling socket rejoined the room may
+            // never receive an answer. Release it before starting recovery.
+            await peer.setLocalDescription({ type: 'rollback' });
+          } else if (peer.signalingState !== 'stable') return;
+          if (peers.current.get(userId) !== peer) return;
           addMissingLocalTracks(peer);
           makingOffer.current.set(userId, true);
           try {
             if (restartIce) {
-              beginReconnect();
+              lastIceRestartAt.current.set(userId, Date.now());
+              if (peer.connectionState !== 'connected') beginReconnect();
               peer.restartIce();
             }
             const offer = await peer.createOffer({ iceRestart: restartIce });
@@ -610,7 +641,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     await Promise.all(
       [...peers.current.entries()].map(async ([userId, peer]) => {
         if (peer.signalingState === 'closed') return;
-        const reports = await peer.getStats();
+        let reports: RTCStatsReport;
+        try { reports = await peer.getStats(); } catch { return; }
+        if (peers.current.get(userId) !== peer) return;
+        if (['failed', 'disconnected'].includes(peer.connectionState) && realtime.isConnected()
+          && Date.now() - (lastIceRestartAt.current.get(userId) || 0) >= 10_000) {
+          lastIceRestartAt.current.set(userId, Date.now());
+          void negotiateRef.current(userId, true).catch(() => undefined);
+        }
         let outboundAudioBytes = 0;
         let inboundAudioBytes = 0;
         let outboundVideoBytes = 0;
@@ -750,9 +788,17 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           lastRecoveryAt: shouldRecover ? Date.now() : previous.lastRecoveryAt,
         });
         if (shouldRecover) {
-          setError('Восстанавливаем передачу звука…');
-          void negotiateRef.current(userId, true).catch(() => setError('Не удалось восстановить передачу звука. Переподключитесь к звонку.'));
-        } else if (!stalled) setError((value) => (value === 'Восстанавливаем передачу звука…' ? '' : value));
+          setRecoveringAudio((items) => ({ ...items, [userId]: true }));
+          void negotiateRef.current(userId, true).catch(() => {
+            // Keep the actionable recovery notice until bytes advance, without
+            // allowing an old attempt to overwrite the current call's errors.
+          });
+        } else if (outboundAudioBytes > previous.outbound || !microphoneEnabled) {
+          setRecoveringAudio((items) => {
+            if (!items[userId]) return items;
+            const next = { ...items }; delete next[userId]; return next;
+          });
+        }
         next[userId] = {
           connectionState: peer.connectionState,
           iceConnectionState: peer.iceConnectionState,
@@ -785,8 +831,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         };
       }),
     );
+    if (!isJoinedCallState(stateRef.current)) return;
     setDiagnostics(next);
-  }, []);
+    reconcileConnection();
+  }, [reconcileConnection]);
 
   const inspectOutgoingVoice = useCallback(async () => {
     const track = localStream.current?.getAudioTracks()[0];
@@ -855,6 +903,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const restartLocalVoiceMonitor = useCallback(async (stream: MediaStream) => {
     // Voice activity is an enhancement only: unsupported/suspended Web Audio
     // must never prevent the actual microphone track from joining the call.
+    localSignalMonitor.current?.();
+    localSignalMonitor.current = null;
+    setSilentMicrophone(false);
     localVoiceMonitor.current?.();
     localVoiceMonitor.current = null;
     localSpeakingRef.current = false;
@@ -878,6 +929,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           }, 100);
         });
       });
+      if (localSourceStream.current) localSignalMonitor.current = monitorMicrophoneSignal(context, localSourceStream.current, () => !mutedRef.current && isJoinedCallState(stateRef.current), setSilentMicrophone);
       await context.resume().catch(() => undefined);
     } catch {
       localVoiceMonitor.current = null;
@@ -896,6 +948,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setStoredCall(pendingCallKey, null);
       return;
     }
+    const generation = microphoneSwitchGeneration.current;
     let sourceStream: MediaStream | null = null;
     let microphonePipeline: MicrophonePipeline | null = null;
     try {
@@ -909,6 +962,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           })
           .catch(() => undefined);
       await iceConfigPromise.current;
+      if (generation !== microphoneSwitchGeneration.current) return;
       const settings = loadAudioSettings();
       let usedInputDeviceId = settings.inputDeviceId;
       if (!navigator.mediaDevices?.getUserMedia) throw new DOMException('Браузер не поддерживает доступ к микрофону', 'NotSupportedError');
@@ -922,7 +976,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         const canRetryDefault =
           preferredDeviceError instanceof DOMException &&
           ['NotFoundError', 'OverconstrainedError'].includes(preferredDeviceError.name);
-        if (!canRetryDefault) throw preferredDeviceError;
+        if (!canRetryDefault || settings.inputDeviceId !== 'default') throw preferredDeviceError;
         usedInputDeviceId = 'default';
         try {
           sourceStream = await navigator.mediaDevices.getUserMedia({ audio: processingConstraints, video: false });
@@ -933,6 +987,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       }
       if (!sourceStream.getAudioTracks().length) throw new DOMException('Микрофон не передал аудиодорожку', 'NotReadableError');
       microphonePipeline = await createMicrophonePipeline(sourceStream, settings);
+      if (generation !== microphoneSwitchGeneration.current) {
+        microphonePipeline.close();
+        sourceStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       localSourceStream.current = sourceStream;
       localStream.current = microphonePipeline.stream;
       localMicrophonePipeline.current = microphonePipeline;
@@ -940,6 +999,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       activeNoiseSuppressionMode.current = settings.noiseSuppressionMode;
       localGain.current = microphonePipeline.gain;
       await restartLocalVoiceMonitor(microphonePipeline.stream);
+      if (generation !== microphoneSwitchGeneration.current) return;
       const existingPeers = [...peers.current.keys()];
       peers.current.forEach(addMissingLocalTracks);
       realtime.send({ type: 'voice:join', conversationId });
@@ -950,6 +1010,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       setStoredCall(pendingCallKey, null);
       if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
     } catch (voiceError) {
+      if (generation !== microphoneSwitchGeneration.current) {
+        microphonePipeline?.close();
+        sourceStream?.getTracks().forEach((track) => track.stop());
+        return;
+      }
       microphonePipeline?.close();
       sourceStream?.getTracks().forEach((track) => track.stop());
       if (localStream.current === sourceStream || localStream.current === microphonePipeline?.stream) localStream.current = null;
@@ -962,8 +1027,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       const message =
         errorName === 'NotAllowedError' || errorName === 'SecurityError'
           ? 'Нет доступа к микрофону. Разрешите его в настройках браузера и нажмите «Повторить».'
-          : errorName === 'NotFoundError'
-            ? 'Микрофон не найден. Подключите устройство и нажмите «Повторить».'
+          : errorName === 'NotFoundError' || errorName === 'OverconstrainedError'
+            ? 'Выбранный микрофон недоступен. Подключите его или выберите другое устройство в настройках ввода.'
             : errorName === 'NotReadableError'
               ? 'Микрофон занят другим приложением. Освободите его и нажмите «Повторить».'
               : voiceError instanceof Error
@@ -983,6 +1048,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       clearReconnectTimeout();
       peers.current.forEach((peer) => peer.close());
       peers.current.clear();
+      lastIceRestartAt.current.clear();
       previousPeerStats.current.clear();
       setDiagnostics({});
       pendingCandidates.current.clear();
@@ -990,6 +1056,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       ignoredOffers.current.clear();
       negotiationQueues.current.clear();
       [...remoteAudio.current.keys()].forEach(removeRemoteAudio);
+      localSignalMonitor.current?.();
+      localSignalMonitor.current = null;
+      setSilentMicrophone(false);
+      setConnectionError('');
+      setSignalingInterrupted(false);
+      setRecoveringAudio({});
       localVoiceMonitor.current?.();
       localVoiceMonitor.current = null;
       stopTone.current();
@@ -1065,12 +1137,14 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         if (remoteIds.has(userId)) continue;
         peer.close();
         peers.current.delete(userId);
+        lastIceRestartAt.current.delete(userId);
         previousPeerStats.current.delete(userId);
       }
       for (const [key, entry] of remoteAudio.current) if (!remoteIds.has(entry.userId)) removeRemoteAudio(key);
       setRemoteVideoStreams((items) => items.filter((item) => remoteIds.has(item.userId)));
       setSpeakingUsers((items) => Object.fromEntries(Object.entries(items).filter(([userId]) => remoteIds.has(userId))));
       setDiagnostics((items) => Object.fromEntries(Object.entries(items).filter(([userId]) => remoteIds.has(userId))));
+      setRecoveringAudio((items) => Object.fromEntries(Object.entries(items).filter(([userId]) => remoteIds.has(userId))));
     },
     [currentUserId, removeRemoteAudio, updateRemoteMedia],
   );
@@ -1081,13 +1155,15 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         void (async () => {
           try {
             if (event.type === 'realtime:disconnected') {
-              if (localStream.current && isJoinedCallState(stateRef.current)) beginReconnect();
+              setSignalingInterrupted(true);
+              reconcileConnection();
               return;
             }
             if (event.type === 'ready') {
+              setSignalingInterrupted(false);
               if (conversationId) realtime.send({ type: 'call:sync', conversationId });
               if (conversationId && localStream.current && isJoinedCallState(stateRef.current)) {
-                beginReconnect();
+                reconcileConnection();
                 realtime.send({ type: 'voice:join', conversationId });
                 announceLocalState();
               }
@@ -1106,6 +1182,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                   media: {},
                 }));
               applyRoomSnapshot(room);
+              reconcileConnection();
               if (event.status === 'idle') {
                 setJoined(false);
                 setCreatedAt(null);
@@ -1171,14 +1248,16 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             }
             if (event.type === 'voice:peers') {
               for (const userId of event.peers) {
-                createPeer(userId);
-                await negotiatePeer(userId);
+                const existing = peers.current.has(userId);
+                const peer = createPeer(userId);
+                if (peer.connectionState !== 'connected') await negotiatePeer(userId, existing);
               }
               announceLocalState();
               if (localStream.current && (!event.peers.length || [...peers.current.values()].every((peer) => peer.connectionState === 'connected'))) markConnected();
             }
             if (event.type === 'voice:snapshot') {
               applyRoomSnapshot(event.participants);
+              reconcileConnection();
               const localParticipant = event.participants.find((participant) => participant.userId === currentUserId);
               setJoined(Boolean(localStream.current || localParticipant));
               if (localParticipant && !localStream.current && !isJoinedCallState(stateRef.current)) {
@@ -1267,7 +1346,11 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
               playCallSound('leave');
               peers.current.get(event.userId)?.close();
               peers.current.delete(event.userId);
+              lastIceRestartAt.current.delete(event.userId);
               previousPeerStats.current.delete(event.userId);
+              reconcileConnection();
+              setRecoveringAudio((items) => Object.fromEntries(Object.entries(items).filter(([id]) => id !== event.userId)));
+              setReconnectingUsers((items) => Object.fromEntries(Object.entries(items).filter(([id]) => id !== event.userId)));
               setDiagnostics((items) => {
                 const next = { ...items };
                 delete next[event.userId];
@@ -1283,12 +1366,12 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                 return next;
               });
             }
-          } catch (eventError) {
-            setError(eventError instanceof Error ? eventError.message : 'Ошибка медиасоединения');
+          } catch {
+            if (localStream.current && isJoinedCallState(stateRef.current)) reconcileConnection();
           }
         })();
       }),
-    [announceLocalState, applyRemoteVolume, applyRoomSnapshot, beginReconnect, connectAudio, conversationId, createPeer, currentUserId, leave, markConnected, negotiatePeer, removeRemoteAudio, updateRemoteMedia, updateState],
+    [announceLocalState, applyRemoteVolume, applyRoomSnapshot, reconcileConnection, connectAudio, conversationId, createPeer, currentUserId, leave, markConnected, negotiatePeer, removeRemoteAudio, updateRemoteMedia, updateState],
   );
 
   useEffect(() => {
@@ -1356,6 +1439,9 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       previousSourceStream.getTracks().forEach((track) => track.stop());
       setError((value) => (value.startsWith('Не удалось переключить микрофон.') ? '' : value));
     } catch (switchError) {
+      if (generation !== microphoneSwitchGeneration.current) {
+        nextPipeline?.close(); nextStream?.getTracks().forEach((track) => track.stop()); return;
+      }
       nextPipeline?.close();
       nextStream?.getTracks().forEach((track) => track.stop());
       setError(`Не удалось переключить микрофон. ${microphoneSwitchError(switchError)}; прежний микрофон продолжает работать.`);
@@ -1411,20 +1497,30 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
             autoGainControl: settings.autoGainControl,
           })
           .catch(() => undefined);
-      if (sourceTrack && activeInputDeviceId.current !== settings.inputDeviceId) {
-        microphoneSwitchQueue.current = microphoneSwitchQueue.current
-          .catch(() => undefined)
-          .then(() => switchMicrophone(settings));
-      } else if (sourceTrack && activeNoiseSuppressionMode.current !== settings.noiseSuppressionMode) {
-        microphoneSwitchQueue.current = microphoneSwitchQueue.current
-          .catch(() => undefined)
-          .then(() => rebuildMicrophonePipeline(settings));
-      }
+      // Compare against the active device when the queue runs: a pending switch
+      // may change it after this settings event (including A -> B -> A).
+      microphoneSwitchQueue.current = microphoneSwitchQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const latest = loadAudioSettings();
+          await switchMicrophone(latest);
+          if (activeNoiseSuppressionMode.current !== latest.noiseSuppressionMode)
+            await rebuildMicrophonePipeline(latest);
+        });
       remoteAudio.current.forEach((entry) => applyRemoteVolume(entry, settings));
     };
     window.addEventListener('mova-audio-settings', apply);
     return () => window.removeEventListener('mova-audio-settings', apply);
   }, [applyRemoteVolume, rebuildMicrophonePipeline, switchMicrophone]);
+
+  // Settings can change while permission/capture is still pending, before a
+  // source track exists. Reconcile once the call has actually connected.
+  useEffect(() => {
+    if (state !== 'connected') return;
+    microphoneSwitchQueue.current = microphoneSwitchQueue.current
+      .catch(() => undefined)
+      .then(() => switchMicrophone(loadAudioSettings()));
+  }, [state, switchMicrophone]);
 
   useEffect(() => {
     const refreshBackgroundPlayback = () => {
@@ -1566,6 +1662,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         },
         audio: false,
       });
+      setError((value) => value.startsWith('Не удалось включить камеру.') ? '' : value);
       cameraStreamRef.current = stream;
       setCameraStream(stream);
       peers.current.forEach((peer) => stream.getTracks().forEach((track) => peer.addTrack(track, stream)));
@@ -1578,8 +1675,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       });
       stream.getVideoTracks()[0].onended = () => void toggleCamera();
       await renegotiateAll();
-    } catch (cameraError) {
-      setError(cameraError instanceof Error ? cameraError.message : 'Нет доступа к камере');
+    } catch {
+      setError('Не удалось включить камеру. Проверьте разрешение на камеру и не занята ли она другим приложением.');
     }
   };
   const stopScreen = async () => {
@@ -1726,7 +1823,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     deafened,
     joined,
     participants,
-    error,
+    error: connectionError || error,
+    dismissError: () => setError(''),
+    silentMicrophone: silentMicrophone && !muted,
+    connectionNotice: signalingInterrupted && state === 'connected' ? 'Связь с сервером восстанавливается. Голосовое соединение работает.' : Object.values(recoveringAudio).some(Boolean) ? 'Не удаётся передать звук одному из участников. Пробуем восстановить; если вас не слышат, переподключитесь к звонку.' : '',
     incomingFrom,
     cameraStream,
     screenStream,
