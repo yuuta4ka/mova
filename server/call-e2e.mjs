@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,16 +93,29 @@ try {
   await caller.page.locator('.mova-real-message').filter({ hasText: initialMessage }).waitFor({ timeout: 5_000 });
   if ((await caller.page.locator('.mova-real-message').filter({ hasText: initialMessage }).count()) !== 1) throw new Error('Optimistic message was duplicated after server acknowledgement');
 
-  await caller.page.evaluate(() => {
+  const failedParticipant = process.env.MOVA_TEST_CALLEE_CAPTURE === '1' ? callee : caller;
+  await failedParticipant.page.evaluate(() => {
     localStorage.setItem('mova-audio-settings', JSON.stringify({ inputDeviceId: 'missing-device', outputDeviceId: 'default' }));
   });
 
   await caller.page.getByRole('button', { name: 'Позвонить' }).click();
   try { await callee.page.getByRole('button', { name: 'Принять', exact: true }).click({ timeout: 5_000 }); }
   catch (error) { console.error(JSON.stringify({ callerFrames: caller.frames, calleeFrames: callee.frames }, null, 2)); throw error; }
-  await caller.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
-  await caller.page.evaluate(() => localStorage.setItem('mova-audio-settings', JSON.stringify({ inputDeviceId: 'default', outputDeviceId: 'default' })));
-  await caller.page.getByRole('button', { name: /Повторить подключение/ }).click();
+  await failedParticipant.page.getByRole('button', { name: /Повторить подключение/ }).waitFor({ timeout: 5_000 });
+  await failedParticipant.page.getByRole('alert').filter({ hasText: 'Выбранный микрофон недоступен' }).waitFor();
+  await failedParticipant.page.waitForTimeout(400);
+  if (process.env.MOVA_CALL_SCREENSHOT) await failedParticipant.page.screenshot({ path: process.env.MOVA_CALL_SCREENSHOT.replace(/\.png$/i, '') + '-recovery.png' });
+  await failedParticipant.page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new DOMException('Denied', 'NotAllowedError'); } } });
+    document.execCommand = () => false;
+  });
+  const reportDownload = failedParticipant.page.waitForEvent('download');
+  await failedParticipant.page.getByRole('button', { name: 'Отчёт о звонке', exact: true }).click();
+  const reportFile = await reportDownload;
+  const report = JSON.parse(await readFile(await reportFile.path(), 'utf8'));
+  if (report.call.failure !== 'microphone-unavailable' || report.call.state !== 'available') throw new Error('Failed-call report did not preserve the capture failure');
+  await failedParticipant.page.getByRole('status').filter({ hasText: 'Отчёт сохранён в файл' }).waitFor();
+  await failedParticipant.page.getByRole('button', { name: 'Подключиться с системным микрофоном' }).click();
   const healthyCall = '.mova-call-stage[data-call-connected="true"][data-audio-sending="true"][data-audio-receiving="true"]';
   await Promise.all([
     caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }),

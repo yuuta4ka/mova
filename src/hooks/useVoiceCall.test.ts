@@ -104,6 +104,28 @@ describe('voice call state model', () => {
     expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'voice:join' }));
   });
 
+  it('keeps a pending microphone capture when an active room snapshot arrives', async () => {
+    let emit: (event: RealtimeEvent) => void = () => undefined;
+    vi.spyOn(realtime, 'subscribe').mockImplementation((listener) => { emit = listener; return () => undefined; });
+    vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    let resolveCapture!: (stream: MediaStream) => void;
+    const getUserMedia = vi.fn().mockImplementation(() => new Promise<MediaStream>((resolve) => { resolveCapture = resolve; }));
+    vi.stubGlobal('navigator', { ...navigator, mediaDevices: { getUserMedia } });
+    const { result } = renderHook(() => useVoiceCall('chat', 'me'));
+    act(() => result.current.call());
+    act(() => emit({ type: 'call:accept', conversationId: 'chat', fromUserId: 'friend', startedAt: '2026-09-19T10:00:00.000Z' }));
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1));
+    act(() => emit({ type: 'call:state', conversationId: 'chat', status: 'active', participants: ['friend'], joined: false } as RealtimeEvent));
+    expect(result.current.state).toBe('connecting');
+    await act(async () => result.current.accept());
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    const audio = { kind: 'audio', enabled: true, readyState: 'live', stop: vi.fn() };
+    await act(async () => resolveCapture({ getTracks: () => [audio], getAudioTracks: () => [audio] } as unknown as MediaStream));
+    expect(result.current.state).toBe('connected');
+    expect(audio.stop).not.toHaveBeenCalled();
+  });
+
   it.each(['connecting', 'switching'])('keeps the latest microphone choice while %s', async (phase) => {
     let emit: (event: RealtimeEvent) => void = () => undefined;
     vi.spyOn(realtime, 'subscribe').mockImplementation((listener) => { emit = listener; return () => undefined; });
@@ -231,6 +253,51 @@ describe('voice call state model', () => {
     expect(result.current.error).toBe('');
     expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'voice:join' }));
     if (outcome === 'resolve') expect(stop).toHaveBeenCalled();
+  });
+
+  it('keeps the microphone and room membership when an early peer negotiation fails', async () => {
+    let emit: (event: RealtimeEvent) => void = () => undefined;
+    vi.spyOn(realtime, 'subscribe').mockImplementation((listener) => { emit = listener; return () => undefined; });
+    vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    const track = { id: 'mic', kind: 'audio', enabled: true, readyState: 'live', stop: vi.fn() };
+    vi.stubGlobal('navigator', { ...navigator, mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getAudioTracks: () => [track], getTracks: () => [track] }) } });
+    class Peer {
+      connectionState = 'new'; signalingState = 'stable';
+      getSenders = () => [];
+      addTrack = vi.fn();
+      getStats = vi.fn().mockResolvedValue(new Map());
+      createOffer = vi.fn().mockRejectedValue(new DOMException('Offer collision', 'InvalidStateError'));
+      close = vi.fn();
+    }
+    vi.stubGlobal('RTCPeerConnection', Peer);
+    const { result } = renderHook(() => useVoiceCall('chat', 'me'));
+    act(() => result.current.call());
+    await act(async () => emit({ type: 'voice:peers', conversationId: 'chat', peers: ['friend'] }));
+    await act(async () => emit({ type: 'call:accept', conversationId: 'chat', fromUserId: 'friend', startedAt: '2026-09-19T10:00:00Z' }));
+    expect(result.current.joined).toBe(true);
+    expect(result.current.state).not.toBe('available');
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(result.current.error).not.toContain('Offer collision');
+  });
+
+  it.each(['AbortError', 'NotReadableError', 'OverconstrainedError'])('recovers from %s without changing the chosen microphone', async (name) => {
+    let emit: (event: RealtimeEvent) => void = () => undefined;
+    vi.spyOn(realtime, 'subscribe').mockImplementation((listener) => { emit = listener; return () => undefined; });
+    vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({ iceServers: [] });
+    const track = { id: 'mic', kind: 'audio', enabled: true, readyState: 'live', stop: vi.fn() };
+    const error = new DOMException('Capture failed', name);
+    Object.defineProperty(error, 'constraint', { value: 'echoCancellation' });
+    const getUserMedia = vi.fn().mockRejectedValueOnce(error).mockResolvedValue({ getAudioTracks: () => [track], getTracks: () => [track] });
+    vi.stubGlobal('navigator', { ...navigator, mediaDevices: { getUserMedia } });
+    saveAudioSettings({ ...defaultAudioSettings, inputDeviceId: 'usb-mic' });
+    const { result } = renderHook(() => useVoiceCall('chat', 'me'));
+    act(() => result.current.call());
+    await act(async () => emit({ type: 'call:accept', conversationId: 'chat', fromUserId: 'friend', startedAt: '2026-09-19T10:00:00Z' }));
+    await waitFor(() => expect(result.current.state).toBe('connected'));
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(getUserMedia).toHaveBeenLastCalledWith({ audio: expect.objectContaining({ deviceId: { exact: 'usb-mic' } }), video: false });
   });
 
   it('keeps working media connected through signalling loss, clears recovered errors, and ignores old peer callbacks', async () => {

@@ -36,6 +36,8 @@ const normalize = (value: Partial<AudioSettings>): AudioSettings => {
   return {
     ...defaultAudioSettings,
     ...value,
+    inputDeviceId: typeof value.inputDeviceId === 'string' && value.inputDeviceId.trim() ? value.inputDeviceId : 'default',
+    outputDeviceId: typeof value.outputDeviceId === 'string' && value.outputDeviceId.trim() ? value.outputDeviceId : 'default',
     inputVolume: Math.max(0, Math.min(200, Number(value.inputVolume ?? 100))),
     outputVolume: Math.max(0, Math.min(200, Number(value.outputVolume ?? 100))),
     systemVolume: Math.max(0, Math.min(100, Number(value.systemVolume ?? 100))),

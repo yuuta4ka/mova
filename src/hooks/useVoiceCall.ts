@@ -308,6 +308,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   const activeNoiseSuppressionMode = useRef<AudioSettings['noiseSuppressionMode'] | null>(null);
   const microphoneSwitchQueue = useRef<Promise<void>>(Promise.resolve());
   const microphoneSwitchGeneration = useRef(0);
+  const connectingGeneration = useRef<number | null>(null);
   const localAudioContext = useRef<AudioContext | null>(null);
   const localGain = useRef<GainNode | null>(null);
   const localSignalMonitor = useRef<(() => void) | null>(null);
@@ -589,6 +590,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         }
       };
       peers.current.set(userId, peer);
+      lastIceRestartAt.current.set(userId, Date.now());
       setParticipants((items) => [...new Set([...items, userId])]);
       return peer;
     },
@@ -644,8 +646,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         let reports: RTCStatsReport;
         try { reports = await peer.getStats(); } catch { return; }
         if (peers.current.get(userId) !== peer) return;
-        if (['failed', 'disconnected'].includes(peer.connectionState) && realtime.isConnected()
-          && Date.now() - (lastIceRestartAt.current.get(userId) || 0) >= 10_000) {
+        if (['new', 'connecting', 'failed', 'disconnected'].includes(peer.connectionState) && realtime.isConnected()
+          && Date.now() - (lastIceRestartAt.current.get(userId) || 0) >= (['new', 'connecting'].includes(peer.connectionState) ? 15_000 : 10_000)) {
           lastIceRestartAt.current.set(userId, Date.now());
           void negotiateRef.current(userId, true).catch(() => undefined);
         }
@@ -938,7 +940,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   const connectAudio = useCallback(async (playSelfConnectSound = false) => {
     if (!conversationId) return;
-    if (stateRef.current === 'connecting') return;
+    if (connectingGeneration.current !== null) return;
     if (localStream.current) {
       realtime.send({ type: 'voice:join', conversationId });
       announceLocalState();
@@ -949,6 +951,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       return;
     }
     const generation = microphoneSwitchGeneration.current;
+    connectingGeneration.current = generation;
     let sourceStream: MediaStream | null = null;
     let microphonePipeline: MicrophonePipeline | null = null;
     try {
@@ -964,26 +967,25 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       await iceConfigPromise.current;
       if (generation !== microphoneSwitchGeneration.current) return;
       const settings = loadAudioSettings();
-      let usedInputDeviceId = settings.inputDeviceId;
+      const usedInputDeviceId = settings.inputDeviceId;
       if (!navigator.mediaDevices?.getUserMedia) throw new DOMException('Браузер не поддерживает доступ к микрофону', 'NotSupportedError');
-      const processingConstraints = microphoneConstraints({ ...settings, inputDeviceId: 'default' });
       try {
-        sourceStream = await navigator.mediaDevices.getUserMedia({
-          audio: microphoneConstraints(settings),
-          video: false,
-        });
-      } catch (preferredDeviceError) {
-        const canRetryDefault =
-          preferredDeviceError instanceof DOMException &&
-          ['NotFoundError', 'OverconstrainedError'].includes(preferredDeviceError.name);
-        if (!canRetryDefault || settings.inputDeviceId !== 'default') throw preferredDeviceError;
-        usedInputDeviceId = 'default';
-        try {
-          sourceStream = await navigator.mediaDevices.getUserMedia({ audio: processingConstraints, video: false });
-        } catch (processedAudioError) {
-          if (!(processedAudioError instanceof DOMException) || processedAudioError.name !== 'OverconstrainedError') throw processedAudioError;
-          sourceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        }
+        sourceStream = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(settings), video: false });
+      } catch (captureError) {
+        const name = captureError instanceof DOMException ? captureError.name : '';
+        const constraint = (captureError as { constraint?: string })?.constraint;
+        if (name === 'OverconstrainedError' && (settings.inputDeviceId === 'default' || (constraint && constraint !== 'deviceId'))) {
+          // Relax processing only. Never substitute a different selected device.
+          sourceStream = await navigator.mediaDevices.getUserMedia({
+            audio: settings.inputDeviceId === 'default' ? true : { deviceId: { exact: settings.inputDeviceId } },
+            video: false,
+          });
+        } else if (name === 'AbortError' || name === 'NotReadableError') {
+          // Device drivers may still be releasing a previous test/call capture.
+          await new Promise((resolve) => window.setTimeout(resolve, 350));
+          if (generation !== microphoneSwitchGeneration.current) return;
+          sourceStream = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(settings), video: false });
+        } else throw captureError;
       }
       if (!sourceStream.getAudioTracks().length) throw new DOMException('Микрофон не передал аудиодорожку', 'NotReadableError');
       microphonePipeline = await createMicrophonePipeline(sourceStream, settings);
@@ -1001,14 +1003,19 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       await restartLocalVoiceMonitor(microphonePipeline.stream);
       if (generation !== microphoneSwitchGeneration.current) return;
       const existingPeers = [...peers.current.keys()];
-      peers.current.forEach(addMissingLocalTracks);
+      peers.current.forEach((peer) => {
+        if (peer.signalingState !== 'closed') addMissingLocalTracks(peer);
+      });
       realtime.send({ type: 'voice:join', conversationId });
       markConnected();
       setJoined(true);
       if (playSelfConnectSound) playCallSound('connect');
       setStoredCall(activeCallKey, conversationId);
       setStoredCall(pendingCallKey, null);
-      if (existingPeers.length) await Promise.all(existingPeers.map((userId) => negotiateRef.current(userId)));
+      // A failed/glare negotiation is a transport problem, not a failed capture.
+      // Keep the working microphone alive while the connection monitor retries.
+      if (existingPeers.length) void Promise.allSettled(existingPeers.map((userId) => negotiateRef.current(userId)));
+
     } catch (voiceError) {
       if (generation !== microphoneSwitchGeneration.current) {
         microphonePipeline?.close();
@@ -1036,7 +1043,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                 : 'Не удалось подключить микрофон. Нажмите «Повторить».';
       setStoredCall(pendingCallKey, null);
       updateState('available');
+      setJoined(false);
       setError(message);
+    } finally {
+      if (connectingGeneration.current === generation) connectingGeneration.current = null;
     }
   }, [addMissingLocalTracks, announceLocalState, conversationId, markConnected, restartLocalVoiceMonitor, updateState]);
 
@@ -1072,6 +1082,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       localStream.current?.getTracks().forEach((track) => track.stop());
       localSourceStream.current?.getTracks().forEach((track) => track.stop());
       microphoneSwitchGeneration.current += 1;
+      connectingGeneration.current = null;
       cameraStreamRef.current?.getTracks().forEach((track) => {
         track.onended = null;
         track.stop();
@@ -1200,7 +1211,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                 stopTone.current = startRingtone(outgoing ? 'outgoing' : 'incoming');
                 return;
               }
-              if (event.status === 'active' && !localStream.current) {
+              if (event.status === 'active' && !localStream.current && connectingGeneration.current === null) {
                 const localParticipant = room.find((participant) => participant.userId === currentUserId);
                 setJoined(Boolean(event.joined || localParticipant));
                 if (localParticipant) {

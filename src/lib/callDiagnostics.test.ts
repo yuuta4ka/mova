@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildCallDiagnosticReport, copyDiagnosticReport } from './callDiagnostics';
 
 describe('call diagnostic reports', () => {
+  afterEach(() => { delete window.movaDesktopShell; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   it('creates a privacy-safe anonymized report with quality summary', () => {
     const report = buildCallDiagnosticReport({
       state: 'connected',
@@ -26,4 +27,23 @@ describe('call diagnostic reports', () => {
     await copyDiagnosticReport(report);
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"schemaVersion": 1'));
   });
+  it('uses the native desktop clipboard when browser permission is denied', async () => {
+    const writeClipboardText = vi.fn().mockResolvedValue(true);
+    window.movaDesktopShell = { writeClipboardText } as unknown as NonNullable<Window['movaDesktopShell']>;
+    const report = buildCallDiagnosticReport({ state: 'available', startedAt: null, diagnostics: {} });
+    expect(await copyDiagnosticReport(report)).toBe('copied');
+    expect(writeClipboardText).toHaveBeenCalledWith(expect.stringContaining('"state": "available"'));
+  });
+  it('downloads the report when both clipboard APIs are unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('Denied')) } });
+    const createObjectURL = vi.fn().mockReturnValue('blob:report');
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const report = buildCallDiagnosticReport({ state: 'available', startedAt: null, diagnostics: {} });
+    expect(await copyDiagnosticReport(report)).toBe('downloaded');
+    expect(click).toHaveBeenCalledOnce();
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(document.querySelector('textarea')).toBeNull();
+  });
+
 });

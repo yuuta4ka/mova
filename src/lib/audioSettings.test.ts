@@ -12,6 +12,11 @@ describe('audio settings', () => {
     expect(loadAudioSettings().noiseSuppressionMode).toBe('enhanced');
   });
 
+  it('repairs empty device IDs left by a permissions or device-list refresh', () => {
+    localStorage.setItem('mova-audio-settings', JSON.stringify({ inputDeviceId: '', outputDeviceId: null }));
+    expect(loadAudioSettings()).toMatchObject({ inputDeviceId: 'default', outputDeviceId: 'default' });
+  });
+
   it('migrates the previous noise suppression toggle and keeps the mode in sync', () => {
     localStorage.setItem('mova-audio-settings', JSON.stringify({ noiseSuppression: false }));
     expect(loadAudioSettings()).toMatchObject({ noiseSuppression: false, noiseSuppressionMode: 'off' });

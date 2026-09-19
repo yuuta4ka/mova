@@ -35,6 +35,7 @@ export interface CallDiagnosticReport {
     peerCount: number;
     worstQuality: 'good' | 'fair' | 'poor' | 'unknown';
     turnUsed: boolean;
+    failure: string | null;
   };
   environment: {
     client: 'desktop' | 'browser' | 'standalone';
@@ -53,6 +54,7 @@ export function buildCallDiagnosticReport({
   state,
   startedAt,
   diagnostics,
+  error = '',
   now = Date.now(),
   userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent,
   online = typeof navigator === 'undefined' ? true : navigator.onLine,
@@ -61,6 +63,7 @@ export function buildCallDiagnosticReport({
   state: string;
   startedAt: string | null;
   diagnostics: Record<string, CallDiagnosticPeerSnapshot>;
+  error?: string;
   now?: number;
   userAgent?: string;
   online?: boolean;
@@ -95,6 +98,7 @@ export function buildCallDiagnosticReport({
       peerCount: peers.length,
       worstQuality,
       turnUsed: sourcePeers.some((peer) => peer.candidateType?.includes('relay')),
+      failure: !error ? null : error.includes('Выбранный микрофон недоступен') ? 'microphone-unavailable' : error.includes('Нет доступа к микрофону') ? 'microphone-permission' : error.includes('Микрофон занят') ? 'microphone-busy' : 'other',
     },
     environment: {
       client: userAgent.includes('MovaDesktop/') ? 'desktop' : userAgent.includes('Mobile') || userAgent.includes('Standalone') ? 'standalone' : 'browser',
@@ -110,15 +114,33 @@ export function buildCallDiagnosticReport({
 
 export async function copyDiagnosticReport(report: CallDiagnosticReport) {
   const text = JSON.stringify(report, null, 2);
-  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+  try {
+    if (window.movaDesktopShell?.writeClipboardText && await window.movaDesktopShell.writeClipboardText(text)) return 'copied' as const;
+  } catch { /* Try the browser clipboard on older desktop shells. */ }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return 'copied' as const;
+    }
+  } catch { /* Permission denial must not hide the report. */ }
   const textarea = document.createElement('textarea');
   textarea.value = text;
   textarea.setAttribute('readonly', '');
   textarea.style.position = 'fixed';
   textarea.style.opacity = '0';
   document.body.append(textarea);
-  textarea.select();
-  const copied = document.execCommand('copy');
-  textarea.remove();
-  if (!copied) throw new Error('Clipboard is unavailable');
+  try {
+    textarea.select();
+    if (document.execCommand?.('copy')) return 'copied' as const;
+  } catch { /* Download is available even without clipboard permission. */ }
+  finally { textarea.remove(); }
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'mova-call-report.json';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return 'downloaded' as const;
 }

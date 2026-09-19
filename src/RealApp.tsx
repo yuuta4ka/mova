@@ -1335,6 +1335,7 @@ export function SettingsModal({ user, open, onClose, onEditProfile, onUserUpdate
                     }
                   >
                     <option value="default">По умолчанию</option>
+                    {settings.inputDeviceId !== 'default' && !inputs.some((device) => device.deviceId === settings.inputDeviceId) && <option value={settings.inputDeviceId}>Сохранённый микрофон недоступен — выберите другой</option>}
                     {inputs
                       .filter((device) => device.deviceId !== 'default')
                       .map((device, index) => (
@@ -2417,7 +2418,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
   const [screenAudioToastVisible, setScreenAudioToastVisible] = useState(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(() => loadScreenShareSettings());
   const [activeSeconds, setActiveSeconds] = useState(0);
-  const [diagnosticCopyState, setDiagnosticCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [diagnosticCopyState, setDiagnosticCopyState] = useState<'idle' | 'copied' | 'downloaded' | 'error'>('idle');
   const diagnosticCopyTimer = useRef<number | null>(null);
   const screenAudioToastSession = useRef<MediaStream | null>(null);
   const screenAudioToastShown = useRef(false);
@@ -2434,14 +2435,14 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
   }, []);
   const copyCallDiagnostics = useCallback(async () => {
     try {
-      await copyDiagnosticReport(buildCallDiagnosticReport({ state: callState, startedAt: call.startedAt, diagnostics: call.diagnostics }));
-      setDiagnosticCopyState('copied');
+      const outcome = await copyDiagnosticReport(buildCallDiagnosticReport({ state: callState, startedAt: call.startedAt, diagnostics: call.diagnostics, error: call.error }));
+      setDiagnosticCopyState(outcome);
     } catch {
       setDiagnosticCopyState('error');
     }
     if (diagnosticCopyTimer.current !== null) window.clearTimeout(diagnosticCopyTimer.current);
     diagnosticCopyTimer.current = window.setTimeout(() => setDiagnosticCopyState('idle'), 2_500);
-  }, [call.diagnostics, call.startedAt, callState]);
+  }, [call.diagnostics, call.error, call.startedAt, callState]);
   useEffect(() => {
     const update = (event: Event) => setScreenQuality((event as CustomEvent<ScreenShareSettings>).detail || loadScreenShareSettings());
     window.addEventListener('mova-screen-share-settings', update);
@@ -2525,11 +2526,11 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     return callButtonWithHint;
   if (callState === 'idle')
     return callButtonWithHint;
-  if (callState === 'available' && call.joined) return null;
+  if (callState === 'available' && call.joined && !call.error) return null;
   if (callState === 'available')
     return bannerHost
       ? createPortal(
-          <section className="mova-active-call-banner" aria-label={`Активный звонок с ${callConversation.title}`}>
+          <section className={`mova-active-call-banner${call.error ? ' has-error' : ''}`} aria-label={`Активный звонок с ${callConversation.title}`}>
             <button
               type="button"
               className="mova-active-call-banner__action"
@@ -2541,11 +2542,25 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
               <span className="mova-active-call-banner__details">
                 <strong>{call.error ? 'Не удалось подключиться' : 'Звонок идёт'}</strong>
                 <small>
-                  {call.error ? 'Нажмите, чтобы повторить' : <><AppleEmoji text={callConversation.title} /> · {formatCallDuration(activeSeconds)}</>}
+                  {call.error ? 'Повторить подключение' : <><AppleEmoji text={callConversation.title} /> · {formatCallDuration(activeSeconds)}</>}
                 </small>
               </span>
               <span className="mova-active-call-banner__chevron" aria-hidden="true"><ChevronRight size={19} /></span>
             </button>
+            {call.error && <div className="mova-call-recovery">
+              <p role="alert">{call.error}</p>
+              <div>
+                <Button size="sm" variant="secondary" onClick={onOpenSettings}>Выбрать микрофон</Button>
+                {loadAudioSettings().inputDeviceId !== 'default' && <Button size="sm" variant="secondary" onClick={() => {
+                  saveAudioSettings({ ...loadAudioSettings(), inputDeviceId: 'default' });
+                  onOpenCanvas();
+                  void call.accept();
+                }}>Подключиться с системным микрофоном</Button>}
+                <Button size="sm" variant="ghost" onClick={() => void copyCallDiagnostics()}>Отчёт о звонке</Button>
+                <Button size="sm" variant="ghost" onClick={call.leave}>Закрыть</Button>
+              </div>
+              {diagnosticCopyState !== 'idle' && <p role="status">{diagnosticCopyState === 'downloaded' ? 'Отчёт сохранён в файл mova-call-report.json' : diagnosticCopyState === 'copied' ? 'Отчёт скопирован' : 'Не удалось сохранить отчёт'}</p>}
+            </div>}
           </section>,
           bannerHost,
         )
@@ -2673,6 +2688,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                 <small>{formatCallDuration(activeSeconds)} · голосовой разговор</small>
               </span>
             </header>
+            {diagnosticCopyState !== 'idle' && <p role="status" className="mova-call-report-status">{diagnosticCopyState === 'downloaded' ? 'Отчёт сохранён в файл mova-call-report.json' : diagnosticCopyState === 'copied' ? 'Отчёт скопирован' : 'Не удалось сохранить отчёт'}</p>}
             {hasScreen ? (
               <div className={`mova-call-grid has-screen${participantRailVisible ? '' : ' is-rail-collapsed'}`} data-call-layout="screen-share" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length} data-participant-rail={participantRailVisible ? 'visible' : 'hidden'}>
                 <div className="mova-call-screen-area">
