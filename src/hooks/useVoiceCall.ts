@@ -63,11 +63,18 @@ export interface PeerCallDiagnostics {
 }
 
 type RemoteMediaKind = 'voice' | 'screen';
+// Keep the familiar 0–200 slider and unity at 100; its upper half boosts to 3×.
+export const participantVolumeGain = (value: number) => {
+  const percent = Number.isFinite(value) ? Math.max(0, Math.min(200, value)) : 100;
+  return percent <= 100 ? percent / 100 : 1 + (percent - 100) / 50;
+};
+
 export const resolveRemotePlaybackVolume = (mediaKind: RemoteMediaKind, deafened: boolean, volume: number) =>
   deafened && mediaKind === 'voice' ? 0 : volume;
 
 export const resolveRemotePlaybackRoute = (playbackVolume: number, hasGain: boolean, background: boolean) => {
-  const useMediaElement = !hasGain || background;
+  // Native media volume is capped at 1; keep boosted audio on the gain node.
+  const useMediaElement = !hasGain || (background && playbackVolume <= 1);
   return {
     elementMuted: !useMediaElement,
     elementVolume: Math.min(1, playbackVolume),
@@ -423,7 +430,8 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   const applyRemoteVolume = useCallback((entry: RemoteAudioEntry, settings = loadAudioSettings()) => {
     const scoped = entry.mediaKind === 'screen' ? (screenVolumesRef.current[entry.userId] ?? 100) : (participantVolumesRef.current[entry.userId] ?? 100);
-    const volume = Math.max(0, Math.min(4, ((settings.outputVolume / 100) * scoped) / 100));
+    const gain = entry.mediaKind === 'voice' ? participantVolumeGain(scoped) : scoped / 100;
+    const volume = Math.max(0, Math.min(6, (settings.outputVolume / 100) * gain));
     const playbackVolume = resolveRemotePlaybackVolume(entry.mediaKind, deafenedRef.current, volume);
     const route = resolveRemotePlaybackRoute(playbackVolume, Boolean(entry.gain), document.visibilityState !== 'visible');
     if (entry.gain) entry.gain.gain.value = route.gainVolume;
@@ -1535,7 +1543,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
 
   useEffect(() => {
     const refreshBackgroundPlayback = () => {
-      if (document.visibilityState === 'visible') void localAudioContext.current?.resume().catch(() => undefined);
+      void localAudioContext.current?.resume().catch(() => undefined);
       remoteAudio.current.forEach((entry) => {
         applyRemoteVolume(entry);
         void entry.element.play().catch(() => undefined);

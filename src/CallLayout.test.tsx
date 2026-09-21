@@ -302,7 +302,7 @@ describe('call layout', () => {
     expect(container.querySelector('[data-participant-id="friend"] [aria-label="Подключается"]')).toBeInTheDocument();
   });
 
-  it('prioritizes the active speaker and keeps reconnecting participants last', () => {
+  it('keeps participant controls in place across speech and connection updates', async () => {
     const first = participant(1);
     const speaker = participant(2);
     const reconnecting = participant(3);
@@ -315,10 +315,28 @@ describe('call layout', () => {
       [reconnecting.id]: { connectionState: 'disconnected' },
     };
     const groupConversation: AppConversation = { ...conversation, id: 'presence-order', kind: 'group', members: [currentUser, first, speaker, reconnecting] };
-    const { container } = render(<RealMessages conversation={groupConversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+    const props = { conversation: groupConversation, currentUser, messages: [], onSend: vi.fn().mockResolvedValue(undefined) };
+    const { container, rerender } = render(<RealMessages {...props} />);
     const remoteOrder = Array.from(container.querySelectorAll('.mova-call-primary-participant [data-participant-id],.mova-call-secondary-participants [data-participant-id]')).map((tile) => tile.getAttribute('data-participant-id'));
 
-    expect(remoteOrder).toEqual([speaker.id, first.id, reconnecting.id]);
+    expect(remoteOrder).toEqual([first.id, reconnecting.id, speaker.id]);
+    const tile = container.querySelector(`[data-participant-id="${speaker.id}"]`)!;
+    fireEvent.contextMenu(tile, { clientX: 80, clientY: 90 });
+    const slider = await screen.findByRole('slider', { name: `Громкость ${speaker.name}` });
+    callMedia.speakingUsers = { [first.id]: true };
+    callMedia.reconnectingUsers = {};
+    callMedia.diagnostics[reconnecting.id] = { connectionState: 'connected' };
+    rerender(<RealMessages {...props} />);
+    expect(Array.from(container.querySelectorAll('.mova-call-primary-participant [data-participant-id],.mova-call-secondary-participants [data-participant-id]')).map((node) => node.getAttribute('data-participant-id'))).toEqual(remoteOrder);
+    expect(container.querySelector(`[data-participant-id="${speaker.id}"]`)).toBe(tile);
+    expect(screen.getByRole('slider', { name: `Громкость ${speaker.name}` })).toBe(slider);
+    expect(slider).toHaveAttribute('max', '200');
+    fireEvent.change(slider, { target: { value: '200' } });
+    expect(callMedia.setParticipantVolume).toHaveBeenCalledWith(speaker.id, 200);
+    callMedia.speakingUsers = { [speaker.id]: true };
+    callMedia.reconnectingUsers = { [reconnecting.id]: true };
+    callMedia.diagnostics[reconnecting.id] = { connectionState: 'disconnected' };
+    rerender(<RealMessages {...props} />);
     expect(container.querySelector(`[data-participant-id="${speaker.id}"]`)).toHaveClass('is-speaking');
     expect(container.querySelector(`[data-participant-id="${reconnecting.id}"]`)).toHaveAttribute('data-participant-connection', 'reconnecting');
     expect(container.querySelector(`[data-participant-id="${reconnecting.id}"] [aria-label="Переподключается"]`)).toBeInTheDocument();

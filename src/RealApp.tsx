@@ -2615,12 +2615,8 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     };
     const selfConnectionState: ParticipantConnectionState = callState === 'reconnecting' || callState === 'disconnected' ? 'reconnecting' : 'connected';
     const remoteParticipantIds = Array.from(new Set([...call.participants, ...cameraTiles.map((tile) => tile.userId)]))
-      .map((userId, snapshotIndex) => ({ userId, snapshotIndex, connectionState: participantConnectionState(userId) }))
-      .sort((left, right) => {
-        const priority = ({ userId, connectionState }: { userId: string; connectionState: ParticipantConnectionState }) =>
-          connectionState !== 'reconnecting' && call.speakingUsers[userId] ? 0 : connectionState === 'connected' ? 1 : connectionState === 'connecting' ? 2 : 3;
-        return priority(left) - priority(right) || left.snapshotIndex - right.snapshotIndex;
-      });
+      // Speech and connection updates must not move controls under the pointer.
+      .map((userId) => ({ userId, connectionState: participantConnectionState(userId) }));
     const remoteParticipantTiles: ReactNode[] = [];
     const selfTile = showSelf
       ? localCamera ? (

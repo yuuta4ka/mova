@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, realtime, type RealtimeEvent } from '../lib/api';
 import { defaultAudioSettings, saveAudioSettings, withNoiseSuppressionMode } from '../lib/audioSettings';
-import { isJoinedCallState, isOutgoingVoiceTransmitted, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackRoute, resolveRemotePlaybackVolume, shouldPlaySelfConnectSound, useVoiceCall, type CallState } from './useVoiceCall';
+import { participantVolumeGain, isJoinedCallState, isOutgoingVoiceTransmitted, normalizeCallState, replaceMicrophoneTrack, resolveRemotePlaybackRoute, resolveRemotePlaybackVolume, shouldPlaySelfConnectSound, useVoiceCall, type CallState } from './useVoiceCall';
 
 beforeEach(() => {
   vi.spyOn(realtime, 'isConnected').mockReturnValue(true);
@@ -21,6 +21,10 @@ afterEach(() => {
 });
 
 describe('voice call state model', () => {
+  it.each([[0, 0], [50, 0.5], [100, 1], [150, 2], [200, 3], [300, 3], [-10, 0]])('maps displayed participant volume %s to gain %s', (percent, gain) => {
+    expect(participantVolumeGain(percent)).toBe(gain);
+  });
+
   it('maps legacy states without exposing them to the new state machine', () => {
     expect(normalizeCallState('active')).toBe('connected');
     expect(normalizeCallState('error')).toBe('disconnected');
@@ -60,6 +64,12 @@ describe('voice call state model', () => {
   it('routes remote audio through the media element while the tab is in the background', () => {
     expect(resolveRemotePlaybackRoute(0.8, true, false)).toEqual({ elementMuted: true, elementVolume: 0.8, gainVolume: 0.8 });
     expect(resolveRemotePlaybackRoute(0.8, true, true)).toEqual({ elementMuted: false, elementVolume: 0.8, gainVolume: 0 });
+  });
+
+  it('preserves boosted volume in the background without duplicate playback', () => {
+    expect(resolveRemotePlaybackRoute(3, true, true)).toEqual({ elementMuted: true, elementVolume: 1, gainVolume: 3 });
+    expect(resolveRemotePlaybackRoute(0, true, true)).toEqual({ elementMuted: false, elementVolume: 0, gainVolume: 0 });
+    expect(resolveRemotePlaybackRoute(3, false, true)).toEqual({ elementMuted: false, elementVolume: 1, gainVolume: 0 });
   });
 
   it('replaces only microphone senders without renegotiating unrelated media', async () => {
