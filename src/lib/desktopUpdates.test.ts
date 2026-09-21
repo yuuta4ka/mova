@@ -22,7 +22,7 @@ describe('desktop update compatibility', () => {
   });
 
   it('formats the release date in Russian without timezone drift', () => {
-    expect(currentDesktopReleaseDate).toBe('2026-09-18');
+    expect(currentDesktopReleaseDate).toBe('2026-09-22');
     expect(formatDesktopReleaseDate('2026-08-28')).toBe('28 августа 2026');
     expect(formatDesktopReleaseDate('2026-02-29')).toBe('');
     expect(formatDesktopReleaseDate('not-a-date')).toBe('');

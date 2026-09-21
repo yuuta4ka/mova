@@ -47,9 +47,9 @@ try {
   for (const candidate of browserCandidates) { try { await access(candidate); executablePath = candidate; break; } catch {} }
   if (!executablePath) throw new Error('Chromium not found. Run `pnpm exec playwright install chromium` or set MOVA_BROWSER_PATH.');
   browser = await chromium.launch({ executablePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', `--use-file-for-fake-audio-capture=${process.env.MOVA_TEST_AUDIO_FILE || fileURLToPath(new URL('./fixtures/call-speech.wav', import.meta.url))}`] });
-  const openUser = async (token) => {
+  const openUser = async (token, selectedConversationId = conversation.conversation.id) => {
     const context = await browser.newContext({ permissions: ['microphone', 'camera'], baseURL: base, ...(process.env.MOVA_MOBILE_CALL_QA === '1' ? { viewport: { width: 390, height: 844 } } : {}) });
-    await context.addInitScript(({ sessionToken, conversationId }) => { sessionStorage.setItem('mova-session', sessionToken); localStorage.setItem('mova-selected-conversation', conversationId); }, { sessionToken: token, conversationId: conversation.conversation.id });
+    await context.addInitScript(({ sessionToken, conversationId }) => { sessionStorage.setItem('mova-session', sessionToken); localStorage.setItem('mova-selected-conversation', conversationId); }, { sessionToken: token, conversationId: selectedConversationId });
     // Control a real Web Audio capture track to test digital silence and recovery.
     await context.addInitScript(() => {
       const NativeWebSocket = window.WebSocket;
@@ -124,6 +124,28 @@ try {
     console.error(JSON.stringify(await Promise.all([caller.page, callee.page].map(async (page) => ({ text: (await page.locator('body').innerText()).slice(-1800), call: await page.locator('.mova-call-stage').evaluateAll((elements) => elements.map((element) => ({ connected: element.dataset.callConnected, sending: element.dataset.audioSending, receiving: element.dataset.audioReceiving }))) })))));
     throw error;
   });
+
+  if (process.env.MOVA_TEST_CALL_SWITCH === '1') {
+    const third = await api('/api/register', 'POST', { name: 'Третий участник', email: `third.${suffix}@mova.test`, password: 'strongpass3' });
+    await api(`/api/friends/${third.user.id}`, 'POST', undefined, first.token);
+    await api(`/api/friends/${first.user.id}`, 'PATCH', undefined, third.token);
+    const other = await api('/api/conversations', 'POST', { kind: 'direct', memberIds: [third.user.id] }, first.token);
+    const thirdClient = await openUser(third.token, other.conversation.id);
+    await caller.page.locator('.mova-real-chat-list>button').filter({ hasText: third.user.name }).click();
+    await caller.page.getByRole('button', { name: 'Позвонить', exact: true }).click();
+    await thirdClient.page.getByRole('button', { name: 'Принять', exact: true }).click();
+    await Promise.all([caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }), thirdClient.page.locator(healthyCall).waitFor({ timeout: 20_000 })]).catch(async (error) => {
+      console.error(JSON.stringify(await Promise.all([caller, thirdClient].map(async (client) => ({ text: (await client.page.locator('body').innerText()).slice(-2000), frames: client.frames.slice(-30).map((frame) => frame.slice(0, 240)) })))));
+      throw error;
+    });
+    const originalInvites = caller.frames.filter((frame) => frame.startsWith('sent:') && frame.includes('"type":"call:invite"') && frame.includes(conversation.conversation.id)).length;
+    await caller.page.locator('.mova-real-chat-list>button').filter({ hasText: second.user.name }).click();
+    await caller.page.getByRole('button', { name: 'Позвонить', exact: true }).click();
+    await Promise.all([caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }), callee.page.locator(healthyCall).waitFor({ timeout: 20_000 })]);
+    if (caller.frames.filter((frame) => frame.startsWith('sent:') && frame.includes('"type":"call:invite"') && frame.includes(conversation.conversation.id)).length > originalInvites + 1) throw new Error('Repeated invites while switching to an existing call');
+    await thirdClient.context.close();
+    console.log('Call switch A -> B -> existing A: bidirectional audio verified');
+  }
 
   const readyBefore = caller.frames.filter((frame) => frame.includes('received:') && frame.includes('"type":"ready"')).length;
   await caller.page.evaluate(() => window.__callTestSocket.close(4000, 'Call regression test'));

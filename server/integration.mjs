@@ -141,9 +141,10 @@ try {
   });
   await call(`/api/friends/${second.user.id}`, 'POST', undefined, first.token);
   const requestConversation = await call('/api/conversations', 'GET', undefined, second.token);
-  if (requestConversation.conversations.length !== 1 || requestConversation.conversations[0].lastMessage?.kind !== 'friend_request' || requestConversation.conversations[0].lastMessage?.friendRequest?.status !== 'pending') throw new Error('Friend request did not create a direct chat and system message');
+  const friendRequestChat = requestConversation.conversations.find((item) => item.kind === 'direct' && item.members.some((member) => member.id === first.user.id));
+  if (!friendRequestChat || friendRequestChat.lastMessage?.kind !== 'friend_request' || friendRequestChat.lastMessage?.friendRequest?.status !== 'pending') throw new Error('Friend request did not create a direct chat and system message');
   await call(`/api/friends/${first.user.id}`, 'PATCH', undefined, second.token);
-  const acceptedRequestMessages = await call(`/api/conversations/${requestConversation.conversations[0].id}/messages`, 'GET', undefined, first.token);
+  const acceptedRequestMessages = await call(`/api/conversations/${friendRequestChat.id}/messages`, 'GET', undefined, first.token);
   if (acceptedRequestMessages.messages[0]?.friendRequest?.status !== 'accepted') throw new Error('Friend request system message was not finalized');
   const third = await call('/api/register', 'POST', {
     name: 'Третий',
@@ -442,7 +443,7 @@ try {
       activity: activity.user.activity.name,
       presence: presence.user.presence,
       livePresence: livePresence.user.presence === 'idle' && presenceEvent.user.id === first.user.id && presenceEvent.user.isOnline === true,
-      latestPreview: conversationOverview.conversations[0].lastMessage.content,
+      latestPreview: conversationOverview.conversations.find((item) => item.id === conversation.conversation.id).lastMessage.content,
       rtcIceServers: rtcConfig.iceServers.length,
       pushNotifications: Boolean(pushConfig.publicKey),
       attachment: attachmentMessage.message.attachment.name,

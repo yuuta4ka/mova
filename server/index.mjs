@@ -1600,6 +1600,8 @@ function handleSocket(socket, request) {
       if (event.type === 'call:sync') return safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
       if (event.type === 'call:invite') {
         if (!canCallInConversation(conversationId, user.id)) return;
+        // Joining an existing room must not replace it with a new ringing call.
+        if (activeCalls.get(conversationId)?.status === 'active') return safeSocketSend(socket, JSON.stringify(callStateFor(conversationId, socket)));
         const caller = database.getUserById(user.id) || user;
         const createdAt = Date.now();
         activeCalls.set(conversationId, {

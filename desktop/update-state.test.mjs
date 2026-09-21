@@ -34,7 +34,7 @@ describe('desktop update state', () => {
   });
 
   it('checks shortly after launch and then every four hours', () => {
-    expect(desktopCurrentReleaseDate).toBe('2026-09-18');
+    expect(desktopCurrentReleaseDate).toBe('2026-09-22');
     expect(updateStartupDelayMs).toBe(10_000);
     expect(updateCheckIntervalMs).toBe(14_400_000);
     expect(updateCheckTimeoutMs).toBe(30_000);

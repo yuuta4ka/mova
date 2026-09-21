@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { loadScreenShareSettings, saveScreenShareSettings } from './lib/screenShareSettings';
 import { DesktopSharePicker } from './DesktopSharePicker';
 import type { DesktopSharePickerRequest, DesktopShellApi } from './DesktopTitlebar';
 
@@ -14,6 +15,7 @@ const request: DesktopSharePickerRequest = {
 
 afterEach(() => {
   delete window.movaDesktopShell;
+  localStorage.clear();
 });
 
 describe('desktop share picker overlay', () => {
@@ -35,6 +37,7 @@ describe('desktop share picker overlay', () => {
       cancelSharePicker: vi.fn(),
     } satisfies DesktopShellApi;
 
+    saveScreenShareSettings({width:1920,height:1080,frameRate:60,systemAudioEnabled:true});
     render(<DesktopSharePicker />);
     act(() => open(request));
 
@@ -44,7 +47,14 @@ describe('desktop share picker overlay', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Весь экран' }));
     expect(screen.getByRole('option', { name: 'Экран 1' })).toHaveClass('is-selected');
+    expect(screen.getByRole('combobox', {name:'Частота кадров демонстрации'})).toHaveTextContent('60 FPS');
+    fireEvent.click(screen.getByRole('combobox', {name:'Разрешение демонстрации'}));
+    fireEvent.click(screen.getByRole('option', {name:'720p'}));
+    const selected = vi.fn();
+    window.addEventListener('mova-screen-share-selection', selected, {once:true});
     fireEvent.click(screen.getByRole('button', { name: 'Начать демонстрацию' }));
+    expect(selected.mock.calls[0][0].detail).toMatchObject({width:1280,height:720,frameRate:60});
+    expect(loadScreenShareSettings()).toMatchObject({width:1920,height:1080,frameRate:60});
 
     expect(chooseShareSource).toHaveBeenCalledWith('share-1', 'screen:0:0');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

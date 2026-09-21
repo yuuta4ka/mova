@@ -1,3 +1,4 @@
+import {normalizeScreenShareSettings} from '../lib/screenShareSettings';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, realtime, type AppUser, type RealtimeEvent, type VoiceRoomParticipant } from '../lib/api';
 import { microphoneConstraints, loadAudioSettings, type AudioSettings } from '../lib/audioSettings';
@@ -179,7 +180,7 @@ function startRingtone(kind: 'incoming' | 'outgoing') {
       const startedAt = performance.now();
       const updateVolume = (now: number) => {
         if (!active) return;
-        const progress = Math.min(1, (now - startedAt) / ringtoneFadeInMs);
+        const progress = Math.max(0, Math.min(1, (now - startedAt) / ringtoneFadeInMs));
         audio.volume = targetVolume * progress;
         if (progress < 1) fadeFrame = window.requestAnimationFrame(updateVolume);
         else fadeFrame = null;
@@ -1220,6 +1221,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                 return;
               }
               if (event.status === 'active' && !localStream.current && connectingGeneration.current === null) {
+                const requestedJoin = storedCall(pendingCallKey) === conversationId;
                 const localParticipant = room.find((participant) => participant.userId === currentUserId);
                 setJoined(Boolean(event.joined || localParticipant));
                 if (localParticipant) {
@@ -1236,6 +1238,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
                 if (ringTimeout.current) window.clearTimeout(ringTimeout.current);
                 ringTimeout.current = null;
                 updateState('available');
+                if (requestedJoin) await connectAudio(shouldPlaySelfConnectSound(true, direct));
               }
               return;
             }
@@ -1390,7 +1393,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
           }
         })();
       }),
-    [announceLocalState, applyRemoteVolume, applyRoomSnapshot, reconcileConnection, connectAudio, conversationId, createPeer, currentUserId, leave, markConnected, negotiatePeer, removeRemoteAudio, updateRemoteMedia, updateState],
+    [announceLocalState, applyRemoteVolume, applyRoomSnapshot, reconcileConnection, connectAudio, conversationId, createPeer, currentUserId, direct, leave, markConnected, negotiatePeer, removeRemoteAudio, updateRemoteMedia, updateState],
   );
 
   useEffect(() => {
@@ -1756,9 +1759,21 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     if (!conversationId || !isJoinedCallState(stateRef.current)) return;
     try {
       const desktopCapture = Boolean(window.movaDesktopShell);
-      const stream = await navigator.mediaDevices.getDisplayMedia(
-        screenCaptureOptions({ width, height, frameRate }, desktopCapture, systemAudioEnabled),
-      );
+      const selectQuality = (event: Event) => {
+        const selected = normalizeScreenShareSettings((event as CustomEvent).detail || {});
+        width=selected.width; height=selected.height; frameRate=selected.frameRate;
+      };
+      if (desktopCapture) window.addEventListener('mova-screen-share-selection', selectQuality);
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia(screenCaptureOptions({ width, height, frameRate }, desktopCapture, systemAudioEnabled));
+      } finally {
+        window.removeEventListener('mova-screen-share-selection', selectQuality);
+      }
+      if (desktopCapture) {
+        try { await stream.getVideoTracks()[0]?.applyConstraints({width: {ideal: width},height: {ideal: height},frameRate: {ideal: frameRate,max: frameRate}}); }
+        catch (error) {stream.getTracks().forEach(track=>track.stop());throw error;}
+      }
       activeScreenQuality.current = { width, height, frameRate };
       const screenTrack = stream.getVideoTracks()[0];
       if (!screenTrack) throw new DOMException('Источник экрана не передал видеодорожку', 'NotReadableError');

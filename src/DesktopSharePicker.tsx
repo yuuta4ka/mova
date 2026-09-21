@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import {SelectField} from './components/SelectField';
+import {loadScreenShareSettings} from './lib/screenShareSettings';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AppWindow, Monitor, Radio, X } from 'lucide-react';
 import type { DesktopSharePickerRequest, DesktopShareSourceKind } from './DesktopTitlebar';
@@ -10,6 +12,8 @@ const tabMeta: Record<DesktopShareSourceKind, { label: string; icon: typeof AppW
 };
 
 export function DesktopSharePicker() {
+  const [quality,setQuality]=useState(loadScreenShareSettings);
+  const dialogRef=useRef<HTMLElement>(null);
   const shell = window.movaDesktopShell;
   const [request, setRequest] = useState<DesktopSharePickerRequest | null>(null);
   const [activeTab, setActiveTab] = useState<DesktopShareSourceKind>('window');
@@ -21,6 +25,7 @@ export function DesktopSharePicker() {
       const tabs = Array.isArray(payload?.tabs) ? payload.tabs.filter((kind) => kind in tabMeta) : [];
       const sources = Array.isArray(payload?.sources) ? payload.sources.filter((source) => source && typeof source.id === 'string' && tabs.includes(source.kind)) : [];
       const tab = tabs[0] || 'window';
+      setQuality(loadScreenShareSettings());
       setRequest({ requestId: String(payload?.requestId || ''), tabs, sources });
       setActiveTab(tab);
       setSelectedId(sources.find((source) => source.kind === tab)?.id || '');
@@ -29,13 +34,21 @@ export function DesktopSharePicker() {
 
   useEffect(() => {
     if (!request) return;
+    const previousFocus=document.activeElement as HTMLElement | null;
+    dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key === 'Tab') {
+        const focusable=Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled)') || []);
+        const first=focusable[0],last=focusable[focusable.length-1];
+        if (event.shiftKey && document.activeElement===first) {event.preventDefault();last?.focus();}
+        else if (!event.shiftKey && document.activeElement===last) {event.preventDefault();first?.focus();}
+      }
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
       shell?.cancelSharePicker?.(request.requestId);
       setRequest(null);
     };
     window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
+    return () => {window.removeEventListener('keydown', closeOnEscape);previousFocus?.focus();};
   }, [request, shell]);
 
   const visibleSources = useMemo(() => request?.sources.filter((source) => source.kind === activeTab) || [], [activeTab, request]);
@@ -47,6 +60,7 @@ export function DesktopSharePicker() {
   };
   const choose = (sourceId = selectedId) => {
     if (!request.sources.some((source) => source.id === sourceId && source.kind === activeTab)) return;
+    window.dispatchEvent(new CustomEvent('mova-screen-share-selection', {detail: quality}));
     shell?.chooseShareSource?.(request.requestId, sourceId);
     setRequest(null);
   };
@@ -57,7 +71,7 @@ export function DesktopSharePicker() {
 
   return createPortal(
     <div className="mova-desktop-share-picker" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && cancel()}>
-      <section className="mova-desktop-share-picker__dialog" role="dialog" aria-modal="true" aria-labelledby="desktop-share-picker-title">
+      <section ref={dialogRef} className="mova-desktop-share-picker__dialog" role="dialog" aria-modal="true" aria-labelledby="desktop-share-picker-title">
         <header>
           <span>
             <strong id="desktop-share-picker-title">Демонстрация экрана</strong>
@@ -98,7 +112,7 @@ export function DesktopSharePicker() {
           ) : <p>Источники этого типа не найдены</p>}
         </div>
         <footer>
-          <span><strong>Качество демонстрации</strong><small>Разрешение и FPS применяются из настроек звонка Mova</small></span>
+          <div className="mova-share-quality"><label><span>Разрешение</span><SelectField aria-label="Разрешение демонстрации" value={`${quality.width}x${quality.height}`} onValueChange={value=>{const [width,height]=value.split('x').map(Number);setQuality({...quality,width,height})}}><option value="1280x720">720p</option><option value="1920x1080">1080p</option><option value="2560x1440">1440p</option></SelectField></label><label><span>Частота кадров</span><SelectField aria-label="Частота кадров демонстрации" value={quality.frameRate} onValueChange={value=>setQuality({...quality,frameRate:Number(value)})}><option value="15">15 FPS</option><option value="30">30 FPS</option><option value="60">60 FPS</option></SelectField></label></div>
           <button type="button" className="is-cancel" onClick={cancel}>Отмена</button>
           <button type="button" className="is-primary" disabled={!selectedId} onClick={() => choose()}>Начать демонстрацию</button>
         </footer>

@@ -19,6 +19,7 @@ import './media-viewer.css';
 import './common-ui.css';
 import './photo-send.css';
 import './maintenance.css';
+import './refinement.css';
 import { RealApp } from './RealApp';
 import { LandingPage } from './LandingPage';
 import { DesktopTitlebar } from './DesktopTitlebar';
@@ -29,6 +30,7 @@ import { MaintenanceFrame } from './MaintenanceBanner';
 const appRoute = window.location.pathname === '/app' || window.location.pathname.startsWith('/app/');
 const windowsDesktop = window.movaDesktopShell?.platform === 'win32';
 document.documentElement.classList.toggle('mova-landing-document', !appRoute);
+document.documentElement.classList.toggle('mova-refined', appRoute);
 document.documentElement.classList.toggle('mova-windows-desktop', windowsDesktop);
 const content = appRoute ? <MaintenanceFrame><ToastProvider><RealApp /></ToastProvider></MaintenanceFrame> : <LandingPage />;
 

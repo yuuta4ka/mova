@@ -107,10 +107,11 @@ describe('voice processing settings', () => {
 
     const microphone = screen.getByRole('combobox', { name: 'Устройство ввода' });
     const output = screen.getByRole('combobox', { name: 'Наушники или динамики' });
-    expect(within(microphone).getByRole('option', { name: 'По умолчанию' })).toBeInTheDocument();
-    expect(within(output).getByRole('option', { name: 'По умолчанию' })).toBeInTheDocument();
-    expect(await within(microphone).findByRole('option', { name: 'USB Microphone' })).toBeInTheDocument();
-    expect(await within(output).findByRole('option', { name: 'USB Speakers' })).toBeInTheDocument();
+    expect(microphone).toHaveTextContent('По умолчанию');
+    expect(output).toHaveTextContent('По умолчанию');
+    await userEvent.click(microphone);
+    expect(await screen.findByRole('option', { name: 'USB Microphone' })).toBeInTheDocument();
+    expect(output).toBeDisabled();
     expect(screen.queryByText(/0c76:161f|1234:abcd/iu)).not.toBeInTheDocument();
   });
 
@@ -152,7 +153,7 @@ describe('voice processing settings', () => {
     expect(screen.getByRole('button', { name: 'Аккаунт' })).toHaveClass('has-notice');
     await user.click(screen.getByRole('button', { name: 'Аккаунт' }));
     const notice = screen.getByRole('alert');
-    expect(notice).toHaveTextContent('Подтвердите текущую почту');
+    expect(notice).toHaveTextContent('Подтвердите почту');
     expect(screen.getByText('Требуется подтверждение')).toBeVisible();
 
     await user.click(within(notice).getByRole('button', { name: 'Отправить код' }));
@@ -172,12 +173,13 @@ describe('voice processing settings', () => {
     render(<SettingsModal user={currentUser} open onClose={onClose} onEditProfile={vi.fn()} />);
 
     const mode = screen.getByRole('combobox', { name: 'Шумоподавление' });
-    expect(mode).toHaveValue('enhanced');
-    expect(within(mode).getByRole('option', { name: 'Усиленное — голосовой фильтр RNNoise' })).toBeInTheDocument();
-    expect(within(mode).getByRole('option', { name: 'Стандартное — обработка браузера' })).toBeInTheDocument();
-    expect(within(mode).getByRole('option', { name: 'Выключено' })).toBeInTheDocument();
+    expect(mode).toHaveTextContent('Усиленное — голосовой фильтр RNNoise');
+    await user.click(mode);
+    expect(screen.getByRole('option', { name: 'Усиленное — голосовой фильтр RNNoise' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Стандартное — обработка браузера' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Выключено' })).toBeInTheDocument();
 
-    await user.selectOptions(mode, 'standard');
+    await user.click(screen.getByRole('option', { name: 'Стандартное — обработка браузера' }));
     await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
     expect(JSON.parse(localStorage.getItem('mova-audio-settings') || '{}')).toMatchObject({
       noiseSuppression: true,
@@ -334,12 +336,12 @@ describe('voice processing settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
     expect(await screen.findByText('v0.1.10')).toBeVisible();
-    expect(screen.getByText('v0.1.14')).toBeVisible();
+    expect(screen.getByText('v0.1.15')).toBeVisible();
     expect(screen.getByText('Доступно обновление')).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Скачать обновление' }));
 
     expect(open).toHaveBeenCalledWith(
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.14/Mova-0.1.14-arm64.dmg',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.15/Mova-0.1.15-arm64.dmg',
       '_blank',
       'noopener,noreferrer',
     );
@@ -367,7 +369,7 @@ describe('voice processing settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
     const application = await screen.findByRole('combobox', { name: 'Запущенное приложение' });
-    await waitFor(() => expect(application).toHaveValue('app-1'));
+    await waitFor(() => expect(application).toHaveTextContent('Tiny Indie'));
     await user.click(screen.getByRole('button', { name: 'Добавить игру' }));
 
     expect(registerGame).toHaveBeenCalledWith('app-1', 'Tiny Indie');
@@ -945,7 +947,7 @@ describe('Product unread message counters', () => {
 });
 
 describe('Product global voice dock', () => {
-  it('keeps one call session across chats, blocks a second call, returns without a new invite, and leaves only the current participant', async () => {
+  it('keeps a call across navigation and switches rooms without requiring the first room to end', async () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     const user = userEvent.setup();
@@ -998,10 +1000,6 @@ describe('Product global voice dock', () => {
     await user.click(secondChatButton);
     expect(dock).toBeVisible();
 
-    await user.click(screen.getByRole('button', { name: 'Позвонить' }));
-    expect(await screen.findByRole('status')).toHaveTextContent(`Вы уже находитесь в звонке «${firstFriend.name}»`);
-    expect(send).not.toHaveBeenCalledWith({ type: 'call:invite', conversationId: secondChat.id });
-
     await user.click(screen.getByRole('button', { name: `Вернуться в звонок с ${firstFriend.name}` }));
     await waitFor(() => expect(rendered.container.querySelector('.mova-call-stage')).toBeInTheDocument());
     expect(send).not.toHaveBeenCalledWith({ type: 'call:invite', conversationId: firstChat.id });
@@ -1013,21 +1011,26 @@ describe('Product global voice dock', () => {
     expect(screen.getByRole('button', { name: 'Включить микрофон' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Выключить звук в наушниках' }));
     expect(screen.getByRole('button', { name: 'Включить звук в наушниках' })).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Выйти из звонка' }));
-    await waitFor(() => expect(screen.queryByRole('region', { name: `Активный звонок с ${firstFriend.name}` })).not.toBeInTheDocument());
+    await user.click(secondChatButton);
+    await user.click(screen.getByRole('button', { name: 'Позвонить' }));
+    expect(send).not.toHaveBeenCalledWith({ type: 'call:invite', conversationId: secondChat.id });
+    act(() => realtime.listeners.forEach((listener) => listener({ type: 'call:state', conversationId: secondChat.id, status: 'idle', participants: [], joined: false })));
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'call:invite', conversationId: secondChat.id }));
     expect(send).toHaveBeenCalledWith({ type: 'voice:leave', conversationId: firstChat.id });
-
+    expect(audioTrack.stop).toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalledWith({ type: 'call:end', conversationId: firstChat.id });
+    // The old room is still active; its snapshot must not pull us back into it.
     act(() => realtime.listeners.forEach((listener) => listener({
-      type: 'call:state',
-      conversationId: firstChat.id,
-      status: 'active',
-      createdAt: '2026-08-10T12:00:00.000Z',
-      startedAt: '2026-08-10T12:00:03.000Z',
-      participants: [firstFriend.id],
-      room: [{ userId: firstFriend.id, connectionState: 'connected', muted: false, deafened: false, media: {} }],
-      joined: false,
+      type: 'call:state', conversationId: firstChat.id, status: 'active',
+      participants: [firstFriend.id], room: [{ userId: firstFriend.id, connectionState: 'connected', muted: false, deafened: false, media: {} }], joined: false,
     })));
-    expect(await screen.findByRole('button', { name: `Вернуться в звонок с ${firstFriend.name}` })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Исходящий звонок' })).toHaveTextContent(secondFriend.name);
+    act(() => realtime.listeners.forEach((listener) => listener({
+      type: 'call:state', conversationId: secondChat.id, status: 'active',
+      participants: [secondFriend.id], room: [{ userId: secondFriend.id, connectionState: 'connected', muted: false, deafened: false, media: {} }], joined: false,
+    })));
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'voice:join', conversationId: secondChat.id }));
+    expect(rendered.container.querySelector('.mova-call-stage')).toHaveTextContent(secondFriend.name);
     rendered.unmount();
   });
 });

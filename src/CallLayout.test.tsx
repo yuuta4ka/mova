@@ -163,7 +163,7 @@ describe('call layout', () => {
 
     expect(await screen.findByRole('region', { name: 'Активный звонок с Друг' })).toBeVisible();
     expect(container.querySelector('.mova-active-call-banner__details>strong')).toHaveTextContent('Звонок идёт');
-    expect(container.querySelector('.mova-active-call-banner__details>small')).toHaveTextContent('Друг · 01:23');
+    expect(container.querySelector('.mova-active-call-banner__details>small')).toHaveTextContent('Вернуться в звонок');
     expect(container.querySelector('.mova-active-call-banner__icon')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Вернуться в звонок с Друг' }));
     expect(callMedia.accept).toHaveBeenCalledOnce();
@@ -415,11 +415,9 @@ describe('call layout', () => {
     } as unknown as MediaStream;
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    await screen.findByText('Ваш экран');
-    const grid = container.querySelector('.mova-call-grid.has-screen');
-    expect(grid).toHaveAttribute('data-call-layout', 'screen-share');
-    expect(grid?.querySelector('.mova-call-screen-area .mova-call-tile.is-screen')).toBeInTheDocument();
-    expect(grid?.querySelector('.mova-call-participants .mova-call-tile')).toBeInTheDocument();
+    const grid = container.querySelector('.mova-call-grid.is-participants');
+    expect(grid?.querySelector('.mova-call-tile.is-screen.is-self video')).toBeInTheDocument();
+    expect(container.querySelectorAll('.mova-call-tile.is-self')).toHaveLength(1);
     expect(container.querySelector('.mova-call-tile.is-screen')).not.toHaveClass('is-speaking');
   });
 
@@ -451,7 +449,8 @@ describe('call layout', () => {
   });
 
   it('hides and restores the participant rail without removing participants', async () => {
-    callMedia.screenStream = mediaStream('screen-rail');
+    callMedia.remoteVideoStreams = [{ userId: friend.id, streamId: 'screen-rail', stream: mediaStream('screen-rail') }];
+    callMedia.remoteMedia = { [friend.id]: { screen: 'screen-rail' } };
     callMedia.participants = ['friend'];
     const user = userEvent.setup();
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
@@ -713,9 +712,9 @@ describe('call layout', () => {
     const selfView = container.querySelector('.mova-call-self-view .mova-call-tile');
     expect(primary).toHaveTextContent('Друг');
     expect(primary).not.toHaveTextContent('· вы');
-    expect(selfView).toHaveTextContent('Юта · вы');
+    expect(selfView).toHaveTextContent('Юта');
     expect(selfView).toHaveAttribute('data-self-view', 'true');
-    expect(screen.queryByRole('button', { name: 'Открыть Юта · вы на весь экран' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Открыть Юта на весь экран' })).not.toBeInTheDocument();
   });
 
   it('does not expand a remote avatar tile and keeps its participant controls available', async () => {

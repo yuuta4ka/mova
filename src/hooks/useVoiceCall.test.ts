@@ -533,3 +533,29 @@ describe('voice call state model', () => {
     expect(sessionStorage.getItem('mova-active-call')).toBe('chat');
   });
 });
+
+describe('desktop capture quality', () => {
+  it('applies the picker override to the captured video without changing saved defaults', async () => {
+    let emit: (event: RealtimeEvent) => void = () => undefined;
+    vi.spyOn(realtime, 'subscribe').mockImplementation(listener => { emit = listener; return () => undefined; });
+    vi.spyOn(realtime, 'send').mockImplementation(() => undefined);
+    vi.spyOn(api, 'rtcConfig').mockResolvedValue({iceServers: []});
+    const audioTrack = {kind:'audio',enabled:true,readyState:'live',stop:vi.fn(),applyConstraints:vi.fn().mockResolvedValue(undefined)};
+    const videoTrack = {kind:'video',enabled:true,readyState:'live',stop:vi.fn(),applyConstraints:vi.fn().mockResolvedValue(undefined),getSettings:()=>({displaySurface:'window'}),contentHint:''};
+    const stream = {id:'selected-screen',getTracks:()=>[videoTrack],getVideoTracks:()=>[videoTrack],getAudioTracks:()=>[]} as unknown as MediaStream;
+    const getDisplayMedia = vi.fn(async () => {
+      window.dispatchEvent(new CustomEvent('mova-screen-share-selection',{detail:{width:2560,height:1440,frameRate:60}}));
+      return stream;
+    });
+    window.movaDesktopShell = {platform:'darwin'} as typeof window.movaDesktopShell;
+    vi.stubGlobal('navigator',{...navigator,mediaDevices:{getUserMedia:vi.fn().mockResolvedValue({getAudioTracks:()=>[audioTrack],getTracks:()=>[audioTrack]}),getDisplayMedia}});
+    const {result} = renderHook(()=>useVoiceCall('quality-chat','me'));
+    act(()=>result.current.call());
+    await act(async()=>emit({type:'call:accept',conversationId:'quality-chat',fromUserId:'friend',startedAt:new Date().toISOString()}));
+    await act(async()=>result.current.shareScreen({width:1280,height:720,frameRate:15,systemAudioEnabled:false}));
+    expect(getDisplayMedia).toHaveBeenCalledOnce();
+    expect(videoTrack.applyConstraints).toHaveBeenCalledWith({width:{ideal:2560},height:{ideal:1440},frameRate:{ideal:60,max:60}});
+    expect(result.current.screenStream).toBe(stream);
+    expect(localStorage.getItem('mova-screen-share-settings')).toBeNull();
+  });
+});
