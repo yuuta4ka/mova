@@ -2341,16 +2341,40 @@ function CallFloatingLayer({ portalled, children }: { portalled: boolean; childr
 
 const selfViewMinWidth = 72;
 const selfViewMaxWidth = 320;
-function ResizableSelfView({ children }: { children: ReactNode }) {
+function ResizableSelfView({ children, floating = true }: { children: ReactNode; floating?: boolean }) {
   const mobile = useMobileNavigationViewport();
   const [width, setWidth] = useState<number | null>(null);
+  const elementRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ right: number; bottom: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; right: number; bottom: number } | null>(null);
+  const moved = useRef(false);
+  const constrainPosition = useCallback((right: number, bottom: number) => {
+    const element = elementRef.current;
+    const parent = element?.parentElement;
+    return { right: Math.max(8, Math.min(right, (parent?.clientWidth || window.innerWidth) - (element?.offsetWidth || 112) - 8)), bottom: Math.max(8, Math.min(bottom, (parent?.clientHeight || window.innerHeight) - (element?.offsetHeight || 150) - 8)) };
+  }, []);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinch = useRef<{ distance: number; width: number } | null>(null);
   const clampWidth = useCallback((value: number) => {
     const viewportWidth = window.visualViewport?.width || window.innerWidth || 390;
-    const maximum = Math.max(selfViewMinWidth, Math.min(selfViewMaxWidth, viewportWidth - 20, viewportWidth * .72));
+    const maximum = Math.max(selfViewMinWidth, Math.min(selfViewMaxWidth, viewportWidth - 20, viewportWidth * .72, (elementRef.current?.parentElement?.clientHeight || window.innerHeight) * .65));
     return Math.round(Math.min(maximum, Math.max(selfViewMinWidth, value)));
   }, []);
+  useEffect(() => {
+    const parent = elementRef.current?.parentElement;
+    if (!parent || !floating || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      setWidth(value => value === null ? value : clampWidth(value));
+      setPosition(value => {
+        if (!value) return value;
+        const next = constrainPosition(value.right, value.bottom);
+        return next.right === value.right && next.bottom === value.bottom ? value : next;
+      });
+    });
+    observer.observe(parent);
+    observer.observe(elementRef.current!);
+    return () => observer.disconnect();
+  }, [floating, constrainPosition, clampWidth]);
   const beginPinch = (element: HTMLDivElement) => {
     if (pointers.current.size !== 2) return;
     const [first, second] = [...pointers.current.values()];
@@ -2360,15 +2384,29 @@ function ResizableSelfView({ children }: { children: ReactNode }) {
     };
   };
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!mobile || event.pointerType !== 'touch') return;
+    if (!mobile || !floating || (event.target as Element).closest('button')) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.current.size === 1) {
+      moved.current = false;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const parent = event.currentTarget.parentElement!.getBoundingClientRect();
+      drag.current = { x: event.clientX, y: event.clientY, right: parent.right - rect.right, bottom: parent.bottom - rect.bottom };
+    }
     beginPinch(event.currentTarget);
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!mobile || !pointers.current.has(event.pointerId)) return;
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.current.size === 1 && drag.current) {
+      const gesture = drag.current;
+      const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
+      if (Math.hypot(dx, dy) > 4) moved.current = true;
+      if (moved.current) { event.preventDefault(); setPosition(constrainPosition(gesture.right - dx, gesture.bottom - dy)); }
+      return;
+    }
     if (pointers.current.size !== 2) return;
+    moved.current = true;
     if (!pinch.current) beginPinch(event.currentTarget);
     const gesture = pinch.current;
     if (!gesture) return;
@@ -2381,7 +2419,7 @@ function ResizableSelfView({ children }: { children: ReactNode }) {
     if (!pointers.current.has(event.pointerId)) return;
     pointers.current.delete(event.pointerId);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
-    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size < 2) { pinch.current = null; drag.current = null; }
   };
   useEffect(() => {
     if (mobile) return;
@@ -2390,9 +2428,11 @@ function ResizableSelfView({ children }: { children: ReactNode }) {
   }, [mobile]);
   return (
     <div
+      ref={elementRef}
       className="mova-call-self-view"
-      data-pinch-resizable={mobile ? 'true' : undefined}
-      style={mobile && width ? { width: `${width}px` } : undefined}
+      onClickCapture={event => { if (moved.current) { event.preventDefault(); event.stopPropagation(); moved.current = false; } }}
+      data-pinch-resizable={mobile && floating ? 'true' : undefined}
+      style={mobile && floating ? { ...(width ? { width: `${width}px` } : {}), ...position } : undefined}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}
@@ -2410,6 +2450,7 @@ const isScreenAudioWarning = (error: string) => error.startsWith(screenAudioWarn
 type VoiceCallController = ReturnType<typeof useVoiceCall>;
 
 function VoiceCallBar({ conversation, callConversation, currentUser, call, canvasOpen, stageHost, bannerHost, chatOpen, unreadCount, onToggleChat, onOpenCanvas, onMinimizeCanvas, onStartCall, canCall = true, onOpenSettings = () => window.dispatchEvent(new Event('mova-open-settings')) }: { conversation: AppConversation; callConversation: AppConversation; currentUser: AppUser; call: VoiceCallController; canvasOpen: boolean; stageHost: HTMLElement | null; bannerHost: HTMLElement | null; chatOpen: boolean; unreadCount: number; onToggleChat: () => void; onOpenCanvas: () => void; onMinimizeCanvas: () => void; onStartCall: (video: boolean) => void; canCall?: boolean; onOpenSettings?: () => void }) {
+  const mobileCall = useMobileNavigationViewport();
   const callState = normalizeCallState(call.state);
   const sameConversation = conversation.id === callConversation.id;
   const [moreOpen, setMoreOpen] = useState(false);
@@ -2624,10 +2665,11 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const remoteParticipantIds = Array.from(new Set([...call.participants, ...invitedIds, ...remoteTiles.map((tile) => tile.userId)]))
       // Speech and connection updates must not move controls under the pointer.
       .map((userId) => ({ userId, connectionState: participantConnectionState(userId) }));
+    const openMobileCamera = mobileCall ? (chatOpen ? onToggleChat : null) : undefined;
     const remoteParticipantTiles: ReactNode[] = [];
     const selfTile = showSelf
       ? localCamera ? (
-          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={currentUser.name} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView onExpandedStateChange={setExpandedMedia} />
+          <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={currentUser.name} mirrored kind="camera" onOpenCamera={openMobileCamera} muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView onExpandedStateChange={setExpandedMedia} />
         ) : (
           <CallAvatarTile key="local-avatar" participantId={currentUser.id} user={currentUser} label={currentUser.name} muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
         )
@@ -2654,13 +2696,15 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
         },
       };
       remoteParticipantTiles.push(cameraTile ? (
-        <CallVideoTile key={`${userId}-${cameraTile.streamId}`} {...sharedProps} stream={cameraTile.stream} kind="camera" onExpandedStateChange={setExpandedMedia} />
+        <CallVideoTile key={`${userId}-${cameraTile.streamId}`} {...sharedProps} stream={cameraTile.stream} kind="camera" onOpenCamera={openMobileCamera} onExpandedStateChange={setExpandedMedia} />
       ) : (
         <CallAvatarTile key={userId} {...sharedProps} user={user} />
       ));
     });
     const participantTiles = [...remoteParticipantTiles, ...(selfTile ? [selfTile] : [])];
     const participantRailTiles = participantTiles;
+    const cameraLayout = Boolean(selfTile && localCamera) || cameraTiles.length > 0;
+    const localIsPrimary = mobileCall && !chatOpen && remoteParticipantTiles.length === 1 && Boolean(selfTile && localCamera) && cameraTiles.length === 0;
 
     return stageHost
       ? createPortal(
@@ -2741,10 +2785,10 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                 </div>
               </div>
             ) : (
-              <div className="mova-call-grid is-participants" data-call-layout="participants" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length}>
-                <div className="mova-call-primary-participant">{participantTiles[0]}</div>
+              <div className="mova-call-grid is-participants" data-camera-layout={cameraLayout ? "true" : "false"} data-call-layout="participants" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length}>
+                <div className="mova-call-primary-participant">{localIsPrimary ? selfTile : participantTiles[0]}</div>
                 {remoteParticipantTiles.length > 1 && <div className="mova-call-secondary-participants">{remoteParticipantTiles.slice(1)}</div>}
-                {selfTile && remoteParticipantTiles.length > 0 && <ResizableSelfView>{selfTile}</ResizableSelfView>}
+                {selfTile && remoteParticipantTiles.length > 0 && <ResizableSelfView floating={mobileCall && !chatOpen && cameraLayout}>{localIsPrimary ? remoteParticipantTiles[0] : selfTile}</ResizableSelfView>}
               </div>
             )}
             <CallFloatingLayer portalled={expandedMedia}>
@@ -3115,9 +3159,9 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
     <article
       className={`mova-call-tile ${className} ${speaking && !muted ? 'is-speaking' : ''} ${expanded ? `is-expanded ${expandedUiVisible ? 'is-ui-visible' : 'is-ui-hidden'}${expandedClosing ? ' is-exiting' : ''}` : ''}`}
       style={screen && mediaAspectRatio ? { '--mova-call-source-ratio': mediaAspectRatio } as CSSProperties : undefined}
-      role={screen && !expanded ? 'button' : undefined}
-      tabIndex={screen && !expanded ? 0 : undefined}
-      aria-label={screen ? fullscreenLabel : undefined}
+      role={expandable && !expanded ? 'button' : undefined}
+      tabIndex={expandable && !expanded ? 0 : undefined}
+      aria-label={expandable ? fullscreenLabel : undefined}
       data-speaking={speaking && !muted ? 'true' : undefined}
       data-participant-id={participantId}
       data-participant-connection={connectionState}
@@ -3126,12 +3170,11 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
       data-expanded-ui={expanded ? (expandedUiVisible ? 'visible' : 'hidden') : undefined}
       data-expanded-motion={expanded ? (reducedMotion ? 'reduced' : 'animated') : undefined}
       onClick={(event) => {
-        if (!screen || !expandable || (event.target as Element).closest('button')) return;
+        if (!expandable || (event.target as Element).closest('button')) return;
         requestExpandedChange(!expanded);
       }}
-      onDoubleClick={() => !screen && expandable && requestExpandedChange(!expanded)}
       onKeyDown={(event) => {
-        if (screen && (event.key === 'Enter' || event.key === ' ')) {
+        if (expandable && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
           requestExpandedChange(!expanded);
         }
@@ -3151,7 +3194,7 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
           <b>{participantConnectionLabels[connectionState]}</b>
         </span>
       )}
-      {expandable && (!screen || expanded) && (
+      {expandable && expanded && (
         <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => requestExpandedChange(!expanded)}>
           {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
         </button>
@@ -3162,14 +3205,15 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
   );
   return expanded ? createPortal(tile, document.body) : tile;
 }
-function CallVideoTile({ participantId, stream, label, kind, mirrored = false, muted, deafened, speaking = false, connectionState, screenSharing = false, selfView = false, volume, onExpandedStateChange }: { participantId: string; stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl; onExpandedStateChange?: (expanded: boolean) => void }) {
+function CallVideoTile({ participantId, stream, label, kind, mirrored = false, muted, deafened, speaking = false, connectionState, screenSharing = false, selfView = false, volume, onExpandedStateChange, onOpenCamera }: { participantId: string; stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl; onExpandedStateChange?: (expanded: boolean) => void; onOpenCamera?: (() => void) | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [sourceAspectRatio, setSourceAspectRatio] = useState(() => kind === 'screen' ? streamAspectRatio(stream) : undefined);
   const changeExpanded = useCallback((next: boolean) => {
+    if (next && kind === 'camera' && onOpenCamera !== undefined) { onOpenCamera?.(); return; }
     setExpanded(next);
     onExpandedStateChange?.(next);
-  }, [onExpandedStateChange]);
+  }, [onExpandedStateChange, onOpenCamera, kind]);
   useEffect(() => () => {
     if (expanded) onExpandedStateChange?.(false);
   }, [expanded, onExpandedStateChange]);
@@ -3187,7 +3231,7 @@ function CallVideoTile({ participantId, stream, label, kind, mirrored = false, m
     syncSourceAspectRatio();
   }, [stream, expanded, syncSourceAspectRatio]);
   return (
-    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} screenSharing={screenSharing || kind === 'screen'} speaking={speaking} connectionState={connectionState} expandable={!selfView || kind === 'screen'} expanded={expanded} onExpandedChange={changeExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
+    <CallTileShell className={`has-video is-${kind}${selfView ? ' is-self' : ''}`} participantId={participantId} label={label} muted={muted} deafened={deafened} screen={kind === 'screen'} screenSharing={screenSharing || kind === 'screen'} speaking={speaking} connectionState={connectionState} expandable={kind === 'screen' || onOpenCamera !== null} expanded={expanded} onExpandedChange={changeExpanded} volume={volume} mediaAspectRatio={sourceAspectRatio}>
       <video ref={videoRef} autoPlay playsInline muted className={mirrored ? 'is-mirrored' : ''} onLoadedMetadata={syncSourceAspectRatio} onResize={syncSourceAspectRatio} />
     </CallTileShell>
   );
@@ -3210,7 +3254,7 @@ function CallTileLabel({ label, muted, deafened, screen, screenSharing }: { labe
           {(screen || screenSharing) && <MonitorUp size={14} aria-label="Демонстрация экрана включена" />}
         </span>
       )}
-      {label}
+      <span className="mova-call-label__name">{label}</span>
     </span>
   );
 }

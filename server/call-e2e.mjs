@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { installPortraitCamera, verifyMobileCameras } from './call-camera-regression.mjs';
 import { verifyCallMedia } from './call-media-regression.mjs';
 
 const testDirectory = await mkdtemp(join(tmpdir(), 'mova-call-e2e-'));
@@ -39,6 +40,10 @@ try {
   const suffix = Date.now();
   const first = await api('/api/register', 'POST', { name: 'Звонящий', email: `caller.${suffix}@mova.test`, password: 'strongpass1' });
   const second = await api('/api/register', 'POST', { name: 'Принимающий', email: `callee.${suffix}@mova.test`, password: 'strongpass2' });
+  if (process.env.MOVA_TEST_CAMERA === '1') {
+    const avatarDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=';
+    await Promise.all([first, second].map(user => api('/api/profile', 'PATCH', { name: user.user.name, handle: user.user.handle, avatarDataUrl }, user.token)));
+  }
   await api(`/api/friends/${second.user.id}`, 'POST', undefined, first.token);
   await api(`/api/friends/${first.user.id}`, 'PATCH', undefined, second.token);
   const conversation = await api('/api/conversations', 'POST', { kind: 'direct', memberIds: [second.user.id] }, first.token);
@@ -177,6 +182,7 @@ try {
 
   if (process.env.MOVA_TEST_SCREEN === '1') await verifyCallMedia(caller, callee);
 
+  if (process.env.MOVA_TEST_CAMERA === '1') await Promise.all([installPortraitCamera(caller.page), installPortraitCamera(callee.page)]);
   await Promise.all([
     caller.page.getByRole('button', { name: 'Включить камеру' }).click(),
     callee.page.getByRole('button', { name: 'Включить камеру' }).click(),
@@ -192,7 +198,8 @@ try {
     return videos.length === 2 && videos.every(video => video.videoWidth > 0 && video.readyState >= 2);
   }, null, { timeout: 10000 })));
   if (await caller.page.getByRole('button', { name: /Открыть .* · вы на весь экран/ }).count()) throw new Error('The local preview must not replace the remote participant');
-  if (process.env.MOVA_CALL_SCREENSHOT) {
+  if (process.env.MOVA_TEST_CAMERA === '1') await verifyMobileCameras(caller, callee);
+  if (process.env.MOVA_CALL_SCREENSHOT && process.env.MOVA_TEST_CAMERA !== '1') {
     await caller.page.screenshot({ path: process.env.MOVA_CALL_SCREENSHOT });
     await caller.page.locator('.mova-call-primary-participant').getByRole('button', { name: /Открыть .* на весь экран/ }).click();
     await caller.page.locator('.mova-call-self-view .mova-call-tile.is-self').waitFor({ state: 'visible' });

@@ -115,7 +115,7 @@ describe('call layout', () => {
   it('keeps the same participant slot when camera switches between on and off', () => {
     const cameraUser = participant(1);
     const view = renderParticipantCount(2, [cameraUser.id]);
-    const getRemoteTile = () => screen.getByText(cameraUser.name, { selector: '.mova-call-label' }).closest('.mova-call-tile');
+    const getRemoteTile = () => screen.getByText(cameraUser.name, { selector: '.mova-call-label__name' }).closest('.mova-call-tile');
 
     expect(getRemoteTile()).toHaveClass('has-video', 'is-camera');
     expect(screen.getByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` })).toBeInTheDocument();
@@ -536,7 +536,7 @@ describe('call layout', () => {
     callMedia.remoteVoiceStates = { friend: { muted: true } };
     callMedia.speakingUsers = { friend: true };
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
-    const remoteTile = screen.getByText('Друг', { selector: '.mova-call-label' }).closest('.mova-call-tile');
+    const remoteTile = screen.getByText('Друг', { selector: '.mova-call-label__name' }).closest('.mova-call-tile');
 
     expect(remoteTile?.querySelector('[aria-label="Микрофон выключен"]')).toBeInTheDocument();
     expect(remoteTile).not.toHaveClass('is-speaking');
@@ -692,7 +692,7 @@ describe('call layout', () => {
     expect(document.body.querySelector('.mova-call-tile.is-expanded')).not.toBeInTheDocument();
   });
 
-  it('keeps remote media primary and expanded media inside the call canvas on mobile', async () => {
+  it('opens the mobile call by tapping a camera and supports bounded pinch and drag', async () => {
     vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
       matches: query.includes('max-width: 760px') || query.includes('pointer: coarse'),
       media: query,
@@ -707,6 +707,8 @@ describe('call layout', () => {
     const { container } = renderParticipantCount(2, [cameraUser.id]);
 
     expect(container.querySelector('.mova-call-primary-participant .mova-call-label')).toHaveTextContent(cameraUser.name);
+    fireEvent.click(await screen.findByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` }));
+    expect(container.querySelector('.is-call-inline')).toBeNull();
     const selfViewContainer = container.querySelector('.mova-call-self-view') as HTMLDivElement;
     const selfView = container.querySelector('.mova-call-self-view .mova-call-tile');
     expect(selfViewContainer).toHaveAttribute('data-pinch-resizable', 'true');
@@ -722,11 +724,35 @@ describe('call layout', () => {
     expect(selfViewContainer).toHaveStyle({ width: '72px' });
     fireEvent.pointerUp(selfViewContainer, { pointerId: 1, pointerType: 'touch', clientX: 0, clientY: 0 });
     fireEvent.pointerUp(selfViewContainer, { pointerId: 2, pointerType: 'touch', clientX: 20, clientY: 0 });
-    fireEvent.click(await screen.findByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` }));
+    expect(screen.queryByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` })).toBeNull();
     const expanded = document.body.querySelector('.mova-call-tile.is-expanded');
-    expect(expanded).toBeInTheDocument();
-    expect(expanded?.parentElement).toBe(document.body);
+    expect(expanded).toBeNull();
     expect(container.querySelector('.mova-call-self-view .is-self')).toBeInTheDocument();
+  });
+
+  it('promotes the only active camera in a full mobile call and restores remote-first when both send video', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: query.includes('max-width: 760px'), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    callMedia.cameraStream = mediaStream('self');
+    callMedia.participants = ['friend'];
+    const props = { conversation, currentUser, messages: [], onSend: vi.fn().mockResolvedValue(undefined) };
+    const { container, rerender } = render(<RealMessages {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть звонок' }));
+    expect(container.querySelector('.mova-call-primary-participant .is-camera')).toHaveAttribute('data-self-view', 'true');
+    expect(container.querySelector('.mova-call-self-view .is-avatar')).toHaveAttribute('data-participant-id', 'friend');
+    callMedia.remoteVideoStreams = [{ userId: 'friend', streamId: 'remote', stream: mediaStream('remote') }];
+    rerender(<RealMessages {...props} />);
+    expect(container.querySelector('.mova-call-primary-participant .is-camera')).toHaveAttribute('data-participant-id', 'friend');
+    const pip = container.querySelector('.mova-call-self-view') as HTMLDivElement;
+    vi.spyOn(pip, 'getBoundingClientRect').mockReturnValue({ width: 112, height: 150, x: 200, y: 300, top: 300, left: 200, right: 312, bottom: 450, toJSON: () => ({}) });
+    vi.spyOn(pip.parentElement!, 'getBoundingClientRect').mockReturnValue({ width: 390, height: 600, x: 0, y: 0, top: 0, left: 0, right: 390, bottom: 600, toJSON: () => ({}) });
+    fireEvent.pointerDown(pip, { pointerId: 1, pointerType: 'touch', clientX: 240, clientY: 340 });
+    fireEvent.pointerMove(pip, { pointerId: 1, pointerType: 'touch', clientX: 140, clientY: 240 });
+    expect(pip).toHaveStyle({ right: '178px', bottom: '250px' });
+    fireEvent.pointerMove(pip, { pointerId: 1, pointerType: 'touch', clientX: 1400, clientY: 2400 });
+    expect(pip).toHaveStyle({ right: '8px', bottom: '8px' });
+    fireEvent.pointerUp(pip, { pointerId: 1, pointerType: 'touch' });
+    fireEvent.click(pip.querySelector('article')!);
+    expect(document.querySelector('.is-expanded')).toBeNull();
   });
 
   it('keeps the remote participant primary and the local preview separate', async () => {
@@ -742,14 +768,14 @@ describe('call layout', () => {
     expect(primary).not.toHaveTextContent('· вы');
     expect(selfView).toHaveTextContent('Юта');
     expect(selfView).toHaveAttribute('data-self-view', 'true');
-    expect(screen.queryByRole('button', { name: 'Открыть Юта на весь экран' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Открыть Юта на весь экран' }).tagName).toBe('ARTICLE');
   });
 
   it('does not expand a remote avatar tile and keeps its participant controls available', async () => {
     callMedia.participants = ['friend'];
     render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    const friendLabel = screen.getByText('Друг', { selector: '.mova-call-label' });
+    const friendLabel = screen.getByText('Друг', { selector: '.mova-call-label__name' });
     const friendTile = friendLabel.closest('article')!;
     expect(screen.queryByRole('button', { name: 'Открыть Друг на весь экран' })).not.toBeInTheDocument();
     fireEvent.doubleClick(friendTile);

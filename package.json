@@ -4,7 +4,7 @@
   "description": "Десктопный клиент мессенджера Mova",
   "author": "Mova",
   "private": true,
-  "version": "0.1.17",
+  "version": "0.1.18",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
