@@ -415,10 +415,33 @@ describe('call layout', () => {
     } as unknown as MediaStream;
     const { container } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    const grid = container.querySelector('.mova-call-grid.is-participants');
-    expect(grid?.querySelector('.mova-call-tile.is-screen.is-self video')).toBeInTheDocument();
-    expect(container.querySelectorAll('.mova-call-tile.is-self')).toHaveLength(1);
+    const grid = container.querySelector('.mova-call-grid.has-screen');
+    expect(grid?.querySelector('.mova-call-screen-area .mova-call-tile.is-screen.is-self video')).toBeInTheDocument();
+    expect(grid?.querySelectorAll('.mova-call-participants .mova-call-tile.is-self')).toHaveLength(1);
+    expect(grid?.querySelector('.mova-call-participants .mova-call-tile.is-self')).toHaveClass('is-avatar');
     expect(container.querySelector('.mova-call-tile.is-screen')).not.toHaveClass('is-speaking');
+  });
+
+  it('keeps every person present when local and remote screens and a camera coexist', () => {
+    callMedia.participants = [friend.id];
+    callMedia.screenStream = screenStream('local', { width: 1920, height: 1080 });
+    callMedia.cameraStream = mediaStream('camera');
+    callMedia.remoteVideoStreams = [{ userId: friend.id, streamId: 'phone', stream: screenStream('phone', { width: 480, height: 1040 }) }];
+    callMedia.remoteMedia = { [friend.id]: { screen: 'phone' } };
+    const props = { conversation, currentUser, messages: [], onSend: vi.fn() };
+    const { container, rerender } = render(<RealMessages {...props} />);
+    expect(container.querySelectorAll('.mova-call-screen-cell')).toHaveLength(2);
+    expect(container.querySelectorAll('.mova-call-participants .mova-call-tile')).toHaveLength(2);
+    expect(container.querySelector('.mova-call-participants .is-self')).toHaveClass('is-camera');
+    callMedia.screenStream = null;
+    rerender(<RealMessages {...props} />);
+    expect(container.querySelectorAll('.mova-call-screen-cell')).toHaveLength(1);
+    expect(container.querySelectorAll('.mova-call-participants .mova-call-tile')).toHaveLength(2);
+    callMedia.remoteVideoStreams = [];
+    callMedia.remoteMedia = {};
+    rerender(<RealMessages {...props} />);
+    expect(container.querySelector('.mova-call-grid')).toHaveAttribute('data-call-layout', 'participants');
+    expect(container.querySelectorAll('.mova-call-grid .mova-call-tile')).toHaveLength(2);
   });
 
   it('sizes screen sharing from stream settings and refreshes from video metadata', async () => {
@@ -582,7 +605,7 @@ describe('call layout', () => {
 
     expect(expanded).not.toBeNull();
     expect(expanded?.parentElement).toBe(document.body);
-    expect(expanded?.querySelector('.mova-call-fullscreen')).not.toBeInTheDocument();
+    expect(expanded?.querySelector('.mova-call-fullscreen')).toHaveAttribute('aria-label', 'Закрыть полноэкранный режим');
     expect(document.querySelector('.mova-call-controls')).toBeInTheDocument();
 
     vi.useFakeTimers();
@@ -700,9 +723,10 @@ describe('call layout', () => {
     fireEvent.pointerUp(selfViewContainer, { pointerId: 1, pointerType: 'touch', clientX: 0, clientY: 0 });
     fireEvent.pointerUp(selfViewContainer, { pointerId: 2, pointerType: 'touch', clientX: 20, clientY: 0 });
     fireEvent.click(await screen.findByRole('button', { name: `Открыть ${cameraUser.name} на весь экран` }));
-    const expanded = container.querySelector('.mova-call-tile.is-expanded');
+    const expanded = document.body.querySelector('.mova-call-tile.is-expanded');
     expect(expanded).toBeInTheDocument();
-    expect(expanded?.parentElement).not.toBe(document.body);
+    expect(expanded?.parentElement).toBe(document.body);
+    expect(container.querySelector('.mova-call-self-view .is-self')).toBeInTheDocument();
   });
 
   it('keeps the remote participant primary and the local preview separate', async () => {

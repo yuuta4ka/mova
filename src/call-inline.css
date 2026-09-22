@@ -23,10 +23,6 @@
 .mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer:hover>i,.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer:focus-visible>i{background:#ab97e8}
 .mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-more,.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-screen-menu{top:calc(100% + 12px);bottom:auto;z-index:25;max-height:min(420px,50dvh);overflow-y:auto}
 .mova-refined .mova-open-chat.is-in-call.is-call-inline:has(.mova-call-grid.has-screen)>.mova-call-host,.mova-refined .mova-open-chat.is-in-call.is-call-inline:has(.mova-call-tile.has-video)>.mova-call-host{min-height:240px}
-.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.has-screen{min-height:0;padding:0;gap:8px}
-.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participant-rail{height:82px}
-.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participant-rail.is-collapsed{height:26px}
-.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participants>.mova-call-tile{height:60px;width:80px;min-width:80px}
 .mova-refined .mova-call-stage.is-ringing .mova-call-tile:not(.is-self)>.mova-avatar{animation:mova-avatar-calling 1.8s ease-in-out infinite;outline:1px solid #ab9de0;outline-offset:4px}
 @keyframes mova-avatar-calling{0%,100%{opacity:1;transform:scale(1);outline-color:#ab9de0}50%{opacity:.55;transform:scale(.95);outline-color:transparent}}
 @keyframes mova-panel-appear{from{opacity:0;translate:0 4px}to{opacity:1;translate:0 0}}
@@ -40,9 +36,105 @@
 .mova-refined .mova-call-stage.is-ringing .mova-call-header-tools{visibility:hidden}
 
 .mova-refined .mova-real-thread.is-call-inline{--mova-call-stage-size:var(--mova-call-stage-height,280px)}
-.mova-refined .mova-real-thread.is-call-inline:has(.mova-call-tile.has-video){--mova-call-stage-size:max(var(--mova-call-stage-height,280px),440px)}
 /* Connection changes stay legible without covering the portrait. */
 .mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-participant-state{position:absolute;top:8px;right:10px;left:auto;bottom:auto;width:8px;height:8px;min-width:0;padding:0;overflow:hidden;font-size:0;border:0;border-radius:50%;background:#d0b571;box-shadow:none;transform:none}
 .mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participant-state>i{display:none}
 .mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-stage.is-ringing .mova-call-participant-state{display:none}
 .mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-self>.mova-call-label{display:flex}
+
+/* Screen sources and people occupy separate tracks. Each source owns a size
+   container, so portrait, landscape and simultaneous shares fit independently. */
+.mova-refined .mova-open-chat.is-in-call .mova-call-grid.has-screen {
+  display:grid; grid-template-columns:minmax(0,1fr) 112px;
+  grid-template-rows:minmax(0,1fr); grid-auto-rows:auto;
+  flex:1; width:100%; min-width:0; min-height:0; padding:0; gap:16px; overflow:hidden;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-screen-area {
+  display:grid; align-items:stretch; justify-content:stretch; grid-template-columns:repeat(var(--mova-screen-columns,1),minmax(0,1fr));
+  grid-template-rows:repeat(var(--mova-screen-rows,1),minmax(0,1fr)); gap:12px; min-width:0; min-height:0; container-type:normal;
+}
+.mova-call-screen-cell {display:grid;place-items:center;min-width:0;min-height:0;container-type:size}
+.mova-refined .mova-open-chat.is-in-call .mova-call-screen-cell>.mova-call-tile.is-screen:not(.is-expanded) {
+  position:relative; inset:auto; transform:none; flex:none;
+  width:min(100cqw,calc(100cqh * var(--mova-call-source-ratio,1.6)));
+  height:min(100cqh,calc(100cqw / var(--mova-call-source-ratio,1.6)));
+  min-width:0;min-height:0;max-width:100%;max-height:100%;margin:0;padding:0;
+  border:1px solid #363940;border-radius:12px;aspect-ratio:var(--mova-call-source-ratio,1.6);
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-screen-cell video {object-fit:contain}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participant-rail {
+  position:relative;display:flex;flex-direction:column;gap:4px;
+  width:112px;height:100%;min-height:0;overflow:hidden;transition:none;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participant-rail-toggle {
+  position:static;flex:0 0 24px;align-self:center;width:30px;height:24px;
+  opacity:1;transform:none;box-shadow:none;border:0;background:transparent;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants {
+  display:flex;flex:1;flex-direction:column;align-items:center;justify-content:safe center;
+  gap:14px;min-height:0;height:auto;padding:6px;overflow:auto;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-grid.has-screen.is-rail-collapsed {grid-template-columns:minmax(0,1fr) 30px}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participant-rail.is-collapsed {width:30px;height:100%}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participant-rail.is-collapsed>.mova-call-participants {display:none}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-avatar {
+  display:flex;position:relative;inset:auto;transform:none;flex:0 0 94px;
+  align-items:center;justify-content:center;flex-direction:column;gap:4px;
+  width:92px;height:94px;min-width:0;min-height:0;padding:0;
+  background:none;border:0;border-radius:0;box-shadow:none;overflow:visible;container-type:normal;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-avatar>.mova-avatar {
+  position:static;inset:auto;transform:none;width:60px;height:60px;flex:0 0 60px;font-size:24px;
+  outline:1px solid transparent;outline-offset:3px;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-speaking>.mova-avatar {outline-color:#88b9a2}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile>.mova-call-label {
+  position:static;inset:auto;display:flex;max-width:100%;height:22px;min-height:22px;padding:0;font-size:12px;line-height:22px;background:none;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-camera:not(.is-expanded) {
+  position:relative;inset:auto;transform:none;flex:0 0 76px;width:100px;height:76px;min-width:0;min-height:0;border-radius:10px;
+}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-camera>.mova-call-label {position:absolute;bottom:3px;left:4px;height:auto;font-size:10px;background:#14171cbd;padding:0 3px}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants .mova-call-participant-state {position:absolute;inset:8px 8px auto auto;width:8px;height:8px;padding:0;border:0;border-radius:50%;font-size:0;background:#d0b571;overflow:hidden;transform:none}
+.mova-refined .mova-open-chat.is-in-call .mova-call-participants .mova-call-participant-state>* {display:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-self-view {display:contents;position:static;inset:auto;width:auto;height:auto;transform:none;filter:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile:not(.is-expanded) {position:relative;inset:auto;transform:none;margin:0}
+/* Recovery is a readable card. Its measured height reserves room in the chat. */
+.mova-refined .mova-active-call-banner.has-error {border-radius:18px;padding:8px;background:#22242b;border:1px solid #383a43;overflow:hidden}
+.mova-refined .mova-active-call-banner.has-error .mova-active-call-banner__action {border-radius:10px}
+.mova-refined .mova-active-call-banner.has-error .mova-active-call-banner__details {border-left:0;padding-left:4px}
+.mova-refined .mova-call-recovery {padding:0 12px 10px}
+.mova-refined .mova-call-recovery p {color:#b9bdc8;font-size:13px}
+.mova-refined .mova-call-recovery>div {gap:6px}
+@media(max-width:600px) {
+ .mova-refined .mova-open-chat.is-in-call .mova-call-grid.has-screen {grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) 96px;gap:8px}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-participant-rail {width:100%;height:96px;flex-direction:row}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-participants {flex-direction:row;gap:12px;padding:4px}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-avatar {flex:0 0 76px;height:84px;width:76px}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-participants>.mova-call-tile.is-avatar>.mova-avatar {width:52px;height:52px;flex-basis:52px;font-size:22px}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-grid.has-screen.is-rail-collapsed {grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) 24px}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-participant-rail.is-collapsed {width:100%;height:24px;justify-content:center}
+ .mova-refined .mova-open-chat.is-in-call .mova-call-screen-area:has(>.mova-call-screen-cell:nth-child(2)) {grid-template-columns:minmax(0,1fr);grid-template-rows:repeat(var(--mova-screen-count),minmax(0,1fr))}
+}
+
+.mova-refined .mova-open-chat.is-in-call .mova-call-screen-cell>.mova-call-tile.has-video>.mova-call-label {
+  position:absolute;left:8px;bottom:8px;max-width:calc(100% - 16px);height:26px;
+  padding:0 8px;border:0;border-radius:7px;color:#f4f4f6;background:#17191fe8;font-size:12px;font-weight:400;
+}
+
+.mova-refined .mova-call-tile.is-expanded.is-self .mova-call-fullscreen {display:grid}
+
+.mova-refined .mova-open-chat.is-in-call .mova-call-grid.is-participants .mova-call-tile.has-video>.mova-call-label {padding:0 8px;border-radius:7px;background:#17191fe8;font-size:12px;height:26px}
+
+/* Capture warnings must not cover the content being shared. */
+.mova-refined .mova-call-stage>.mova-call-toast {
+  position:static;align-self:center;flex-shrink:0;width:auto;max-width:100%;padding:2px 8px;
+  color:#b8b6ac;background:transparent;border:0;box-shadow:none;transform:none;font-size:12px;
+}
+@media(max-width:600px) {
+ @container(max-height:440px) {
+  .mova-refined .mova-open-chat.is-in-call .mova-call-screen-area:has(>.mova-call-screen-cell:nth-child(2)) {grid-template-columns:repeat(var(--mova-screen-columns),minmax(0,1fr));grid-template-rows:repeat(var(--mova-screen-rows),minmax(0,1fr))}
+ }
+}
+
+.mova-refined .mova-call-tile.is-expanded {border:0;border-radius:0}

@@ -2545,7 +2545,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
             >
               <span className="mova-active-call-banner__icon" aria-hidden="true"><PhoneCall size={18} /></span>
               <span className="mova-active-call-banner__details">
-                <strong>{call.error ? 'Не удалось подключиться' : 'Звонок идёт'}</strong>
+                <strong>{call.error ? /микрофон/i.test(call.error) ? 'Не удалось включить микрофон' : 'Не удалось подключиться' : 'Звонок идёт'}</strong>
                 <small>
                   {call.error ? 'Повторить подключение' : callConversation.kind === 'group' ? `В звонке: ${callConversation.members.filter(member => call.participants.includes(member.id)).map(member => member.name).join(', ') || 'участники группы'}` : 'Вернуться в звонок'}
                 </small>
@@ -2589,7 +2589,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const screenTiles = remoteTiles.filter((tile) => tile.kind === 'screen');
     const cameraTiles = remoteTiles.filter((tile) => tile.kind === 'camera');
     const cameraTileByUser = new Map(cameraTiles.map((item) => [item.userId, item]));
-    const hasScreen = screenTiles.length > 0;
+    const hasScreen = Boolean(localScreen) || screenTiles.length > 0;
     const peerDiagnostics = Object.values(call.diagnostics || {});
     const callConnected = peerDiagnostics.some((peer) => peer.connectionState === 'connected');
     const microphoneSending = call.localSpeaking;
@@ -2621,14 +2621,12 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
     const selfConnectionState: ParticipantConnectionState = callState === 'reconnecting' || callState === 'disconnected' ? 'reconnecting' : 'connected';
     const waitingForAnswer = callState === 'ringing';
     const invitedIds = waitingForAnswer ? callConversation.members.filter(member => member.id !== currentUser.id).map(member => member.id) : [];
-    const remoteParticipantIds = Array.from(new Set([...call.participants, ...invitedIds, ...cameraTiles.map((tile) => tile.userId)]))
+    const remoteParticipantIds = Array.from(new Set([...call.participants, ...invitedIds, ...remoteTiles.map((tile) => tile.userId)]))
       // Speech and connection updates must not move controls under the pointer.
       .map((userId) => ({ userId, connectionState: participantConnectionState(userId) }));
     const remoteParticipantTiles: ReactNode[] = [];
     const selfTile = showSelf
-      ? localScreen ? (
-          <CallVideoTile key="local-screen" participantId={currentUser.id} stream={localScreen} label={currentUser.name} kind="screen" muted={call.muted} deafened={call.deafened} connectionState={selfConnectionState} screenSharing selfView onExpandedStateChange={setExpandedMedia} />
-        ) : localCamera ? (
+      ? localCamera ? (
           <CallVideoTile key="local-camera" participantId={currentUser.id} stream={localCamera} label={currentUser.name} mirrored kind="camera" muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView onExpandedStateChange={setExpandedMedia} />
         ) : (
           <CallAvatarTile key="local-avatar" participantId={currentUser.id} user={currentUser} label={currentUser.name} muted={call.muted} deafened={call.deafened} speaking={microphoneSending} connectionState={selfConnectionState} screenSharing={Boolean(localScreen)} selfView />
@@ -2662,7 +2660,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
       ));
     });
     const participantTiles = [...remoteParticipantTiles, ...(selfTile ? [selfTile] : [])];
-    const participantRailTiles = [...(selfTile ? [selfTile] : []), ...remoteParticipantTiles];
+    const participantRailTiles = participantTiles;
 
     return stageHost
       ? createPortal(
@@ -2696,32 +2694,36 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
             {diagnosticCopyState !== 'idle' && <p role="status" className="mova-call-report-status">{diagnosticCopyState === 'downloaded' ? 'Отчёт сохранён в файл mova-call-report.json' : diagnosticCopyState === 'copied' ? 'Отчёт скопирован' : 'Не удалось сохранить отчёт'}</p>}
             {hasScreen ? (
               <div className={`mova-call-grid has-screen${participantRailVisible ? '' : ' is-rail-collapsed'}`} data-call-layout="screen-share" data-participant-count={participantTiles.length} data-participant-layout={participantTiles.length >= 5 ? 'many' : participantTiles.length} data-participant-rail={participantRailVisible ? 'visible' : 'hidden'}>
-                <div className="mova-call-screen-area">
+                <div className="mova-call-screen-area" style={{ '--mova-screen-count': screenTiles.length + (localScreen ? 1 : 0), '--mova-screen-columns': Math.min(2, screenTiles.length + (localScreen ? 1 : 0)), '--mova-screen-rows': Math.ceil((screenTiles.length + (localScreen ? 1 : 0)) / 2) } as CSSProperties}>
+                  {localScreen && <div className="mova-call-screen-cell" key="local-screen">
+                    <CallVideoTile participantId={currentUser.id} stream={localScreen} label={`${currentUser.name} · экран`} kind="screen" connectionState={selfConnectionState} screenSharing selfView onExpandedStateChange={setExpandedMedia} />
+                  </div>}
                   {screenTiles.map((tile) => {
                     const user = callConversation.members.find((member) => member.id === tile.userId);
                     const voice = call.remoteVoiceStates[tile.userId];
                     return (
-                      <CallVideoTile
-                        key={`${tile.userId}-${tile.streamId}`}
-                        stream={tile.stream}
-                        participantId={tile.userId}
-                        label={`${user?.name || 'Участник'} · экран`}
-                        kind="screen"
-                        muted={voice?.muted}
-                        deafened={voice?.deafened}
-                        connectionState={participantConnectionState(tile.userId)}
-                        screenSharing
-                        onExpandedStateChange={setExpandedMedia}
-                        volume={
-                          user
-                            ? {
-                                label: `Громкость демонстрации ${user.name}`,
-                                value: call.screenVolumes[tile.userId] ?? 100,
-                                onChange: (value) => call.setScreenVolume(tile.userId, value),
-                              }
-                            : undefined
-                        }
-                      />
+                      <div className="mova-call-screen-cell" key={`${tile.userId}-${tile.streamId}`}>
+                        <CallVideoTile
+                          stream={tile.stream}
+                          participantId={tile.userId}
+                          label={`${user?.name || 'Участник'} · экран`}
+                          kind="screen"
+                          muted={voice?.muted}
+                          deafened={voice?.deafened}
+                          connectionState={participantConnectionState(tile.userId)}
+                          screenSharing
+                          onExpandedStateChange={setExpandedMedia}
+                          volume={
+                            user
+                              ? {
+                                  label: `Громкость демонстрации ${user.name}`,
+                                  value: call.screenVolumes[tile.userId] ?? 100,
+                                  onChange: (value) => call.setScreenVolume(tile.userId, value),
+                                }
+                              : undefined
+                          }
+                        />
+                      </div>
                     );
                   })}
                 </div>
@@ -3035,7 +3037,6 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
   const [expandedClosing, setExpandedClosing] = useState(false);
   const autohideTimer = useRef<number | null>(null);
   const expandedCloseTimer = useRef<number | null>(null);
-  const mobileCallLayout = typeof window !== 'undefined' && !window.movaDesktopShell && (window.matchMedia?.(mobileNavigationQuery).matches ?? false);
   const coarsePointer = typeof window !== 'undefined' && (window.matchMedia?.('(pointer: coarse)').matches ?? false);
   const reducedMotion = typeof window !== 'undefined' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
   const clearAutohide = useCallback(() => {
@@ -3114,8 +3115,8 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
     <article
       className={`mova-call-tile ${className} ${speaking && !muted ? 'is-speaking' : ''} ${expanded ? `is-expanded ${expandedUiVisible ? 'is-ui-visible' : 'is-ui-hidden'}${expandedClosing ? ' is-exiting' : ''}` : ''}`}
       style={screen && mediaAspectRatio ? { '--mova-call-source-ratio': mediaAspectRatio } as CSSProperties : undefined}
-      role={screen ? 'button' : undefined}
-      tabIndex={screen ? 0 : undefined}
+      role={screen && !expanded ? 'button' : undefined}
+      tabIndex={screen && !expanded ? 0 : undefined}
       aria-label={screen ? fullscreenLabel : undefined}
       data-speaking={speaking && !muted ? 'true' : undefined}
       data-participant-id={participantId}
@@ -3150,7 +3151,7 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
           <b>{participantConnectionLabels[connectionState]}</b>
         </span>
       )}
-      {expandable && !screen && (
+      {expandable && (!screen || expanded) && (
         <button type="button" className="mova-call-fullscreen" aria-label={fullscreenLabel} onClick={() => requestExpandedChange(!expanded)}>
           {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
         </button>
@@ -3159,7 +3160,7 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
       {menuPoint && volume && <CallVolumeMenu control={volume} point={menuPoint} onClose={() => setMenuPoint(null)} />}
     </article>
   );
-  return expanded && !mobileCallLayout ? createPortal(tile, document.body) : tile;
+  return expanded ? createPortal(tile, document.body) : tile;
 }
 function CallVideoTile({ participantId, stream, label, kind, mirrored = false, muted, deafened, speaking = false, connectionState, screenSharing = false, selfView = false, volume, onExpandedStateChange }: { participantId: string; stream: MediaStream; label: string; kind: 'camera' | 'screen'; mirrored?: boolean; muted?: boolean; deafened?: boolean; speaking?: boolean; connectionState: ParticipantConnectionState; screenSharing?: boolean; selfView?: boolean; volume?: CallVolumeControl; onExpandedStateChange?: (expanded: boolean) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -3307,11 +3308,18 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [callChatUnread, setCallChatUnread] = useState(0);
   const voiceRecorder = useVoiceRecorder();
   const voicePlayer = useVoiceMessagePlayer();
-  const [callChatWidth, setCallChatWidth] = useState(() => {
+  const [voiceStageHeight, setVoiceStageHeight] = useState(() => {
     const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-call-stage-height');
     const saved = stored === null ? NaN : Number(stored);
     return Number.isFinite(saved) ? Math.min(520, Math.max(240, saved)) : 280;
   });
+  const [mediaStageHeight, setMediaStageHeight] = useState(() => {
+    const saved = Number(window.localStorage.getItem('mova-call-media-height'));
+    return saved >= 360 ? Math.min(900, saved) : 560;
+  });
+  const hasCallMedia = Boolean(voiceSession.screenStream || voiceSession.cameraStream || voiceSession.remoteVideoStreams.length);
+  const callStageHeight = hasCallMedia ? mediaStageHeight : voiceStageHeight;
+  const setCallStageHeight = hasCallMedia ? setMediaStageHeight : setVoiceStageHeight;
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const composerMirror = useRef<HTMLDivElement>(null);
@@ -3459,7 +3467,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
     const header = threadHeaderRef.current;
     const composer = composerRef.current;
     if (!thread || !header || !composer) return;
-    const topOverlays = [header, ...thread.querySelectorAll<HTMLElement>('.mova-voice-player,.mova-pinned-message')];
+    const topOverlays = [header, ...thread.querySelectorAll<HTMLElement>('.mova-voice-player,.mova-pinned-message,.mova-active-call-host')];
     const updateOverlayMetrics = () => {
       const threadRect = thread.getBoundingClientRect();
       const composerRect = composer.getBoundingClientRect();
@@ -3483,7 +3491,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
       observer?.disconnect();
     };
-  }, [pinnedMessage?.id, voicePlayer.active?.id, voicePlayer.open]);
+  }, [pinnedMessage?.id, voicePlayer.active?.id, voicePlayer.open, voiceState, voiceSession.error]);
 
   const rememberComposerSelection = () => {
     const input = composerInput.current;
@@ -4040,7 +4048,8 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
 
   const showOlderMatch = () => setActiveMatchIndex((index) => Math.min(matchCount - 1, index + 1));
   const showNewerMatch = () => setActiveMatchIndex((index) => Math.max(0, index - 1));
-  const clampCallHeight = (height: number) => Math.max(240, Math.min(height, Math.max(240, (threadRef.current?.clientHeight || 800) - 220)));
+  const minimumCallHeight = hasCallMedia ? 360 : 240;
+  const clampCallHeight = (height: number) => Math.max(minimumCallHeight, Math.min(height, Math.max(minimumCallHeight, (threadRef.current?.clientHeight || 800) - 220)));
   const resizeCallChat = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -4053,9 +4062,9 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
       if (messages) messages.scrollTop = messages.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [callOpen, callChatOpen, callChatWidth]);
-  const nudgeCallChat = (amount: number) => setCallChatWidth(height => clampCallHeight(height + amount));
-  useEffect(() => { window.localStorage.setItem('mova-call-stage-height', String(callChatWidth)); }, [callChatWidth]);
+  }, [callOpen, callChatOpen, callStageHeight]);
+  const nudgeCallChat = (amount: number) => setCallStageHeight(height => clampCallHeight(height + amount));
+  useEffect(() => { window.localStorage.setItem(hasCallMedia ? 'mova-call-media-height' : 'mova-call-stage-height', String(callStageHeight)); }, [callStageHeight, hasCallMedia]);
   const startCall = (video: boolean) => {
     setDetailsOpen(false);
     onStartCall(video);
@@ -4139,7 +4148,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   };
 
   return (
-    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen && voiceState !== 'incoming' ? 'is-call-inline' : ''} ${voicePlayer.open ? 'has-voice-player' : ''} ${pinnedMessage ? 'has-pinned-message' : ''} ${selectingMessages ? 'is-selecting-messages' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-stage-height': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
+    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen && voiceState !== 'incoming' ? 'is-call-inline' : ''} ${voicePlayer.open ? 'has-voice-player' : ''} ${pinnedMessage ? 'has-pinned-message' : ''} ${selectingMessages ? 'is-selecting-messages' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-stage-height': `${callStageHeight}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
       <VoicePlaybackAudio player={voicePlayer} />
       {draggingFile && (
         <div className="mova-file-drop-overlay">
@@ -4311,16 +4320,15 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
           role="separator"
           aria-label="Изменить высоту звонка"
           aria-orientation="horizontal"
-          aria-valuemin={240}
+          aria-valuemin={minimumCallHeight}
           aria-valuemax={Math.max(240, (threadRef.current?.clientHeight || 800) - 220)}
-          aria-valuenow={Math.round(callChatWidth)}
+          aria-valuenow={Math.round(callStageHeight)}
           tabIndex={0}
           onPointerDown={resizeCallChat}
-          onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) setCallChatWidth(clampCallHeight(event.clientY - (threadRef.current?.getBoundingClientRect().top || 0) - 8)); }}
+          onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) setCallStageHeight(clampCallHeight(event.clientY - (threadRef.current?.getBoundingClientRect().top || 0) - 8)); }}
           onPointerUp={event => event.currentTarget.releasePointerCapture(event.pointerId)}
           onDoubleClick={() => {
-            setCallChatWidth(280);
-            window.localStorage.setItem('mova-call-stage-height', '280');
+            setCallStageHeight(hasCallMedia ? 560 : 280);
           }}
           onKeyDown={(event) => {
             if (event.key === 'ArrowDown') {
@@ -5363,6 +5371,13 @@ export function Product({ currentUser, onUserUpdate, onLogout }: { currentUser: 
   useEffect(() => {
     if (!mobileNavigation) {
       edgeSwipeRef.current = null;
+      return;
+    }
+    // Narrowing an active desktop call must not switch the hidden mobile list
+    // on and leave the visible call inert.
+    if (mobileCallOpenRef.current && selectedIdRef.current) {
+      mobileCallConversationRef.current = selectedIdRef.current;
+      showMobileConversation(selectedIdRef.current, 'replace');
       return;
     }
     const pendingCallConversation = sessionStorage.getItem('mova-pending-call');

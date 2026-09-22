@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { verifyCallMedia } from './call-media-regression.mjs';
 
 const testDirectory = await mkdtemp(join(tmpdir(), 'mova-call-e2e-'));
 const port = 8792;
@@ -132,7 +133,10 @@ try {
     const other = await api('/api/conversations', 'POST', { kind: 'direct', memberIds: [third.user.id] }, first.token);
     const thirdClient = await openUser(third.token, other.conversation.id);
     await caller.page.locator('.mova-real-chat-list>button').filter({ hasText: third.user.name }).click();
-    await caller.page.getByRole('button', { name: 'Позвонить', exact: true }).click();
+    await caller.page.getByRole('button', { name: 'Позвонить', exact: true }).click().catch(async error => {
+      console.error('Call switch navigation:', (await caller.page.locator('body').innerText()).slice(-2000));
+      throw error;
+    });
     await thirdClient.page.getByRole('button', { name: 'Принять', exact: true }).click();
     await Promise.all([caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }), thirdClient.page.locator(healthyCall).waitFor({ timeout: 20_000 })]).catch(async (error) => {
       console.error(JSON.stringify(await Promise.all([caller, thirdClient].map(async (client) => ({ text: (await client.page.locator('body').innerText()).slice(-2000), frames: client.frames.slice(-30).map((frame) => frame.slice(0, 240)) })))));
@@ -140,7 +144,10 @@ try {
     });
     const originalInvites = caller.frames.filter((frame) => frame.startsWith('sent:') && frame.includes('"type":"call:invite"') && frame.includes(conversation.conversation.id)).length;
     await caller.page.locator('.mova-real-chat-list>button').filter({ hasText: second.user.name }).click();
-    await caller.page.getByRole('button', { name: 'Позвонить', exact: true }).click();
+    await caller.page.getByRole('button', { name: 'Позвонить', exact: true }).click().catch(async error => {
+      console.error('Call switch navigation:', (await caller.page.locator('body').innerText()).slice(-2000));
+      throw error;
+    });
     await Promise.all([caller.page.locator(healthyCall).waitFor({ timeout: 20_000 }), callee.page.locator(healthyCall).waitFor({ timeout: 20_000 })]);
     if (caller.frames.filter((frame) => frame.startsWith('sent:') && frame.includes('"type":"call:invite"') && frame.includes(conversation.conversation.id)).length > originalInvites + 1) throw new Error('Repeated invites while switching to an existing call');
     await thirdClient.context.close();
@@ -168,6 +175,8 @@ try {
   await caller.page.locator(healthyCall).waitFor({ timeout: 10_000 });
   await caller.page.getByText('Нет сигнала с микрофона', { exact: true }).waitFor({ state: 'hidden' });
 
+  if (process.env.MOVA_TEST_SCREEN === '1') await verifyCallMedia(caller, callee);
+
   await Promise.all([
     caller.page.getByRole('button', { name: 'Включить камеру' }).click(),
     callee.page.getByRole('button', { name: 'Включить камеру' }).click(),
@@ -178,6 +187,10 @@ try {
     callee.page.locator('.mova-call-primary-participant .mova-call-tile.has-video:not(.is-self)').waitFor({ timeout: 10_000 }),
     callee.page.locator('.mova-call-self-view .mova-call-tile.has-video.is-self').waitFor({ timeout: 10_000 }),
   ]);
+  await Promise.all([caller.page, callee.page].map(page => page.waitForFunction(() => {
+    const videos = [...document.querySelectorAll('.mova-call-grid.is-participants video')];
+    return videos.length === 2 && videos.every(video => video.videoWidth > 0 && video.readyState >= 2);
+  }, null, { timeout: 10000 })));
   if (await caller.page.getByRole('button', { name: /Открыть .* · вы на весь экран/ }).count()) throw new Error('The local preview must not replace the remote participant');
   if (process.env.MOVA_CALL_SCREENSHOT) {
     await caller.page.screenshot({ path: process.env.MOVA_CALL_SCREENSHOT });

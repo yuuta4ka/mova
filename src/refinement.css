@@ -49,7 +49,7 @@
 .mova-refined .mova-tg-app>.mova-real-thread:not(.is-in-call):has(>.mova-active-call-host:not(:empty)){--mova-chat-header-overlay-height:120px}
 .mova-refined .mova-real-app{-webkit-font-smoothing:antialiased}
 .mova-refined .mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-active-call-host{max-width:696px}
-.mova-refined .mova-tg-app>.mova-real-thread:not(.is-in-call):has(>.mova-active-call-host:not(:empty))>.mova-real-messages{--mova-chat-header-overlay-height:120px;padding-top:138px}
+.mova-refined .mova-tg-app>.mova-real-thread:not(.is-in-call):has(>.mova-active-call-host:not(:empty))>.mova-real-messages{padding-top:calc(var(--mova-chat-header-overlay-height,120px) + 18px)}
 .mova-refined .mova-status-indicator{border:0;box-shadow:none;width:10px;height:10px;right:1px;bottom:1px}
 .mova-refined .mova-status-indicator.is-inline{position:relative;inset:auto;width:14px;height:14px;flex:0 0 14px;border:0;box-shadow:none}
 .mova-refined .mova-status-indicator--idle{background:#edbd58;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='white' d='M14.8 9.4A7 7 0 1 1 6.6 1.2 5.8 5.8 0 0 0 14.8 9.4Z'/%3E%3C/svg%3E") center/contain no-repeat}

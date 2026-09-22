@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { detectDesktopPlatform, LandingPage } from './LandingPage';
 
-const windowsHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.16/Mova.Setup.0.1.16.exe';
-const macHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.16/Mova-0.1.16-arm64.dmg';
+const windowsHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.17/Mova.Setup.0.1.17.exe';
+const macHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.17/Mova-0.1.17-arm64.dmg';
 const initialMaxTouchPoints = Object.getOwnPropertyDescriptor(window.navigator, 'maxTouchPoints');
 
 function mockNavigator(userAgent: string, platform: string, maxTouchPoints = 0) {
