@@ -2570,7 +2570,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
           bannerHost,
         )
       : null;
-  if (!isJoinedCallState(callState)) return stageHost ? createPortal(<PendingCallStage state={callState} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={callState === 'ringing' || callState === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
+  if (!isJoinedCallState(callState) && callState !== 'ringing' && callState !== 'connecting') return stageHost ? createPortal(<PendingCallStage state={callState} conversation={callConversation} currentUser={currentUser} caller={call.incomingFrom} error={call.error} onAccept={call.accept} onEnd={callState === 'incoming' ? call.decline : call.leave} />, stageHost) : null;
 
   if (!canvasOpen)
     return (
@@ -2579,7 +2579,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
       </Button>
     );
 
-  if (isJoinedCallState(callState)) {
+  if (isJoinedCallState(callState) || callState === 'ringing' || callState === 'connecting') {
     const localCamera = call.cameraStream;
     const localScreen = call.screenStream;
     const remoteTiles = call.remoteVideoStreams.map((item) => ({
@@ -2619,7 +2619,9 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
       return 'connecting';
     };
     const selfConnectionState: ParticipantConnectionState = callState === 'reconnecting' || callState === 'disconnected' ? 'reconnecting' : 'connected';
-    const remoteParticipantIds = Array.from(new Set([...call.participants, ...cameraTiles.map((tile) => tile.userId)]))
+    const waitingForAnswer = callState === 'ringing';
+    const invitedIds = waitingForAnswer ? callConversation.members.filter(member => member.id !== currentUser.id).map(member => member.id) : [];
+    const remoteParticipantIds = Array.from(new Set([...call.participants, ...invitedIds, ...cameraTiles.map((tile) => tile.userId)]))
       // Speech and connection updates must not move controls under the pointer.
       .map((userId) => ({ userId, connectionState: participantConnectionState(userId) }));
     const remoteParticipantTiles: ReactNode[] = [];
@@ -2664,10 +2666,10 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
 
     return stageHost
       ? createPortal(
-          <section className="mova-call-stage" data-call-connected={callConnected} data-audio-sending={microphoneSending} data-audio-receiving={microphoneReceiving}>
+          <section aria-label={waitingForAnswer ? 'Исходящий звонок' : 'Звонок'} className={`mova-call-stage${waitingForAnswer ? ' is-ringing' : ''}`} data-call-connected={callConnected} data-audio-sending={microphoneSending} data-audio-receiving={microphoneReceiving}>
             <header>
-              <IconButton label="Свернуть звонок" className="mova-call-minimize" onClick={onMinimizeCanvas}>
-                <Minimize2 size={18} />
+              <IconButton label={chatOpen ? "Развернуть звонок" : "Вернуть чат под звонком"} className="mova-call-minimize" onClick={onToggleChat}>
+                <Maximize2 size={18} />
               </IconButton>
               <div className="mova-call-header-tools">
                 <div className={`mova-network-quality is-${networkQuality}`} aria-label={`Качество соединения: ${networkLabel}. ${networkTooltip}`} data-tooltip={networkTooltip}>
@@ -2688,7 +2690,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
               </div>
               <span>
                 <strong>{callConversation.title}</strong>
-                <small>{formatCallDuration(activeSeconds)}</small>
+                <small>{waitingForAnswer ? 'Вы в звонке' : callState === 'connecting' ? 'Подключение…' : formatCallDuration(activeSeconds)}</small>
               </span>
             </header>
             {diagnosticCopyState !== 'idle' && <p role="status" className="mova-call-report-status">{diagnosticCopyState === 'downloaded' ? 'Отчёт сохранён в файл mova-call-report.json' : diagnosticCopyState === 'copied' ? 'Отчёт скопирован' : 'Не удалось сохранить отчёт'}</p>}
@@ -2784,7 +2786,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
               >
                 <MoreHorizontal size={22} />
               </CallControlButton>
-              <CallControlButton label="Выйти из звонка" danger onClick={call.leave}>
+              <CallControlButton label="Выйти из звонка" danger onClick={waitingForAnswer ? call.decline : call.leave}>
                 <PhoneOff size={23} />
               </CallControlButton>
               </div>
@@ -2828,6 +2830,7 @@ function VoiceCallBar({ conversation, callConversation, currentUser, call, canva
                   <input type="checkbox" checked={showNoVideo} onChange={(event) => setShowNoVideo(event.target.checked)} />
                   <i />
                 </label>
+                <button type="button" onClick={() => {setMoreOpen(false);onMinimizeCanvas();}}><Minimize2 size={18}/><span>Свернуть звонок</span></button>
                 <button type="button" onClick={call.toggleDeafen}>
                   {call.deafened ? <Headphones size={18} /> : <Volume2 size={18} />}
                   <span>{call.deafened ? 'Включить входящий звук' : 'Выключить входящий звук'}</span>
@@ -2885,7 +2888,7 @@ export function PendingCallStage({ state, conversation, currentUser, caller, err
   const meta = conversation.kind === 'direct' ? person?.handle : `${Math.max(1, conversation.members.length - 1)} ${conversation.members.length - 1 === 1 ? 'собеседник' : 'собеседника'}`;
 
   return (
-    <section className={`mova-call-stage mova-call-pending is-${state}`} aria-live="polite" aria-label={eyebrow}>
+    <section className={`mova-call-stage mova-call-pending is-${state}${error || (incoming && conversation.kind === 'group') ? ' has-detail' : ''}`} aria-live="polite" aria-label={eyebrow}>
       <header>
         <span>
           <strong>Голосовой звонок</strong>
@@ -3152,7 +3155,7 @@ function CallTileShell({ className, participantId, label, muted, deafened, scree
           {expanded ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
         </button>
       )}
-      {!(mobileCallLayout && className.includes('is-self')) && <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} screenSharing={screenSharing} />}
+      <CallTileLabel label={label} muted={muted} deafened={deafened} screen={screen} screenSharing={screenSharing} />
       {menuPoint && volume && <CallVolumeMenu control={volume} point={menuPoint} onClose={() => setMenuPoint(null)} />}
     </article>
   );
@@ -3300,14 +3303,14 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   const [avatarPreview, setAvatarPreview] = useState<MediaViewerItem | null>(null);
   const [callStageHost, setCallStageHost] = useState<HTMLElement | null>(null);
   const [callBannerHost, setCallBannerHost] = useState<HTMLElement | null>(null);
-  const [callChatOpen, setCallChatOpen] = useState(false);
+  const [callChatOpen, setCallChatOpen] = useState(true);
   const [callChatUnread, setCallChatUnread] = useState(0);
   const voiceRecorder = useVoiceRecorder();
   const voicePlayer = useVoiceMessagePlayer();
   const [callChatWidth, setCallChatWidth] = useState(() => {
-    const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-call-chat-width');
+    const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('mova-call-stage-height');
     const saved = stored === null ? NaN : Number(stored);
-    return Number.isFinite(saved) ? Math.min(720, Math.max(320, saved)) : 420;
+    return Number.isFinite(saved) ? Math.min(520, Math.max(240, saved)) : 280;
   });
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
@@ -3916,7 +3919,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   }, [callOpen, onCallOpenChange]);
   useEffect(() => {
     if (!callOpen) {
-      setCallChatOpen(false);
+      setCallChatOpen(true);
       setCallChatUnread(0);
     } else {
       setSearchOpen(false);
@@ -4037,34 +4040,22 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
 
   const showOlderMatch = () => setActiveMatchIndex((index) => Math.min(matchCount - 1, index + 1));
   const showNewerMatch = () => setActiveMatchIndex((index) => Math.max(0, index - 1));
+  const clampCallHeight = (height: number) => Math.max(240, Math.min(height, Math.max(240, (threadRef.current?.clientHeight || 800) - 220)));
   const resizeCallChat = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = callChatWidth;
-    const maxWidth = Math.max(320, Math.min(720, (threadRef.current?.clientWidth || 1020) - 300));
-    document.body.classList.add('mova-is-resizing-call-chat');
-    const nextWidth = (clientX: number) => Math.min(maxWidth, Math.max(320, startWidth + startX - clientX));
-    const move = (moveEvent: PointerEvent) => setCallChatWidth(nextWidth(moveEvent.clientX));
-    const stop = (upEvent: PointerEvent) => {
-      const width = nextWidth(upEvent.clientX);
-      setCallChatWidth(width);
-      window.localStorage.setItem('mova-call-chat-width', String(width));
-      document.body.classList.remove('mova-is-resizing-call-chat');
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', stop);
-      window.removeEventListener('pointercancel', stop);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', stop);
-    window.addEventListener('pointercancel', stop);
+    event.currentTarget.setPointerCapture(event.pointerId);
   };
-  const nudgeCallChat = (amount: number) =>
-    setCallChatWidth((width) => {
-      const next = Math.min(720, Math.max(320, width + amount));
-      window.localStorage.setItem('mova-call-chat-width', String(next));
-      return next;
+  useLayoutEffect(() => {
+    if (!positionedAtBottom.current) return;
+    const frame = requestAnimationFrame(() => {
+      const messages = messagesContainer.current;
+      if (messages) messages.scrollTop = messages.scrollHeight;
     });
+    return () => cancelAnimationFrame(frame);
+  }, [callOpen, callChatOpen, callChatWidth]);
+  const nudgeCallChat = (amount: number) => setCallChatWidth(height => clampCallHeight(height + amount));
+  useEffect(() => { window.localStorage.setItem('mova-call-stage-height', String(callChatWidth)); }, [callChatWidth]);
   const startCall = (video: boolean) => {
     setDetailsOpen(false);
     onStartCall(video);
@@ -4148,7 +4139,7 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
   };
 
   return (
-    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen ? 'is-call-chat-open' : ''} ${voicePlayer.open ? 'has-voice-player' : ''} ${pinnedMessage ? 'has-pinned-message' : ''} ${selectingMessages ? 'is-selecting-messages' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-chat-width': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
+    <section ref={threadRef} className={`mova-real-thread mova-open-chat ${callOpen ? 'is-in-call' : ''} ${callOpen && callChatOpen && voiceState !== 'incoming' ? 'is-call-inline' : ''} ${voicePlayer.open ? 'has-voice-player' : ''} ${pinnedMessage ? 'has-pinned-message' : ''} ${selectingMessages ? 'is-selecting-messages' : ''} ${draggingFile ? 'is-file-dragging' : ''}`} style={{ '--mova-call-stage-height': `${callChatWidth}px` } as CSSProperties} aria-hidden={!mobileActive} inert={!mobileActive ? true : undefined} onDragEnter={enterFile} onDragOver={(event) => event.preventDefault()} onDragLeave={leaveFile} onDrop={dropFile}>
       <VoicePlaybackAudio player={voicePlayer} />
       {draggingFile && (
         <div className="mova-file-drop-overlay">
@@ -4314,27 +4305,29 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
         </aside>
       )}
       <div ref={setCallStageHost} className="mova-call-host" />
-      {callOpen && callChatOpen && (
+      {callOpen && callChatOpen && voiceState !== 'incoming' && (
         <div
           className="mova-call-chat-resizer"
           role="separator"
-          aria-label="Изменить ширину чата звонка"
-          aria-orientation="vertical"
-          aria-valuemin={320}
-          aria-valuemax={720}
+          aria-label="Изменить высоту звонка"
+          aria-orientation="horizontal"
+          aria-valuemin={240}
+          aria-valuemax={Math.max(240, (threadRef.current?.clientHeight || 800) - 220)}
           aria-valuenow={Math.round(callChatWidth)}
           tabIndex={0}
           onPointerDown={resizeCallChat}
+          onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) setCallChatWidth(clampCallHeight(event.clientY - (threadRef.current?.getBoundingClientRect().top || 0) - 8)); }}
+          onPointerUp={event => event.currentTarget.releasePointerCapture(event.pointerId)}
           onDoubleClick={() => {
-            setCallChatWidth(420);
-            window.localStorage.setItem('mova-call-chat-width', '420');
+            setCallChatWidth(280);
+            window.localStorage.setItem('mova-call-stage-height', '280');
           }}
           onKeyDown={(event) => {
-            if (event.key === 'ArrowLeft') {
+            if (event.key === 'ArrowDown') {
               event.preventDefault();
               nudgeCallChat(16);
             }
-            if (event.key === 'ArrowRight') {
+            if (event.key === 'ArrowUp') {
               event.preventDefault();
               nudgeCallChat(-16);
             }
@@ -4342,18 +4335,6 @@ function RealMessagesView({ conversation, currentUser, messages, unreadCount = 0
         >
           <i />
         </div>
-      )}
-      {callOpen && callChatOpen && (
-        <header className="mova-call-chat-header">
-          <MessageCircle size={20} />
-          <span>
-            <strong><AppleEmoji text={conversation.title} /></strong>
-            <small>Чат звонка</small>
-          </span>
-          <IconButton label="Закрыть чат" onClick={() => setCallChatOpen(false)}>
-            <X size={19} />
-          </IconButton>
-        </header>
       )}
       {searchOpen && (
         <div className="mova-chat-search-panel">

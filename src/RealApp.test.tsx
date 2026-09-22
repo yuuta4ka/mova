@@ -336,12 +336,12 @@ describe('voice processing settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Приложение' }));
     expect(await screen.findByText('v0.1.10')).toBeVisible();
-    expect(screen.getByText('v0.1.15')).toBeVisible();
+    expect(screen.getByText('v0.1.16')).toBeVisible();
     expect(screen.getByText('Доступно обновление')).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Скачать обновление' }));
 
     expect(open).toHaveBeenCalledWith(
-      'https://github.com/yuuta4ka/mova/releases/download/v0.1.15/Mova-0.1.15-arm64.dmg',
+      'https://github.com/yuuta4ka/mova/releases/download/v0.1.16/Mova-0.1.16-arm64.dmg',
       '_blank',
       'noopener,noreferrer',
     );
@@ -1003,6 +1003,7 @@ describe('Product global voice dock', () => {
     await user.click(screen.getByRole('button', { name: `Вернуться в звонок с ${firstFriend.name}` }));
     await waitFor(() => expect(rendered.container.querySelector('.mova-call-stage')).toBeInTheDocument());
     expect(send).not.toHaveBeenCalledWith({ type: 'call:invite', conversationId: firstChat.id });
+    await user.click(screen.getByRole('button', { name: 'Дополнительно' }));
     await user.click(screen.getByRole('button', { name: 'Свернуть звонок' }));
     const restoredDock = await screen.findByRole('region', { name: `Активный звонок с ${firstFriend.name}` });
     expect(restoredDock).toHaveAttribute('data-call-state', 'connected');

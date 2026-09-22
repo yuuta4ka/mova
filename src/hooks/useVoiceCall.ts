@@ -1641,7 +1641,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
   };
 
   useEffect(() => window.movaDesktopShell?.onHotkeyAction?.((action) => {
-    if (!conversationId || !isJoinedCallState(stateRef.current)) return;
+    if (!conversationId || (!isJoinedCallState(stateRef.current) && stateRef.current !== 'ringing')) return;
     if (action === 'toggle-microphone') toggleMute();
     if (action === 'toggle-headphones') toggleDeafen();
   }), [conversationId]);
@@ -1650,7 +1650,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
     await Promise.all([...peers.current.keys()].map((userId) => negotiatePeer(userId)));
   };
   const toggleCamera = async () => {
-    if (!conversationId || !isJoinedCallState(stateRef.current)) return;
+    if (!conversationId || (!isJoinedCallState(stateRef.current) && stateRef.current !== 'ringing')) return;
     if (cameraStreamRef.current) {
       const old = cameraStreamRef.current;
       peers.current.forEach((peer) =>
@@ -1684,6 +1684,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
         },
         audio: false,
       });
+      if (!isJoinedCallState(stateRef.current) && stateRef.current !== 'ringing') {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       setError((value) => value.startsWith('Не удалось включить камеру.') ? '' : value);
       cameraStreamRef.current = stream;
       setCameraStream(stream);
@@ -1756,7 +1760,7 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       systemAudioEnabled: true,
     },
   ) => {
-    if (!conversationId || !isJoinedCallState(stateRef.current)) return;
+    if (!conversationId || (!isJoinedCallState(stateRef.current) && stateRef.current !== 'ringing')) return;
     try {
       const desktopCapture = Boolean(window.movaDesktopShell);
       const selectQuality = (event: Event) => {
@@ -1773,6 +1777,10 @@ export function useVoiceCall(conversationId: string | null, currentUserId?: stri
       if (desktopCapture) {
         try { await stream.getVideoTracks()[0]?.applyConstraints({width: {ideal: width},height: {ideal: height},frameRate: {ideal: frameRate,max: frameRate}}); }
         catch (error) {stream.getTracks().forEach(track=>track.stop());throw error;}
+      }
+      if (!isJoinedCallState(stateRef.current) && stateRef.current !== 'ringing') {
+        stream.getTracks().forEach(track => track.stop());
+        return;
       }
       activeScreenQuality.current = { width, height, frameRate };
       const screenTrack = stream.getVideoTracks()[0];

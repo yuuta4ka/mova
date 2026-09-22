@@ -270,3 +270,30 @@
  .mova-refined .mova-settings{grid-template-rows:auto minmax(0,1fr)}
 }
 @media(max-width:760px){.mova-refined .mova-call-grid.is-participants:not([data-participant-layout="1"]):not([data-participant-layout="2"]) .mova-call-tile.is-self>.mova-call-label{display:flex}}
+
+/* Pending calls use the same quiet canvas as an active conversation. */
+.mova-refined .mova-call-stage.mova-call-pending{background:#17191f;isolation:isolate}
+.mova-refined .mova-call-pending:before,.mova-refined .mova-call-pending:after,.mova-refined .mova-call-pending>header{display:none}
+.mova-refined .mova-call-pending__content{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0}
+.mova-refined .mova-call-pending__avatar{order:0;width:120px;height:120px;margin:0 0 24px;background:none;border:0;box-shadow:none;animation:none}
+.mova-refined .mova-call-pending__avatar>i,.mova-refined .mova-call-pending__avatar>span:not(.mova-avatar),.mova-refined .mova-call-pending__avatar:before,.mova-refined .mova-call-pending__avatar:after{display:none}
+.mova-refined .mova-call-pending__avatar>.mova-avatar,.mova-refined .mova-call-pending__avatar>.mova-real-group-avatar{width:120px;height:120px;flex-basis:120px;border:0;box-shadow:none;font-size:40px;font-weight:500}
+.mova-refined .mova-call-pending h1{order:1;margin:0;font-size:28px;line-height:36px;font-weight:500;letter-spacing:normal}
+.mova-refined .mova-call-pending__status{order:2;display:block;margin:8px 0 0;padding:0;min-height:0;border:0;border-radius:0;background:none;box-shadow:none;color:#a7aab6;font-size:15px;line-height:22px;font-weight:400;letter-spacing:normal}
+.mova-refined .mova-call-pending__status>i,.mova-refined .mova-call-pending__content>small,.mova-refined .mova-call-pending__content>p{display:none}
+.mova-refined .mova-call-pending.has-detail .mova-call-pending__content>p{display:block;order:3;max-width:420px;margin:14px 20px 0;color:#c1c3ce;font-size:14px;line-height:21px}
+.mova-refined .mova-call-pending__actions{gap:36px;padding-bottom:8px}
+.mova-refined .mova-call-pending__actions>button{gap:10px;font-size:13px;font-weight:400;color:#b9bcc7}
+.mova-refined .mova-call-pending__actions>button>.mova-call-action-icon{width:56px;height:56px;border:0;box-shadow:none}
+.mova-refined .mova-call-pending__actions>.is-decline>.mova-call-action-icon{background:#cf4e60}
+.mova-refined .mova-call-pending__actions>.is-accept>.mova-call-action-icon{background:#80cdbd;color:#15332c}
+.mova-refined .mova-call-pending__actions>button:hover>.mova-call-action-icon{transform:none;filter:brightness(1.08)}
+/* Finished friendship events belong to the conversation's service messages. */
+.mova-refined .mova-friend-request-message.is-accepted{display:flex;align-items:center;justify-content:center;gap:7px;width:max-content;max-width:100%;margin:14px auto;padding:8px 13px;background:rgba(15,20,28,.4);border:0;border-radius:999px;box-shadow:none;color:#c4cad5}
+.mova-refined .mova-friend-request-message.is-accepted .mova-friend-request-message__icon{width:17px;height:20px;flex:0 0 17px;background:none;border:0;border-radius:0;color:#9cbaad}
+.mova-refined .mova-friend-request-message.is-accepted .mova-friend-request-message__icon svg{width:16px;height:16px}
+.mova-refined .mova-friend-request-message.is-accepted strong{font-size:13px;line-height:20px;font-weight:400;color:inherit}
+.mova-refined .mova-friend-request-message.is-accepted small,.mova-refined .mova-friend-request-message.is-accepted time{display:none}
+@media(max-width:760px){.mova-refined .mova-call-pending__avatar,.mova-refined .mova-call-pending__avatar>.mova-avatar{width:104px;height:104px;flex-basis:104px}.mova-refined .mova-call-pending h1{font-size:25px;line-height:32px}}
+
+.mova-refined .mova-call-stage.mova-call-pending>header{display:none!important}

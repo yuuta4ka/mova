@@ -520,27 +520,31 @@ describe('call layout', () => {
     expect(container.querySelectorAll('.mova-call-tile')).toHaveLength(2);
   });
 
-  it('lets the call chat width be changed from its left edge', async () => {
+  it('keeps the existing chat open and resizes the call vertically with keyboard limits', async () => {
     const user = userEvent.setup();
-    render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
-
-    await user.click(await screen.findByRole('button', { name: 'Открыть чат' }));
-    const resizer = screen.getByRole('separator', { name: 'Изменить ширину чата звонка' });
-    expect(resizer).toHaveAttribute('aria-valuenow', '420');
-
-    fireEvent.pointerDown(resizer, { button: 0, clientX: 500 });
-    fireEvent.pointerMove(window, { clientX: 400 });
-    fireEvent.pointerUp(window, { clientX: 400 });
-
-    expect(resizer).toHaveAttribute('aria-valuenow', '520');
-    expect(window.localStorage.getItem('mova-call-chat-width')).toBe('520');
+    const view = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incomingMessage('1')]} onSend={vi.fn().mockResolvedValue(undefined)} />);
+    const composer = screen.getByRole('textbox', {name: 'Сообщение в Друг'});
+    const resizer = await screen.findByRole('separator', {name: 'Изменить высоту звонка'});
+    expect(resizer).toHaveAttribute('aria-orientation', 'horizontal');
+    expect(resizer).toHaveAttribute('aria-valuenow', '280');
+    fireEvent.keyDown(resizer, {key: 'ArrowDown'});
+    expect(resizer).toHaveAttribute('aria-valuenow', '296');
+    expect(localStorage.getItem('mova-call-stage-height')).toBe('296');
+    for(let i=0;i<10;i++)fireEvent.keyDown(resizer, {key:'ArrowUp'});
+    expect(resizer).toHaveAttribute('aria-valuenow', '240');
+    await user.type(composer, 'Черновик');
+    await user.click(screen.getByRole('button', {name:'Развернуть звонок'}));
+    await user.click(screen.getByRole('button', {name:'Вернуть чат под звонком'}));
+    expect(screen.getByRole('textbox', {name:'Сообщение в Друг'})).toBe(composer);
+    expect(composer).toHaveValue('Черновик');
+    expect(view.container.querySelector('.is-call-inline')).toBeInTheDocument();
   });
 
   it('shows unread call messages and keeps the dock geometry stable while chat is open', async () => {
     const user = userEvent.setup();
     const { rerender } = render(<RealMessages conversation={conversation} currentUser={currentUser} messages={[]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
-    await screen.findByRole('button', { name: 'Открыть чат' });
+    await user.click(await screen.findByRole('button', {name:'Закрыть чат'}));
     rerender(<RealMessages conversation={conversation} currentUser={currentUser} messages={[incomingMessage('1'), incomingMessage('2')]} onSend={vi.fn().mockResolvedValue(undefined)} />);
 
     const openButton = await screen.findByRole('button', { name: 'Открыть чат, непрочитанных сообщений: 2' });
@@ -551,13 +555,13 @@ describe('call layout', () => {
 
     expect(screen.queryByText('Скрыть чат')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Открыть чат/ })).not.toBeInTheDocument();
-    const callChatHeader = document.querySelector('.mova-call-chat-header')!;
+    expect(document.querySelector('.mova-call-chat-header')).not.toBeInTheDocument();
     const dockClose = dock.querySelector('button[aria-label="Закрыть чат"]');
     expect(dock.querySelectorAll(':scope > button')).toHaveLength(7);
     expect(dockClose).toHaveAttribute('data-control-state', 'active');
-    expect(callChatHeader).toBeInTheDocument();
+    expect(document.querySelector('.is-call-inline')).toBeInTheDocument();
 
-    await user.click(callChatHeader.querySelector('button[aria-label="Закрыть чат"]')!);
+    await user.click(dockClose!);
     expect(await screen.findByRole('button', { name: 'Открыть чат' })).toBeInTheDocument();
   });
 
@@ -684,7 +688,7 @@ describe('call layout', () => {
     const selfView = container.querySelector('.mova-call-self-view .mova-call-tile');
     expect(selfViewContainer).toHaveAttribute('data-pinch-resizable', 'true');
     expect(selfView).toHaveAttribute('data-self-view', 'true');
-    expect(selfView?.querySelector('.mova-call-label')).not.toBeInTheDocument();
+    expect(selfView?.querySelector('.mova-call-label')).toHaveTextContent(currentUser.name);
     expect(selfView).not.toHaveTextContent('· вы');
     vi.spyOn(selfViewContainer, 'getBoundingClientRect').mockReturnValue({ width: 112, height: 63, x: 0, y: 0, top: 0, left: 0, right: 112, bottom: 63, toJSON: () => ({}) });
     fireEvent.pointerDown(selfViewContainer, { pointerId: 1, pointerType: 'touch', clientX: 0, clientY: 0 });

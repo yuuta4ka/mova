@@ -194,7 +194,7 @@ try {
   const messageWhileCallContinues = `Звонок продолжается ${suffix}`;
   await caller.page.getByRole('textbox', { name: /^Сообщение в / }).fill(messageWhileCallContinues);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
-  await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
+  if (await callee.page.getByRole('button', { name: /Открыть чат/ }).isVisible()) await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
   await callee.page.locator('.mova-real-message').getByText(messageWhileCallContinues, { exact: true }).waitFor({ timeout: 5_000 });
   if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: 'Закрыть чат' }).click();
 
@@ -216,7 +216,7 @@ try {
   const messageAfterMicFailure = `После ошибки микрофона ${suffix}`;
   await caller.page.getByRole('textbox', { name: /^Сообщение в / }).fill(messageAfterMicFailure);
   await caller.page.getByRole('button', { name: 'Отправить' }).click();
-  if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
+  if (process.env.MOVA_MOBILE_CALL_QA === '1') if (await callee.page.getByRole('button', { name: /Открыть чат/ }).isVisible()) await callee.page.getByRole('button', { name: /Открыть чат/ }).click();
   await callee.page.locator('.mova-real-message').getByText(messageAfterMicFailure, { exact: true }).waitFor({ timeout: 5_000 });
   if (process.env.MOVA_MOBILE_CALL_QA === '1') await callee.page.getByRole('button', { name: 'Закрыть чат' }).click();
 

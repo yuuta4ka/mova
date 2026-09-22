@@ -2,19 +2,19 @@
 .mova-tg-app>.mova-real-thread:has(>.mova-real-composer) {
   background-color:color-mix(in srgb,var(--mova-background-color,#20293c) 72%,#0d121b);
 }
-.mova-tg-app>.mova-real-thread:not(.is-in-call) {
+.mova-tg-app>.mova-real-thread:is(:not(.is-in-call),.is-call-inline) {
   --mova-chat-header-overlay-height:70px;
   --mova-chat-composer-overlay-height:68px;
   overflow:hidden;
 }
-.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-real-thread__header {
+.mova-tg-app>.mova-real-thread:is(:not(.is-in-call),.is-call-inline)>.mova-real-thread__header {
   position:absolute;
   z-index:12;
   top:0;
   left:50%;
   transform:translateX(-50%);
 }
-.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-real-messages {
+.mova-tg-app>.mova-real-thread:is(:not(.is-in-call),.is-call-inline)>.mova-real-messages {
   position:absolute;
   z-index:1;
   inset:0;
@@ -46,7 +46,7 @@
   border:0;
   box-shadow:none;
 }
-.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-real-composer {
+.mova-tg-app>.mova-real-thread:is(:not(.is-in-call),.is-call-inline)>.mova-real-composer {
   position:absolute;
   z-index:12;
   right:auto;
@@ -54,7 +54,7 @@
   left:50%;
   transform:translateX(-50%);
 }
-.mova-tg-app>.mova-real-thread:not(.is-in-call)>.mova-message-selection-bar {
+.mova-tg-app>.mova-real-thread:is(:not(.is-in-call),.is-call-inline)>.mova-message-selection-bar {
   z-index:13;
 }
 .mova-tg-app.is-mobile-navigation>.mova-real-thread:not(.is-call-chat-open)>.mova-real-composer {

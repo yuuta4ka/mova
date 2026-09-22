@@ -1,0 +1,48 @@
+/* A call is a card above the existing conversation, not a separate chat. */
+.mova-refined .mova-tg-app>.mova-real-thread.is-in-call.is-call-inline{display:block;background:color-mix(in srgb,var(--mova-background-color,#20293c) 72%,#0d121b);--mova-chat-header-overlay-height:12px;--mova-chat-composer-overlay-height:68px}
+.mova-refined .mova-real-thread.is-call-inline>.mova-real-thread__header{display:none}
+.mova-refined .mova-real-thread.is-call-inline>.mova-call-host:not(:empty){display:block;position:absolute;inset:8px auto auto 50%;transform:translateX(-50%);width:min(930px,calc(100% - 36px));height:min(var(--mova-call-stage-size,280px),calc(100% - 220px));min-height:240px;z-index:15;border:0;border-radius:24px;overflow:visible;container-type:size}
+.mova-refined .mova-real-thread.is-call-inline>.mova-call-host>.mova-call-stage{display:flex;flex-direction:column;gap:8px;padding:12px 18px;background:#17191f;border-radius:24px;overflow:visible;animation:mova-panel-appear 160ms ease-out both}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-stage>header{height:36px;min-height:36px;flex:0 0 36px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-stage>header strong{font-size:15px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-stage>header small{font-size:12px;margin-top:2px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants{display:flex;flex:1;align-items:center;justify-content:safe center;gap:12px;width:100%;min-height:0;max-height:none;margin:0;padding:6px 0;overflow:auto;box-sizing:border-box}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants>div{display:contents}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-avatar{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;flex:0 0 88px;width:88px;height:98px;min-height:0;min-width:88px;padding:0;background:none;border:0;border-radius:0;box-shadow:none;overflow:visible;container-type:normal}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-avatar>.mova-avatar{position:static;inset:auto;transform:none;width:68px;height:68px;flex:0 0 68px;font-size:25px;outline:1px solid transparent;outline-offset:4px;transition:outline-color 140ms ease,opacity 140ms ease}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-speaking>.mova-avatar{outline-color:#88b9a2}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-avatar>.mova-call-label{position:static;display:flex;max-width:100%;height:22px;min-height:22px;font-size:13px;line-height:22px;padding:0}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.has-video{flex:0 1 420px;width:420px;min-width:180px;height:100%;min-height:80px;border-radius:16px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-self-resizer{display:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-controls{--mova-call-control-hit:40px;--mova-call-control-icon:34px;gap:4px;padding:5px;flex-shrink:0;width:max-content;max-width:100%;margin:0 auto;border-radius:999px;animation:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-control-icon svg{width:20px;height:20px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-real-messages{display:block;top:calc(min(var(--mova-call-stage-size,280px),max(240px,100% - 220px)) + 20px);bottom:0;height:auto;padding-top:18px;background:transparent;animation:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-real-composer{display:flex;animation:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer{position:absolute;inset:calc(min(var(--mova-call-stage-size,280px),max(240px,100% - 220px)) + 8px) auto auto 50%;width:min(930px,calc(100% - 36px));height:12px;transform:translateX(-50%);cursor:row-resize;z-index:16}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer>i{inset:5px auto auto 50%;width:42px;height:3px;transform:translateX(-50%);background:#414553;box-shadow:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer:hover>i,.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer:focus-visible>i{background:#ab97e8}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-more,.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-screen-menu{top:calc(100% + 12px);bottom:auto;z-index:25;max-height:min(420px,50dvh);overflow-y:auto}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline:has(.mova-call-grid.has-screen)>.mova-call-host,.mova-refined .mova-open-chat.is-in-call.is-call-inline:has(.mova-call-tile.has-video)>.mova-call-host{min-height:240px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.has-screen{min-height:0;padding:0;gap:8px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participant-rail{height:82px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participant-rail.is-collapsed{height:26px}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participants>.mova-call-tile{height:60px;width:80px;min-width:80px}
+.mova-refined .mova-call-stage.is-ringing .mova-call-tile:not(.is-self)>.mova-avatar{animation:mova-avatar-calling 1.8s ease-in-out infinite;outline:1px solid #ab9de0;outline-offset:4px}
+@keyframes mova-avatar-calling{0%,100%{opacity:1;transform:scale(1);outline-color:#ab9de0}50%{opacity:.55;transform:scale(.95);outline-color:transparent}}
+@keyframes mova-panel-appear{from{opacity:0;translate:0 4px}to{opacity:1;translate:0 0}}
+.mova-refined :is(.mova-settings,.mova-call-more,.mova-screen-menu,.mova-call-volume-menu,.mova-desktop-share-picker__dialog){animation:mova-panel-appear 150ms ease-out}
+.mova-refined :is(.mova-icon-button,.mova-call-control-icon,.mova-tg-sidebar button){transition:background-color 120ms ease,color 120ms ease,border-color 120ms ease}
+@container(max-height:260px){.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-avatar{height:88px}.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-avatar>.mova-avatar{width:60px;height:60px;flex-basis:60px;font-size:23px}}
+@media(max-width:760px){.mova-refined .mova-real-thread.is-call-inline>.mova-call-host:not(:empty){width:calc(100% - 16px)}.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-controls{--mova-call-control-hit:38px;--mova-call-control-icon:32px;gap:2px}.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-more,.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-screen-menu{position:absolute;left:8px;right:8px;width:auto;transform:none}.mova-refined .mova-open-chat.is-in-call.is-call-inline>.mova-call-chat-resizer{display:block}.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-self-view{position:static;inset:auto;width:auto;height:auto;transform:none}.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-stage{padding-inline:10px!important}}
+@media(prefers-reduced-motion:reduce){.mova-refined :is(.mova-call-stage,.mova-settings,.mova-call-more,.mova-screen-menu,.mova-call-volume-menu,.mova-desktop-share-picker__dialog,.mova-avatar){animation:none!important;transition:none!important}.mova-refined :is(.mova-icon-button,.mova-call-control-icon,.mova-tg-sidebar button){transition:none}}
+
+.mova-refined .mova-call-stage.is-ringing .mova-call-participant-state{display:none}
+.mova-refined .mova-call-stage.is-ringing .mova-call-header-tools{visibility:hidden}
+
+.mova-refined .mova-real-thread.is-call-inline{--mova-call-stage-size:var(--mova-call-stage-height,280px)}
+.mova-refined .mova-real-thread.is-call-inline:has(.mova-call-tile.has-video){--mova-call-stage-size:max(var(--mova-call-stage-height,280px),440px)}
+/* Connection changes stay legible without covering the portrait. */
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-participant-state{position:absolute;top:8px;right:10px;left:auto;bottom:auto;width:8px;height:8px;min-width:0;padding:0;overflow:hidden;font-size:0;border:0;border-radius:50%;background:#d0b571;box-shadow:none;transform:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-participant-state>i{display:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-stage.is-ringing .mova-call-participant-state{display:none}
+.mova-refined .mova-open-chat.is-in-call.is-call-inline .mova-call-grid.is-participants .mova-call-tile.is-self>.mova-call-label{display:flex}

@@ -148,7 +148,7 @@
 
 /* Compact thread bars from the desktop reference. Kept here so they win over shell polish. */
 .mova-voice-player__audio { display:none; }
-.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread:not(.is-in-call)>.mova-real-thread__header {
+.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread:is(:not(.is-in-call),.is-call-inline)>.mova-real-thread__header {
   top:0;
   width:min(696px,calc(100% - 36px));
   max-width:696px;
@@ -165,7 +165,7 @@
   backdrop-filter:none;
   transition:top 220ms cubic-bezier(.2,.78,.25,1);
 }
-.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread.has-voice-player:not(.is-in-call)>.mova-real-thread__header { top:56px; }
+.mova-tg-app:not(.is-mobile-navigation)>.mova-real-thread.has-voice-player:is(:not(.is-in-call),.is-call-inline)>.mova-real-thread__header { top:56px; }
 .mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity { height:44px;border-radius:22px; }
 .mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity>.mova-avatar,
 .mova-tg-app:not(.is-mobile-navigation) .mova-real-thread__header .mova-chat-identity>.mova-real-group-avatar { width:40px;height:40px;flex-basis:40px; }
@@ -371,8 +371,8 @@
 @keyframes mova-voice-menu-in { from{opacity:0;transform:translateY(-5px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)} }
 
 @media(max-width:760px) {
-  .mova-tg-app.is-mobile-navigation>.mova-real-thread:not(.is-in-call)>.mova-voice-player { top:calc(env(safe-area-inset-top) + 4px);width:calc(100% - 12px); }
-  .mova-tg-app.is-mobile-navigation>.mova-real-thread.has-voice-player:not(.is-in-call)>.mova-real-thread__header { top:52px; }
+  .mova-tg-app.is-mobile-navigation>.mova-real-thread:is(:not(.is-in-call),.is-call-inline)>.mova-voice-player { top:calc(env(safe-area-inset-top) + 4px);width:calc(100% - 12px); }
+  .mova-tg-app.is-mobile-navigation>.mova-real-thread.has-voice-player:is(:not(.is-in-call),.is-call-inline)>.mova-real-thread__header { top:52px; }
   .mova-tg-app.is-mobile-navigation .mova-pinned-message { top:calc(env(safe-area-inset-top) + 60px);width:calc(100% - 12px); }
   .mova-tg-app.is-mobile-navigation>.mova-real-thread.has-voice-player>.mova-pinned-message { top:calc(env(safe-area-inset-top) + 112px); }
   .mova-voice-player { padding-left:6px; }
