@@ -687,3 +687,23 @@ html.mova-landing-document body { background:#0b0d12; }
 @media(prefers-reduced-motion:reduce) {
   .mova-landing * { scroll-behavior:auto!important; animation:none!important; transition:none!important; }
 }
+
+.mova-landing-statistics {
+  width:min(1240px,calc(100% - 48px));
+  margin:0 auto 80px;
+  padding:36px 0 24px;
+  border-block:1px solid var(--landing-line);
+}
+.mova-landing-statistics header>span { color:var(--landing-violet-soft); font-size:14px; font-weight:650; }
+.mova-landing-statistics h2 { margin:8px 0 28px; font-size:clamp(26px,3vw,36px); letter-spacing:-.04em; }
+.mova-landing-statistics dl { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:32px; margin:0; }
+.mova-landing-statistics dl>div { display:flex; flex-direction:column-reverse; justify-content:flex-end; gap:10px; }
+.mova-landing-statistics dt { color:var(--landing-muted); font-size:16px; line-height:1.5; }
+.mova-landing-statistics dd { margin:0; font-size:clamp(32px,4vw,52px); font-weight:750; letter-spacing:-.04em; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.mova-landing-statistics p { min-height:42px; margin:26px 0 0; max-width:760px; color:var(--landing-muted); font-size:13px; line-height:1.6; }
+@media(max-width:600px) {
+  .mova-landing-statistics { width:calc(100% - 32px); margin-bottom:48px; padding-top:28px; }
+  .mova-landing-statistics dl { grid-template-columns:1fr; gap:24px; }
+  .mova-landing-statistics dl>div { gap:4px; }
+  .mova-landing-statistics dd { font-size:40px; }
+}

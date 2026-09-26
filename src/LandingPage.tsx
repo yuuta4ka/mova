@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   ChevronDown,
@@ -123,6 +123,55 @@ function PlatformDownload({ platform, id }: { platform: DesktopPlatform; id?: st
   );
 }
 
+interface PublicStatistics {
+  users: number;
+  messages: number;
+  callSeconds: number;
+  updatedAt: string;
+}
+
+function LandingStatistics() {
+  const [statistics, setStatistics] = useState<PublicStatistics | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10_000);
+    let disposed = false;
+    async function load() {
+      try {
+        const response = await fetch('/api/public/statistics', { signal: controller.signal, credentials: 'omit' });
+        if (!response.ok) throw new Error('Statistics unavailable');
+        const data = await response.json() as PublicStatistics;
+        if (![data.users, data.messages, data.callSeconds].every((value) => Number.isSafeInteger(value) && value >= 0)
+          || !Number.isFinite(Date.parse(data.updatedAt))) throw new Error('Invalid statistics');
+        if (!disposed) setStatistics(data);
+      } catch {
+        if (!disposed) setUnavailable(true);
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+    void load();
+    return () => { disposed = true; window.clearTimeout(timeout); controller.abort(); };
+  }, []);
+  const number = new Intl.NumberFormat('ru-RU');
+  const value = (count: number | undefined) => count === undefined ? '—' : number.format(count);
+  return (
+    <section className="mova-landing-statistics" aria-labelledby="statistics-title">
+      <header>
+        <span>Наше общение в цифрах</span>
+        <h2 id="statistics-title">Mova объединяет</h2>
+      </header>
+      <dl>
+        <div><dt>Зарегистрированных пользователей</dt><dd>{value(statistics?.users)}</dd></div>
+        <div><dt>Часов в звонках</dt><dd>{statistics ? new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(statistics.callSeconds / 3600) : '—'}</dd></div>
+        <div><dt>Сообщений</dt><dd>{value(statistics?.messages)}</dd></div>
+      </dl>
+      {!statistics && <p role="status">{unavailable ? 'Статистика временно недоступна.' : 'Загружаем статистику…'}</p>}
+    </section>
+  );
+}
+
 export function LandingPage() {
   const [isVideoOpen, setIsVideoOpen] = useState(false);
   const [platform] = useState<DesktopPlatform>(getBrowserPlatform);
@@ -194,6 +243,8 @@ export function LandingPage() {
             <figcaption><MessageCircleMore size={17} /><span><strong>Разговор остаётся в центре</strong><small>Сообщения, изображения, файлы и звонки — без лишнего шума.</small></span></figcaption>
           </figure>
         </section>
+
+        <LandingStatistics />
 
         <section className="mova-landing-features" id="features" aria-labelledby="features-title">
           <header className="mova-landing-section-heading is-centered">

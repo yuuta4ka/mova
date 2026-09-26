@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { detectDesktopPlatform, LandingPage } from './LandingPage';
 
 const windowsHref = 'https://github.com/yuuta4ka/mova/releases/download/v0.1.18/Mova.Setup.0.1.18.exe';
@@ -12,7 +12,12 @@ function mockNavigator(userAgent: string, platform: string, maxTouchPoints = 0) 
   Object.defineProperty(window.navigator, 'maxTouchPoints', { configurable: true, value: maxTouchPoints });
 }
 
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
+});
+
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   if (initialMaxTouchPoints) {
     Object.defineProperty(window.navigator, 'maxTouchPoints', initialMaxTouchPoints);
@@ -101,4 +106,20 @@ describe('Mova landing page', () => {
     expect(pause).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog', { name: /Секретное видео/i })).not.toBeInTheDocument();
   });
+});
+
+
+it('shows historical statistics with hours and makes just one request', async () => {
+  vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ users: 1234, messages: 5678, callSeconds: 5400, updatedAt: '2026-09-20T12:00:00Z' })));
+  render(<LandingPage />);
+  expect(await screen.findByText('1,5')).toBeVisible();
+  expect(document.querySelector('.mova-landing-statistics p')).not.toBeInTheDocument();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it('shows unavailable statistics without inventing zero counts', async () => {
+  render(<LandingPage />);
+  expect(await screen.findByText('Статистика временно недоступна.')).toBeVisible();
+  expect(document.querySelectorAll('.mova-landing-statistics dd')).toHaveLength(3);
+  for (const value of document.querySelectorAll('.mova-landing-statistics dd')) expect(value).toHaveTextContent('—');
 });

@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
 import webpush from 'web-push';
 import { openDatabase, resolveDataPaths } from './database.mjs';
+import { PublicStatistics } from './public-statistics.mjs';
 import { backupIfDue, resolveBackupConfig } from './backup.mjs';
 import { MaintenanceStore } from './maintenance.mjs';
 import { MovaMetrics, createLogger, requestId, routeName } from './observability.mjs';
@@ -37,6 +38,7 @@ eventLoopDelay.enable();
 const metrics = new MovaMetrics();
 const rateLimits = new Map();
 let database;
+let publicStatistics;
 let pushPublicKey = '';
 let backupInFlight = null;
 
@@ -313,10 +315,10 @@ function requireEmailChallenge({ challengeId, purpose, code, userId }) {
   return challenge;
 }
 
-function json(response, status, body) {
+function json(response, status, body, cacheControl = 'no-store') {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
+    'cache-control': cacheControl,
   });
   response.end(JSON.stringify(body));
 }
@@ -660,6 +662,14 @@ function scheduleCallCleanup(conversationId, delay = 60_000) {
 async function handleApi(request, response) {
   try {
     const url = new URL(request.url, 'http://localhost');
+    if (request.method === 'GET' && url.pathname === '/api/public/statistics') {
+      if (!publicStatistics.snapshot) {
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Retry-After', '60');
+        return json(response, 503, { error: 'Статистика пока недоступна' });
+      }
+      return json(response, 200, publicStatistics.snapshot, 'public, max-age=300, stale-while-revalidate=900');
+    }
     if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
     if (request.method === 'GET' && url.pathname === '/api/maintenance') return json(response, 200, await maintenance.read());
     if (request.method === 'GET' && url.pathname === '/api/ready') {
@@ -1750,6 +1760,8 @@ function handleSocket(socket, request) {
 }
 
 database = await openDatabase(dataPaths);
+publicStatistics = new PublicStatistics(dataPaths.sqlitePath, (error) => logger.error('statistics.refresh_failed', { error }));
+publicStatistics.start();
 database.clearGameActivities();
 configureWebPush();
 await database.cleanupOrphanUploads();
@@ -1818,6 +1830,7 @@ function shutdown(signal) {
   clearInterval(socketHeartbeat);
   clearInterval(uploadCleanupTimer);
   clearInterval(backupTimer);
+  void publicStatistics.stop();
   for (const timer of callCleanupTimers.values()) clearTimeout(timer);
   for (const timer of voiceReconnectTimers.values()) clearTimeout(timer);
   for (const socket of sockets.clients) socket.close(1001, 'Server shutdown');
